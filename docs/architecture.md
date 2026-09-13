@@ -107,6 +107,7 @@ payment-serviceの client_credentials トークン(scope=account:transact)
 | payment-service | PostgreSQL（account-serviceと同一インスタンス内の別データベース） |
 | analyst-attribute-service | PostgreSQL（同一インスタンス内の別データベース） |
 | frontend | なし（ログインセッションは暗号化Cookieでステートレスに保持） |
+| Keycloak（6サービス外・プラットフォーム基盤） | PostgreSQL（同一インスタンス内の別データベース） |
 
 ## 8. 監査
 

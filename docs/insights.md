@@ -41,3 +41,13 @@
 **原因**：別プロジェクト（docker composeスタック、14コンテナ）が38時間前から起動したままで、ホストの空きメモリが310MiB・スワップ使用量1.2GiBまで逼迫していた。
 
 **対応**：不要なコンテナスタックを`docker compose down`で停止し、メモリを解放。ただし今回はこれだけでは解決せず、上記のcgroup v1問題が別途存在していた。**症状が同じでも原因が複数あり得る**ため、`docker logs`でコンテナ内部の実際のエラーメッセージを確認するまで原因を断定しないこと。
+
+### WSL2に見える空きメモリが、ホストの実メモリ量より大幅に少ない（WSL2既定の上限）
+
+**症状**：PostgreSQL（[ADR 0008](adr/0008-per-service-datastore-strategy.md)）を追加した直後、WSL2内`free -h`の空き容量が1GiB未満まで逼迫しているように見え、Keycloak PodのHTTPヘルスチェック応答が遅れて`startupProbe`の警告イベントが多発した（実際にはPodは0回再起動でクラッシュはしていなかったが、体感として「不安定」に見えた）。ホスト自体は16GBのメモリを持つにもかかわらず、WSL2内`free -h`のtotalは7.6GiBしかなかった。
+
+**原因**：`.wslconfig`に`memory=`を明示していない場合、WSL2は既定で「ホスト物理メモリの約50%、または8GBの小さい方」までしかVMに割り当てない（Microsoft公式のWSL2既定値）。16GBの50%=8GBに近い7.6GiBという観測値はこの既定上限と整合する。ホストの実メモリが枯渇していたわけではなく、WSL2側の自己制限だった。
+
+**対応**：`%UserProfile%\.wslconfig`（`[wsl2]`セクション）に`memory=12GB`を追記し、Windows側で`wsl --shutdown`を実行後にWSL2を再起動する（この操作はWSL2内の全プロセス・Docker・k3dクラスタのコンテナを道連れに終了させるため、WSL2内から`wsl.exe --shutdown`を自分で呼び出すのではなく、Windows側のターミナルから実行すること）。再起動後は`free -h`のtotalが増えていることで反映を確認できる。k3dクラスタ・Podはdockerのボリュームにデータが残っているため`make status`で状態を見て、必要なら`make up`で復帰させる（実機で確認済み：Podは自動的に`RESTARTS: 1`で復帰し、Keycloakの永続化データ・管理者パスワードもPostgresへの永続化により無傷だった）。
+
+併せて、Keycloak Deployment（[k8s/keycloak/deployment.yaml](../k8s/keycloak/deployment.yaml)）のreadiness/livenessProbeに`timeoutSeconds`を明示していなかった点も是正した。既定の1秒だと、このような資源逼迫時にGC・CPU競合で応答が1秒を超えただけでlivenessProbeが誤検知し、正常なPodを強制再起動させかねない。

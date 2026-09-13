@@ -1,12 +1,23 @@
 CLUSTER := gekko07
 NAMESPACE := gekko
-# Keycloak管理者パスワード。既定は毎回ランダム生成（永続化なしのstart-devモードのため
-# `make deploy`のたびにKeycloakの状態自体が作り直され、パスワードが変わっても支障がない）。
-# 固定したい場合は `make deploy KEYCLOAK_ADMIN_PASSWORD=...` で上書きする
-# （コマンドラインで渡した値はmakeの標準動作により以下の既定値より優先される）。
-# ":="（即時展開）で一度だけ評価する。"?="/"="（再帰展開）だと$(shell ...)が参照の
-# たびに再実行され、Secret作成時と表示時で値がずれるバグになるため使わないこと。
-KEYCLOAK_ADMIN_PASSWORD := $(shell openssl rand -hex 12)
+
+# -------------------------
+# ローカル専用シークレット
+# -------------------------
+# PostgreSQL（ADR 0008）に永続化するようになったため、make deployのたびに値が
+# 変わると既存DBに設定済みのパスワードと食い違って接続できなくなる。そのため
+# 一度だけランダム生成し、$(SECRETS_DIR)（.gitignore済み）に保存して使い回す。
+# ":="（即時展開）で一度だけ評価すること。"?="/"="（再帰展開）だと$(call ...)が
+# 参照のたびに再評価され、Secret作成時と表示時で値がずれるバグになる。
+SECRETS_DIR := .secrets
+
+define get_secret
+$(shell mkdir -p $(SECRETS_DIR) && ( [ -f $(SECRETS_DIR)/$(1) ] || openssl rand -hex 16 > $(SECRETS_DIR)/$(1) ) && cat $(SECRETS_DIR)/$(1))
+endef
+
+KEYCLOAK_ADMIN_PASSWORD := $(call get_secret,keycloak-admin-password)
+POSTGRES_SUPERUSER_PASSWORD := $(call get_secret,postgres-superuser-password)
+KEYCLOAK_DB_PASSWORD := $(call get_secret,keycloak-db-password)
 
 .PHONY: up down stop start status clean deploy undeploy keycloak-forward
 
@@ -35,29 +46,48 @@ clean: down
 # -------------------------
 # アプリのデプロイ
 # -------------------------
-# 現時点ではKeycloakのみ（k8s/keycloak/）。他サービスのマニフェストが増えたら
-# 同様にk8s/配下へディレクトリを追加し、ここに適用ステップを積み重ねる。
+# 現時点ではPostgreSQL（k8s/postgres/、素の共有エンジンのみ）とKeycloak（k8s/keycloak/、
+# 自分のDB・ロールを自分のJobでプロビジョニングしてから起動する）。他サービスのマニフェストが
+# 増えたら、k8s/postgres/には一切手を入れず、同様に各サービス自身のディレクトリに
+# db-init-job.yaml相当を追加する形で横展開する（ADR 0008）。Postgresを先にreadyにし、
+# 各サービスのDB初期化Jobを完了させてからそのサービス本体を適用する順序に意味がある。
 
-# Keycloakをデプロイ（クラスタが起動済みであること）
+# PostgreSQL・Keycloakをデプロイ（クラスタが起動済みであること）
 deploy:
 	kubectl apply -f k8s/keycloak/namespace.yaml
 	@kubectl create secret generic keycloak-admin -n $(NAMESPACE) \
 		--from-literal=username=admin \
 		--from-literal=password=$(KEYCLOAK_ADMIN_PASSWORD) \
 		--dry-run=client -o yaml | kubectl apply -f -
+	@kubectl create secret generic postgres-superuser -n $(NAMESPACE) \
+		--from-literal=password=$(POSTGRES_SUPERUSER_PASSWORD) \
+		--dry-run=client -o yaml | kubectl apply -f -
+	@kubectl create secret generic keycloak-db -n $(NAMESPACE) \
+		--from-literal=username=keycloak \
+		--from-literal=password=$(KEYCLOAK_DB_PASSWORD) \
+		--dry-run=client -o yaml | kubectl apply -f -
+	kubectl apply -f k8s/postgres/statefulset.yaml -f k8s/postgres/service.yaml
+	kubectl -n $(NAMESPACE) rollout status statefulset/postgres --timeout=180s
+	@# JobのPod specは不変なので、再実行するにはいったん削除してから作り直す（冪等なスクリプトなので安全）
+	kubectl delete job keycloak-db-init -n $(NAMESPACE) --ignore-not-found
+	kubectl apply -f k8s/keycloak/db-init-configmap.yaml -f k8s/keycloak/db-init-job.yaml
+	kubectl -n $(NAMESPACE) wait --for=condition=complete job/keycloak-db-init --timeout=60s
 	kubectl apply -f k8s/keycloak/realm-configmap.yaml -f k8s/keycloak/deployment.yaml -f k8s/keycloak/service.yaml
-	@# Secret変更はPodへ自動反映されないため、毎回明示的に再起動して新パスワードを確実に適用する
-	kubectl -n $(NAMESPACE) rollout restart deployment/keycloak
 	kubectl -n $(NAMESPACE) rollout status deployment/keycloak --timeout=180s
 	@echo "---"
 	@echo "Keycloak admin username: admin"
 	@echo "Keycloak admin password: $(KEYCLOAK_ADMIN_PASSWORD)"
-	@echo "(この情報は永続化されない。パスワードを忘れたら再度 'make deploy' でPodを作り直すこと)"
+	@echo "(.secrets/に保存されているため次回make deploy以降も同じ値。ADR 0008でPostgresへ永続化したため"
+	@echo " 実際に有効なのはKeycloakの初回起動時にブートストラップされた値のみ。.secrets/を消してPVCも"
+	@echo " 作り直した場合のみこの値でのブートストラップが再度行われる)"
 
-# アプリ層を削除する（クラスタ自体は残す）
+# アプリ層を削除する（クラスタ自体は残す。PVCも削除するためPostgresのデータも消える）
 undeploy:
 	kubectl delete -f k8s/keycloak/service.yaml -f k8s/keycloak/deployment.yaml -f k8s/keycloak/realm-configmap.yaml --ignore-not-found
-	kubectl delete secret keycloak-admin -n $(NAMESPACE) --ignore-not-found
+	kubectl delete -f k8s/keycloak/db-init-job.yaml -f k8s/keycloak/db-init-configmap.yaml --ignore-not-found
+	kubectl delete -f k8s/postgres/service.yaml -f k8s/postgres/statefulset.yaml --ignore-not-found
+	kubectl delete pvc -n $(NAMESPACE) -l app=postgres --ignore-not-found
+	kubectl delete secret keycloak-admin postgres-superuser keycloak-db -n $(NAMESPACE) --ignore-not-found
 	kubectl delete -f k8s/keycloak/namespace.yaml --ignore-not-found
 
 # ホストのlocalhost:3000をKeycloakへport-forwardする（ADR 0004。フォアグラウンドで動き続けるプロセス）

@@ -1,0 +1,47 @@
+# Keycloak自身のDB・ロールをプロビジョニングするスクリプト（db-init-job.yaml参照）。
+# 「サービスごとに自分のデータの唯一の番人である」（ADR 0008）という原則を、実行時の
+# アクセスだけでなくプロビジョニング（誰がこのDBを作るか）にも適用する：共有Postgres
+# StatefulSet（k8s/postgres/）はKeycloakの存在を一切知らず、Keycloak側が自分のDB・ロールを
+# 自分で（Postgresのsuperuser権限を借りて）作りに行く。
+#
+# 冪等：CREATE ROLEは存在チェック付きDOブロック、CREATE DATABASEはトランザクション内で
+# 実行できないためpsqlの条件分岐で存在チェックしてから作成する。Job自体もmake deployの
+# たびに削除→再作成するため（Makefile参照）、既存であれば何もしない。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-db-init
+  namespace: gekko
+data:
+  init.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    export PGPASSWORD="$POSTGRES_SUPERUSER_PASSWORD"
+    PSQL="psql -v ON_ERROR_STOP=1 -h postgres -U postgres -d postgres"
+
+    $PSQL <<-EOSQL
+      DO
+      \$\$
+      BEGIN
+        IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'keycloak') THEN
+          CREATE ROLE keycloak WITH LOGIN PASSWORD '$KEYCLOAK_DB_PASSWORD';
+        ELSE
+          ALTER ROLE keycloak WITH LOGIN PASSWORD '$KEYCLOAK_DB_PASSWORD';
+        END IF;
+      END
+      \$\$;
+    EOSQL
+
+    if ! $PSQL -tAc "SELECT 1 FROM pg_database WHERE datname = 'keycloak'" | grep -q 1; then
+      $PSQL -c "CREATE DATABASE keycloak OWNER keycloak;"
+    fi
+
+    # Postgresの既定ではCREATE DATABASE直後もPUBLIC（=全ロール）にCONNECT権限が残る。
+    # 「サービスごとに自分のデータベースにしかアクセスできない」（ADR 0008）を実際に強制する
+    # ため、PUBLICから剥奪してオーナー自身にだけ許可し直す。将来他サービス用のDB・ロールが
+    # 増えても、明示的にGRANTしない限り互いに接続できない状態を保つ。
+    $PSQL -c "REVOKE CONNECT ON DATABASE keycloak FROM PUBLIC;"
+    $PSQL -c "GRANT CONNECT ON DATABASE keycloak TO keycloak;"
+
+    echo "keycloak role/database ready"

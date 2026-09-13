@@ -1,8 +1,9 @@
 # ローカル実行用のKeycloak（start-devモード）。
-# 永続化なし（PVC未使用）：Pod再作成のたびにk8s/keycloak/realm-configmap.yamlのrealmが
-# 再importされ、常に同じ状態から始まる。これは「使い捨てクラスタで毎回同じ状態を再現する」
-# 目的に合わせた意図的な選択であり、実データの永続化が必要になった時点で見直す
-# （docs/backlog.md参照）。
+# PostgreSQLに永続化する（ADR 0008。k8s/postgres/参照）。realmインポート
+# （--import-realm）はデータディレクトリが空の初回起動時のみ実質的な効果を持つ
+# （既存realmに対してはIGNORE_EXISTING戦略のため、2回目以降の起動でrealm-configmap.yaml
+# を書き換えても自動反映されない。反映するにはAdmin Consoleで手動編集するか、
+# PostgresのkeycloakデータベースをリセットしてPodを再作成する。詳細はdocs/insights.md）。
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -43,6 +44,19 @@ spec:
               value: "true"
             - name: KC_HEALTH_ENABLED
               value: "true"
+            # ADR 0008: account-service等と同じ共有PostgreSQLインスタンス内の
+            # 専用データベースに接続する（ロールもDB名も"keycloak"）。
+            - name: KC_DB
+              value: "postgres"
+            - name: KC_DB_URL
+              value: "jdbc:postgresql://postgres:5432/keycloak"
+            - name: KC_DB_USERNAME
+              value: "keycloak"
+            - name: KC_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-db
+                  key: password
           ports:
             - name: http
               containerPort: 8080
@@ -60,24 +74,34 @@ spec:
             limits:
               cpu: "1"
               memory: "1Gi"
+          # timeoutSecondsを明示しないと既定1秒になる。このホストはWSL2の既知のメモリ
+          # 逼迫（docs/insights.md）があり、GC・CPU競合で応答が1秒を超えることがあり得る。
+          # 特にlivenessProbeがこれで詰まると誤検知でコンテナが強制再起動されるため、
+          # 3サービス（readiness/liveness/startup）とも余裕を持たせる。
           readinessProbe:
             httpGet:
               path: /health/ready
               port: http-mgmt
-            initialDelaySeconds: 10
-            periodSeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /health/live
               port: http-mgmt
-            initialDelaySeconds: 30
-            periodSeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
           startupProbe:
             httpGet:
               path: /health/started
               port: http-mgmt
-            failureThreshold: 60
-            periodSeconds: 5
+            # augmentation・DBスキーマ移行が最低でも数十秒かかることが実機で分かっているため
+            # （初回起動ログで47秒等）、絶対に成功し得ない最初の20秒は無駄なプローブをしない。
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
       volumes:
         - name: realm-import
           configMap:

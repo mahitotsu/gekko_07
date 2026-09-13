@@ -8,7 +8,7 @@ OAuth 2.0 Token Exchange (RFC 8693) をEnvoyサイドカー（ext_authz）に実
 
 - [x] k3dクラスタの土台（[k3d/cluster-config.yaml](k3d/cluster-config.yaml)、[Makefile](Makefile)）
 - [x] シナリオ・サービス構成・権限設計・各サービスの技術スタック（本READMEの「ドキュメントの読み方」参照）
-- [x] Keycloak realm・クライアント設定（[k8s/keycloak/](k8s/keycloak/)。永続化なしのstart-devモード。実機検証内容・未検証事項は[docs/insights.md](docs/insights.md)・[docs/backlog.md](docs/backlog.md)参照）
+- [x] Keycloak realm・クライアント設定（[k8s/keycloak/](k8s/keycloak/)。PostgreSQLへ永続化（[k8s/postgres/](k8s/postgres/)、[ADR 0008](docs/adr/0008-per-service-datastore-strategy.md)）。実機検証内容・未検証事項は[docs/insights.md](docs/insights.md)・[docs/backlog.md](docs/backlog.md)参照）
 - [ ] 各サービスの実装
 - [ ] Envoyサイドカー・ext_authzサービス
 - [ ] MCPサーバー・AIエージェント
@@ -26,7 +26,7 @@ make start              # 停止したクラスタを再開
 make down               # クラスタを完全削除
 ```
 
-`make keycloak-forward`を実行した状態で`http://localhost:3000`にアクセスすると管理コンソールに到達できる。管理者ユーザー名・パスワードは`make deploy`実行時に標準出力へ表示される（Secretのみに保持され、永続化されないため忘れたら`make deploy`でPodごと作り直すこと）。
+`make keycloak-forward`を実行した状態で`http://localhost:3000`にアクセスすると管理コンソールに到達できる。管理者ユーザー名・パスワードは`make deploy`実行時に標準出力へ表示される（`.secrets/`にも保存され、以後の`make deploy`では同じ値。ただしPostgresへの永続化後は初回ブートストラップ時のみ有効な値になる点に注意。詳細はMakefileのコメント参照）。
 
 ## ドキュメントの読み方
 

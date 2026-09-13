@@ -1,0 +1,38 @@
+# db-init-configmap.yamlのスクリプトを実行する1回限りのJob。Postgresのsuperuser権限で
+# 自分のロール・DBを作る（借用の範囲はこの一度きりの実行に限る。Keycloak本体
+# （deployment.yaml）はsuperuserではなく、ここで作った"keycloak"ロールだけを使う）。
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: keycloak-db-init
+  namespace: gekko
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: db-init
+          image: postgres:17.11
+          command: ["/bin/bash", "/scripts/init.sh"]
+          env:
+            - name: POSTGRES_SUPERUSER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-superuser
+                  key: password
+            - name: KEYCLOAK_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-db
+                  key: password
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: script
+          configMap:
+            name: keycloak-db-init
+            defaultMode: 0755

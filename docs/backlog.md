@@ -22,15 +22,13 @@
 
 ## データストア
 
-- **Postgresロールのgrant設計**：[ADR 0008](adr/0008-per-service-datastore-strategy.md)で方針は決めたが、サービスごとのDBロール・`GRANT`文の具体的な設定は未実装
-- **本番相当環境でのインスタンス分離**：現状はローカルのメモリ制約を理由にaccount-service/payment-service/analyst-attribute-serviceのPostgreSQLを共有インスタンスにしている（ADR 0008）。本番相当の構成を検証したくなった場合、サービスごとの専用インスタンスへの切り替えを検討する
-- **Keycloakの永続化先をこの共有Postgresに寄せるか**：下記「Keycloakの永続化」の対応方針が未定のため、ADR 0008のPostgresインスタンスを流用するかどうかも合わせて検討する
+- **本番相当環境でのインスタンス分離**：現状はローカルのメモリ制約を理由にaccount-service/payment-service/analyst-attribute-service/KeycloakのPostgreSQLを共有インスタンスにしている（ADR 0008）。本番相当の構成を検証したくなった場合、サービスごとの専用インスタンスへの切り替えを検討する
+- **既定メンテナンスDB（`postgres`）への接続が全ロールに残っている**：[k8s/keycloak/db-init-configmap.yaml](../k8s/keycloak/db-init-configmap.yaml)で`keycloak`データベースはPUBLICのCONNECT権限を剥奪したが、Postgresの既定メンテナンスデータベース自体は未対応。実データを持たないため実害はないが、完全な分離ではない
 
 ## Keycloak
 
 - **`standard.token.exchange.enabled`属性の機能的検証**：[k8s/keycloak/realm-configmap.yaml](../k8s/keycloak/realm-configmap.yaml)でfrontend/fraud-mcp-server/account-serviceに設定した属性キー。Admin REST APIで値が保持されていることは確認済みだが（`GET /admin/realms/gekko/clients`で属性が返ってくる）、実際にRFC 8693トークン交換リクエストが通ることまでは未検証（ログインフローを持つ実サービスがまだ無いため）。frontendの実装時、最初のToken Exchange検証と合わせて確認する
 - **標準client scope（profile/email/roles等）の要否**：`--import-realm`での直接importでは自動生成されないため現状未定義（詳細はrealm-configmap.yamlのコメント参照）。ログイントークンに`preferred_username`等が必要になった時点でclientScopesに明示定義を追加する
-- **Keycloakの永続化**：現状PVC無し・start-devモードのため、Pod再作成のたびにrealmが初期状態から再importされ、管理コンソールから手動追加した内容は失われる。実データを蓄積したくなった時点でPostgreSQL等への切り替えを検討する
 
 ## インフラ
 
