@@ -1,6 +1,6 @@
 # アーキテクチャ設計
 
-本ドキュメントは現在有効なアーキテクチャの断面のみを記録する。何を・なぜ実現するか（目的・背景・要求水準）は[requirements.md](requirements.md)、個々の設計判断の根拠・選択経緯は[docs/adr/](adr/)、具体的な業務シナリオは[use-cases.md](use-cases.md)、各サービスの存在意義は[services.md](services.md)を参照。決定が変わった場合は該当箇所を直接書き換え、対応するADRをSupersededに更新する。
+本ドキュメントは現在有効なアーキテクチャの断面のみを記録する。何を・なぜ実現するか（目的・背景・要求水準）は[requirements.md](requirements.md)、誰が何をできて何をできてはいけないかという業務要件は[access-control-requirements.md](access-control-requirements.md)、個々の設計判断の根拠・選択経緯は[docs/adr/](adr/)、具体的な業務シナリオは[use-cases.md](use-cases.md)、各サービスの存在意義は[services.md](services.md)を参照。決定が変わった場合は該当箇所を直接書き換え、対応するADRをSupersededに更新する。
 
 ## 1. 採用する認可サーバー
 
@@ -94,7 +94,7 @@ payment-serviceの client_credentials トークン(scope=account:transact)
 
 ## 7. 監査
 
-トークンの`jti`（発行識別子）と`audience`の組を突合キーとする方式に加え、AIの提案と人間の確定を紐付けるための`proposal_id`を導入する。
+[access-control-requirements.md](access-control-requirements.md) BR8（事後追跡可能性）を満たすため、トークンの`jti`（発行識別子）と`audience`の組を突合キーとする方式に加え、AIの提案と人間の確定を紐付けるための`proposal_id`を導入する。
 
 - account-serviceは提案の記録（propose）時に`proposal_id`を発行し、`sub`・`jti`・根拠データとともに記録する
 - 凍結実行（freeze）時は、確定に使われた`proposal_id`（存在する場合）と、その時の`sub`・`jti`を記録する

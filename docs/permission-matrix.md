@@ -1,23 +1,29 @@
 # 権限マップ（ディシジョンテーブル）
 
-architecture.mdで決めた認可設計を、条件と結果が漏れなく列挙できる形（ディシジョンテーブル）で整理する。性質の異なる認可判断ごとに表を分ける。
+[access-control-requirements.md](access-control-requirements.md)で定めた業務要件（BR1〜BR8）を、architecture.mdの認可設計がどう実現しているかを、条件と結果が漏れなく列挙できる形（ディシジョンテーブル）で示す。各表の見出しに対応する要件番号を明記し、業務要件と実装の対応関係を追跡できるようにする。性質の異なる認可判断ごとに表を分ける。
 
-## 表1: 委任トポロジー（Keycloak層）
+## 表1: 委任トポロジー（Keycloak層、BR5・BR6に対応）
 
-条件は「要求元（トークンの入手経路）」と「要求先audience」の2軸。frontendは「直接ログイン」と「fraud-mcp-server宛ての交換」の2種類のトークンを使い分けるため、別の行として扱う。payment-serviceはToken Exchangeに参加しない（client_credentials）ため、この表には含めない（表4で別に扱う）。
+条件は「要求元」と「要求先audience」の2軸。委任チェーンには「アナリスト自身のトークンをfrontendが中継するだけの区間」と「frontendが自らToken Exchangeを実行する区間」の両方が登場し、どちらも表面上は"frontend"に見えるため、行のラベルは実際にトークンを行使する主体の名前にしている（1.と2.の違い）。誰にも呼ばれない`frontend`は要求先の列からも外した。payment-serviceはToken Exchangeに参加しない（client_credentials）ため、この表には含めない（表4で別に扱う）。
 
-| 要求元 \ 要求先 | frontend | fraud-mcp-server | account-service | analyst-attribute-service |
-|---|---|---|---|---|
-| frontend（直接ログイン） | DENY | DENY | ALLOW | DENY |
-| frontend（交換①、audience=fraud-mcp-server, scope=account:read） | DENY | ALLOW | DENY | DENY |
-| fraud-mcp-server（交換②、audience=account-service） | DENY | DENY | ALLOW | DENY |
-| account-service（交換③、audience=analyst-attribute-service） | DENY | DENY | DENY | ALLOW |
-| analyst-attribute-service | DENY | DENY | DENY | DENY |
+1. **アナリスト**：frontendにログインした直後のトークンをそのまま使う。frontendは中継するだけで、これ自体はToken Exchangeではない
+2. **frontend**：アナリストのトークンを`subject_token`として、frontend自身のクライアント資格情報でToken Exchange①を実行する主体
+3. **fraud-mcp-server**：frontendが発行したトークンを`subject_token`として、Token Exchange②を実行する主体
+4. **account-service**：Token Exchange③を実行する主体
+5. **analyst-attribute-service**：チェーンの終端。誰も呼ばない
 
-- ALLOWは4マスのみ。委任チェーンは`frontend → fraud-mcp-server → account-service → analyst-attribute-service`の一本道で、ホップ飛ばし（例：fraud-mcp-serverが直接analyst-attribute-serviceを呼ぶ）は構造上不可能（各クライアントへの`optionalClientScopes`の割当のみで実現。Client Policiesは使わない）
-- 「frontend（交換①）」で発行されるトークンは`account:read`のみを持ち、`account:freeze`は含まれない。これがAIエージェントに凍結実行権限を渡さないための核心の仕組み（表2参照）
+| 要求元 \ 要求先 | fraud-mcp-server | account-service | analyst-attribute-service |
+|---|---|---|---|
+| 1. アナリスト（frontendが中継、交換なし） | DENY | ALLOW | DENY |
+| 2. frontend（Token Exchange①の実行者） | ALLOW | DENY | DENY |
+| 3. fraud-mcp-server（Token Exchange②の実行者） | DENY | ALLOW | DENY |
+| 4. account-service（Token Exchange③の実行者） | DENY | DENY | ALLOW |
+| 5. analyst-attribute-service（チェーンの終端） | DENY | DENY | DENY |
 
-## 表2: account-serviceのスコープ別操作可否
+- ALLOWは4マスのみ。委任チェーンは`アナリスト → frontend → fraud-mcp-server → account-service → analyst-attribute-service`の一本道で、ホップ飛ばし（例：fraud-mcp-serverが直接analyst-attribute-serviceを呼ぶ）は構造上不可能（各クライアントへの`optionalClientScopes`の割当のみで実現。Client Policiesは使わない）
+- 2.（frontendが発行するトークン、audience=fraud-mcp-server）は`account:read`のみを持ち、`account:freeze`は含まれない。これがAIエージェントに凍結実行権限を渡さないための核心の仕組み（表2参照）
+
+## 表2: account-serviceのスコープ別操作可否（BR5・BR6に対応）
 
 条件は「トークンが保有するスコープ」と「操作種別」の2軸。
 
@@ -30,14 +36,14 @@ architecture.mdで決めた認可設計を、条件と結果が漏れなく列�
 
 ### どのトークンがどのスコープを保有するか
 
-| 発行対象 | 保有スコープ |
+| トークン（表1の番号） | 保有スコープ |
 |---|---|
-| frontendの直接ログイントークン | `account:read`, `account:freeze` |
-| frontendが交換発行するトークン（fraud-mcp-server宛て） | `account:read`のみ |
-| fraud-mcp-serverが交換発行するトークン（account-service宛て） | `account:read`, `account:propose` |
+| 1. アナリストのログイントークン | `account:read`, `account:freeze` |
+| 2. frontendが発行するトークン（fraud-mcp-server宛て） | `account:read`のみ |
+| 3. fraud-mcp-serverが発行するトークン（account-service宛て） | `account:read`, `account:propose` |
 | payment-serviceのclient_credentialsトークン | `account:transact`のみ |
 
-fraud-mcp-server（ひいてはAIエージェント）が`account:freeze`を持つ経路は存在しない。凍結を実行できるのはfrontendの直接ログイントークンのみであり、これはアナリストがUIで決定論的操作（「凍結を確定」ボタン）を行った場合にのみ使われる。
+fraud-mcp-server（ひいてはAIエージェント）が`account:freeze`を持つ経路は存在しない。凍結を実行できるのは1.のアナリストのログイントークンのみであり、これはアナリストがUIで決定論的操作（「凍結を確定」ボタン）を行った場合にのみ使われる。
 
 ## 表3: analyst-attribute-serviceの照会可否
 
@@ -46,7 +52,7 @@ fraud-mcp-server（ひいてはAIエージェント）が`account:freeze`を持�
 | account-service（交換③、scope=`analyst:read`） | ALLOW |
 | その他すべて | DENY |
 
-## 表4: payment-serviceのaccount-serviceアクセス（Token Exchange対象外）
+## 表4: payment-serviceのaccount-serviceアクセス（Token Exchange対象外、BR7に対応）
 
 payment-serviceはユーザー委任チェーンに参加しない機械間認証（client_credentials）のため、表1の委任トポロジーとは別枠で扱う。
 
@@ -54,9 +60,11 @@ payment-serviceはユーザー委任チェーンに参加しない機械間認�
 |---|---|---|
 | client_credentials（payment-serviceの自クライアント） | `account:transact` | なし（スコープチェックのみ） |
 
-## 表5: account-serviceの口座別アクセス可否（アナリスト経由、RBAC+ABAC）
+## 表5: account-serviceの口座別アクセス可否（アナリスト経由、RBAC+ABAC、BR1・BR2・BR3に対応）
 
-アナリスト経由のリクエスト（`account:read`/`account:propose`/`account:freeze`のいずれか）にのみ適用される。payment-serviceの`account:transact`には適用しない（表4）。
+アナリスト経由のリクエスト（`account:read`/`account:propose`/`account:freeze`のいずれか）にのみ適用される。payment-serviceの`account:transact`には適用しない（表4、BR7）。
+
+`sub`がアナリスト本人のまま委任チェーンを通じて維持されるため（表1）、この判定はfrontend直接・AIエージェント経由のどちらのリクエストであっても同じアナリスト本人の属性に対して行われる。これによりBR4（AIエージェントの閲覧範囲はアナリスト本人を超えない）が成り立つ。
 
 条件は「アナリストの権限レベル」と「口座の地域一致・ティア」の2軸。
 
