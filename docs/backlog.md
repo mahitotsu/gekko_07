@@ -2,11 +2,6 @@
 
 未着手の改善項目・未決定事項。着手時はこのファイルから該当項目を削除し、必要ならarchitecture.md/services.md/insights.mdへ結果を記録する。
 
-## サービス構成
-
-- **各サービスの実装言語の割り当て**：多言語構成にする方針は決めた（requirements.md参照）が、frontend/fraud-agent/fraud-mcp-server/payment-service/account-service/analyst-attribute-serviceのどれをどの言語にするかは未定。fraud-agent/fraud-mcp-serverはMCP公式SDKの充実度からPython/TypeScriptが有力候補
-- **fraud-agentのLLM呼び出し方式**：Claude API直呼び出しか、他のSDK/フレームワークを使うかは未定
-
 ## Token Exchange / Envoyサイドカー
 
 - **先行検証するホップの確定**：[ADR 0002](adr/0002-token-exchange-in-envoy-sidecar.md)で「1ホップ先行検証→横展開」の方針は決めたが、対象ホップ（fraud-mcp-server→account-service想定）の具体的な実装（Envoy bootstrap設定、ext_authzサービスのプロトコル：HTTPモード想定）はこれから
@@ -22,8 +17,20 @@
 
 ## 監査
 
-- **`proposal_id`とOpenTelemetryトレース・Keycloakイベントログの統合方式**：architecture.md §7で要件のみ決めた。監査ツールを別途作るか、突合方法の詳細は未定
+- **`proposal_id`とOpenTelemetryトレース・Keycloakイベントログの統合方式**：architecture.md §8で要件のみ決めた。監査ツールを別途作るか、突合方法の詳細は未定
 - **サンプリング率を下げた場合の`trace_id`保持**：サンプリング率を1.0未満に下げた状態でも`sampled=false`のリクエストのtrace_idがログに残ることを実機で確認する必要がある（未検証）
+
+## データストア
+
+- **Postgresロールのgrant設計**：[ADR 0008](adr/0008-per-service-datastore-strategy.md)で方針は決めたが、サービスごとのDBロール・`GRANT`文の具体的な設定は未実装
+- **本番相当環境でのインスタンス分離**：現状はローカルのメモリ制約を理由にaccount-service/payment-service/analyst-attribute-serviceのPostgreSQLを共有インスタンスにしている（ADR 0008）。本番相当の構成を検証したくなった場合、サービスごとの専用インスタンスへの切り替えを検討する
+- **Keycloakの永続化先をこの共有Postgresに寄せるか**：下記「Keycloakの永続化」の対応方針が未定のため、ADR 0008のPostgresインスタンスを流用するかどうかも合わせて検討する
+
+## Keycloak
+
+- **`standard.token.exchange.enabled`属性の機能的検証**：[k8s/keycloak/realm-configmap.yaml](../k8s/keycloak/realm-configmap.yaml)でfrontend/fraud-mcp-server/account-serviceに設定した属性キー。Admin REST APIで値が保持されていることは確認済みだが（`GET /admin/realms/gekko/clients`で属性が返ってくる）、実際にRFC 8693トークン交換リクエストが通ることまでは未検証（ログインフローを持つ実サービスがまだ無いため）。frontendの実装時、最初のToken Exchange検証と合わせて確認する
+- **標準client scope（profile/email/roles等）の要否**：`--import-realm`での直接importでは自動生成されないため現状未定義（詳細はrealm-configmap.yamlのコメント参照）。ログイントークンに`preferred_username`等が必要になった時点でclientScopesに明示定義を追加する
+- **Keycloakの永続化**：現状PVC無し・start-devモードのため、Pod再作成のたびにrealmが初期状態から再importされ、管理コンソールから手動追加した内容は失われる。実データを蓄積したくなった時点でPostgreSQL等への切り替えを検討する
 
 ## インフラ
 

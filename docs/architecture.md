@@ -97,7 +97,18 @@ payment-serviceの client_credentials トークン(scope=account:transact)
 - クラスタのup/down/stop/start/statusは`make`タスクで操作する（[Makefile](../Makefile)）
 - 実行に必要なWSL2側の前提条件（cgroup v2化）とその対応経緯は[insights.md](insights.md)を参照
 
-## 7. 監査
+## 7. データストア
+
+各サービスは自分のデータの唯一の番人であり、他サービスは直接テーブル・コレクションを見ない（サービス境界をスコープ付きトークンで越えるという本プロジェクトの核心と矛盾するため）。ローカル環境はメモリ制約が既知（[insights.md](insights.md)）のため、エンジン自体は共有しつつサービスごとに論理DB・認証情報を分離する。詳細・選定理由は[ADR 0008](adr/0008-per-service-datastore-strategy.md)を参照。
+
+| サービス | エンジン |
+|---|---|
+| account-service | PostgreSQL（専用データベース） |
+| payment-service | PostgreSQL（account-serviceと同一インスタンス内の別データベース） |
+| analyst-attribute-service | PostgreSQL（同一インスタンス内の別データベース） |
+| frontend | なし（ログインセッションは暗号化Cookieでステートレスに保持） |
+
+## 8. 監査
 
 [access-control-requirements.md](access-control-requirements.md) BR8（事後追跡可能性）を満たすため、トークンの`jti`（発行識別子）と`audience`の組を突合キーとする方式に加え、AIの提案と人間の確定を紐付けるための`proposal_id`を導入する。
 
@@ -106,6 +117,6 @@ payment-serviceの client_credentials トークン(scope=account:transact)
 - これにより「どの提案が、誰によって、どのトークンで確定されたか」を事後に再構成できる
 - OpenTelemetryトレース・Keycloakイベントログとの統合方式は実装時に決定（backlog.md参照）
 
-## 8. 既知の制約・未決定事項
+## 9. 既知の制約・未決定事項
 
 [backlog.md](backlog.md)を参照。
