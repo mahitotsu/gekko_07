@@ -25,11 +25,11 @@ AIエージェントに実行系の操作まで許してしまうと、エージ
 - この制限はアプリケーションロジックの分岐（`if`文）ではなく、**Keycloakのスコープ設計そのもの**で強制する。エージェント側のコードにバグがあっても、そもそも実行系のトークンを取得できない構造にする
 - 実行系の操作は、人間がUI上で行う明示的な操作（決定論的操作）でのみ到達可能なパスに限定する
 
-上記を含む「誰が何をできて何をできてはいけないか」の具体的な業務要件は[access-control-requirements.md](access-control-requirements.md)（BR1〜BR8）に列挙する。それを実現する具体的なスコープ設計は[architecture.md](architecture.md) §5、業務要件との対応関係を含む認可のディシジョンテーブルは[access-control-design.md](access-control-design.md)を参照。
+上記を含む「誰が何をできて何をできてはいけないか」の具体的な業務要件は[access-control-requirements.md](access-control-requirements.md)（BR1〜BR8）に列挙する。それを実現する具体的なスコープ設計は[architecture.md](architecture.md) §4、業務要件との対応関係を含む認可のディシジョンテーブルは[access-control-design.md](access-control-design.md)を参照。
 
 ## 委任チェーンの事後監査
 
-「AIが何を根拠に何を提案したか」と「人間がいつ・どのトークンで確定したか」を事後に区別して追跡できることを要件とする（[access-control-requirements.md](access-control-requirements.md) BR8）。トークンの`jti`（発行識別子）と`audience`の組を突合キーとする方式に加え、AIの提案と人間の確定を紐付ける`proposal_id`を導入する（詳細は[architecture.md](architecture.md) §8）。
+「AIが何を根拠に何を提案したか」と「人間がいつ・どのトークンで確定したか」を事後に区別して追跡できることを要件とする（[access-control-requirements.md](access-control-requirements.md) BR8）。トークンの`jti`（発行識別子）と`audience`の組を突合キーとする方式に加え、AIの提案と人間の確定を紐付ける`proposal_id`を導入する（詳細は[architecture.md](architecture.md) §7）。
 
 ## 業務ロジックのリアリティ水準
 

@@ -22,6 +22,8 @@
 
 ## 業務要件
 
+**BR0（認証の必須化）**：本システムのいかなる操作も、認証された主体によってのみ実行されてよい。未認証・身元を検証できないリクエストは、要求された操作の内容に関わらず拒否されなければならない。ここでいう「認証された主体」とは、ログイン済みのアナリスト本人、そのアナリストの委任を受けたAIエージェント、または機械間認証を済ませた決済処理のいずれかを指す。BR1以降の各要件は、この前提（主体の身元が確定していること）の上に成り立つ。
+
 **BR1（担当地域の原則）**：アナリストは、自分が担当する地域の口座の取引情報のみを閲覧できる。担当地域外の口座の取引情報は一切閲覧できてはならない。
 
 **BR2（juniorの制限）**：junior権限のアナリストは、担当地域内であってもhigh-value口座の取引情報を閲覧できてはならず、凍結もできてはならない。
@@ -42,6 +44,7 @@
 
 | 操作 | できる主体 | できない主体 |
 |---|---|---|
+| いかなる操作も | 認証済みの主体（アナリスト本人、その委任を受けたAIエージェント、認証済みの決済処理）（BR0） | 未認証・身元を検証できない主体（BR0） |
 | 担当地域内のstandard口座の取引照会 | junior/senior アナリスト本人。当該アナリストの依頼を受けたAIエージェント（BR4） | 担当地域が異なるアナリスト |
 | 担当地域内のhigh-value口座の取引照会 | senior アナリスト本人。当該seniorの依頼を受けたAIエージェント（BR4） | junior アナリスト（BR2）。担当地域が異なるアナリスト（BR1） |
 | 凍結の提案（記録のみ） | AIエージェント（アナリストの依頼のもとで） | — （提案自体は低リスクなため主体を制限する要件はない） |
@@ -52,9 +55,10 @@
 
 | 要件 | 対応する表 |
 |---|---|
+| BR0 | [access-control-design.md](access-control-design.md) 認証（アナリストのログイントークン）。全てのToken Exchangeは認証済みのログイントークンを起点とするため、未認証の主体はそもそも`subject_token`を持てず、以降のどの表にも到達できない |
 | BR1, BR2, BR3 | [access-control-design.md](access-control-design.md) 表5（口座別アクセス可否） |
 | BR4 | [access-control-design.md](access-control-design.md) 表1（`sub`がアナリスト本人のまま維持されるため、経由するサービスが増えても表5の判定はアナリスト本人の属性に対して行われる） |
 | BR5 | [access-control-design.md](access-control-design.md) 表1・表2（`account:freeze`スコープがfraud-mcp-server/fraud-agentに割り当てられない） |
 | BR6 | [access-control-design.md](access-control-design.md) 表2（`account:freeze`はアナリストのログイントークンのみが保有） |
 | BR7 | [access-control-design.md](access-control-design.md) 表4（payment-serviceのclient_credentialsアクセス。業務属性チェックなし） |
-| BR8 | [architecture.md](architecture.md) §8（`proposal_id`による紐付け） |
+| BR8 | [architecture.md](architecture.md) §7（`proposal_id`による紐付け） |

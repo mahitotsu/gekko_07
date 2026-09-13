@@ -2,6 +2,25 @@
 
 [access-control-requirements.md](access-control-requirements.md)で定めた業務要件（BR1〜BR8）を、architecture.mdの認可設計がどう実現しているかを、条件と結果が漏れなく列挙できる形（ディシジョンテーブル）で示す。各表の見出しに対応する要件番号を明記し、業務要件と実装の対応関係を追跡できるようにする。性質の異なる認可判断ごとに表を分ける。
 
+## 認証（アナリストのログイントークン、BR0に対応）
+
+以降の表は全て「認証済みの主体が保持するトークン」を前提にしている。ここではその出発点、すなわちアナリストがログインした時点で何が発行されるかを定める。BR0（認証の必須化）は、ここで発行されるログイントークンを持たない限り、以降のどのToken Exchangeも開始できない、という形で実現される。
+
+アナリストはOAuth 2.0 Authorization Code + PKCEでKeycloakにログインする。frontendはconfidential clientとして、ブラウザから受け取ったauthorization codeをKeycloakのトークンエンドポイントで自身のクライアント資格情報とともにアクセストークンに交換する（このやり取り自体はToken Exchangeではない、通常のOIDC認可コードフロー）。
+
+ここで発行される**ログイントークン**の内容は以下の通り。
+
+| クレーム | 値 |
+|---|---|
+| `sub` | アナリストの一意識別子（uid）。以降の全てのToken Exchangeを通じて維持され、委任チェーン全体を追跡するキーになる |
+| `aud` | `frontend`（単一。[ADR 0005](adr/0005-single-audience-tokens-only.md)） |
+| `iss` | Keycloakのrealm発行者 |
+| scope | 最小限（`openid`程度）。`account:read`・`account:freeze`等のスコープはこの時点では一切持たない |
+
+このトークンには、アナリストの担当地域・権限レベルは一切含まれない。これらはanalyst-attribute-serviceが保持する外部属性であり、必要になった都度、後続のToken Exchangeの先で照会される（表5）。ログイントークン自身に埋め込まない理由は、担当地域・権限レベルが人事異動等で変化しうる業務データであり、変更のたびにトークンを再発行する必要をなくすため。
+
+このログイントークンをそのままaccount-service等の呼び出しに使う経路は存在しない。account-serviceへのアクセスが必要になった時点で、frontendが目的別に明示的なToken Exchangeを実行する（表1、architecture.md §5）。ログイントークンをDPoP等で送信者拘束するかどうかは未決定（[backlog.md](backlog.md)参照）。
+
 ## 表1: Audience間のToken Exchange可否（BR5・BR6に対応）
 
 この表は「あるaudience宛てのトークンを、別のどのaudience宛てのトークンに交換できるか」を示す。行は交換前トークンの`aud`（元audience）、列は交換後に要求する`aud`（先audience）である。全てのトークンは常に単一のaudienceのみを持つ（[ADR 0005](adr/0005-single-audience-tokens-only.md)）ため、「元audience」は常に一意に定まる。payment-serviceはToken Exchangeに参加しない（client_credentials）ため、この表には含めない（表4で別に扱う）。
