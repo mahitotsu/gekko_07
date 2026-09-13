@@ -20,7 +20,7 @@
 
 ## 監査
 
-- **`proposal_id`とOpenTelemetryトレース・Keycloakイベントログの統合方式**：architecture.md §7で要件のみ決めた。監査ツールを別途作るか、突合方法の詳細は未定
+- **`proposal_id`とOpenTelemetryトレース・Keycloakイベントログの統合方式**：architecture.md §8で要件のみ決めた。監査ツールを別途作るか、突合方法の詳細は未定
 - **サンプリング率を下げた場合の`trace_id`保持**：サンプリング率を1.0未満に下げた状態でも`sampled=false`のリクエストのtrace_idがログに残ることを実機で確認する必要がある（未検証）
 
 ## インフラ

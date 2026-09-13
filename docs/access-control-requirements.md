@@ -57,4 +57,4 @@
 | BR5 | [access-control-design.md](access-control-design.md) 表1・表2（`account:freeze`スコープがfraud-mcp-server/fraud-agentに割り当てられない） |
 | BR6 | [access-control-design.md](access-control-design.md) 表2（`account:freeze`はアナリストのログイントークンのみが保有） |
 | BR7 | [access-control-design.md](access-control-design.md) 表4（payment-serviceのclient_credentialsアクセス。業務属性チェックなし） |
-| BR8 | [architecture.md](architecture.md) §7（`proposal_id`による紐付け） |
+| BR8 | [architecture.md](architecture.md) §8（`proposal_id`による紐付け） |
