@@ -1,6 +1,6 @@
 # アクセス制御要件
 
-「誰が何をできなければならないか」「誰が何をできてはいけないか」を、Keycloak・スコープ・トークンといった実装手段に一切触れない**業務要件**として定義する。[permission-matrix.md](permission-matrix.md)の各表は、ここで定めた要件番号（BR1, BR2, ...）に対応付けて検証できるようにする。
+「誰が何をできなければならないか」「誰が何をできてはいけないか」を、Keycloak・スコープ・トークンといった実装手段に一切触れない**業務要件**として定義する。[access-control-design.md](access-control-design.md)の各表は、ここで定めた要件番号（BR1, BR2, ...）に対応付けて検証できるようにする。
 
 ## 登場する主体
 
@@ -48,13 +48,13 @@
 | 凍結の実行 | 権限のあるアナリスト本人による明示的な確定操作のみ（BR6） | AIエージェント（いかなる場合も。BR5） |
 | 入出金・振込 | 決済処理（BR7） | アナリスト・AIエージェント（この操作の主体ではない） |
 
-## permission-matrix.mdとの対応
+## access-control-design.mdとの対応
 
 | 要件 | 対応する表 |
 |---|---|
-| BR1, BR2, BR3 | [permission-matrix.md](permission-matrix.md) 表5（口座別アクセス可否） |
-| BR4 | [permission-matrix.md](permission-matrix.md) 表1（`sub`がアナリスト本人のまま維持されるため、経由するサービスが増えても表5の判定はアナリスト本人の属性に対して行われる） |
-| BR5 | [permission-matrix.md](permission-matrix.md) 表1・表2（`account:freeze`スコープがfraud-mcp-server/fraud-agentに割り当てられない） |
-| BR6 | [permission-matrix.md](permission-matrix.md) 表2（`account:freeze`はアナリストのログイントークンのみが保有） |
-| BR7 | [permission-matrix.md](permission-matrix.md) 表4（payment-serviceのclient_credentialsアクセス。業務属性チェックなし） |
+| BR1, BR2, BR3 | [access-control-design.md](access-control-design.md) 表5（口座別アクセス可否） |
+| BR4 | [access-control-design.md](access-control-design.md) 表1（`sub`がアナリスト本人のまま維持されるため、経由するサービスが増えても表5の判定はアナリスト本人の属性に対して行われる） |
+| BR5 | [access-control-design.md](access-control-design.md) 表1・表2（`account:freeze`スコープがfraud-mcp-server/fraud-agentに割り当てられない） |
+| BR6 | [access-control-design.md](access-control-design.md) 表2（`account:freeze`はアナリストのログイントークンのみが保有） |
+| BR7 | [access-control-design.md](access-control-design.md) 表4（payment-serviceのclient_credentialsアクセス。業務属性チェックなし） |
 | BR8 | [architecture.md](architecture.md) §7（`proposal_id`による紐付け） |

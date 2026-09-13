@@ -12,3 +12,4 @@
 | [0002](0002-token-exchange-in-envoy-sidecar.md) | Token Exchange実装をEnvoyサイドカー（ext_authz）に配置 | Accepted |
 | [0003](0003-k3d-without-istio.md) | ローカル実行基盤にk3d（Istioは当面不採用）を採用 | Accepted |
 | [0004](0004-external-access-via-port-forward.md) | 外部公開はIngressではなくkubectl port-forwardで行う | Accepted |
+| [0005](0005-single-audience-tokens-only.md) | トークンは常に単一audienceのみを持つ | Accepted |

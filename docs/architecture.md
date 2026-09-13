@@ -45,6 +45,8 @@
 | `payment-service` | confidential, client_credentials | 機械間認証。ユーザー委任なし |
 | `account-service` | confidential | analyst-attribute-serviceへの委任元 |
 
+全てのトークンは常に単一のaudienceのみを持つ（[ADR 0005](adr/0005-single-audience-tokens-only.md)）。ログイン直後のトークンは`aud=frontend`（単一）のみで、`account:read`等のスコープは持たない。frontendがaccount-serviceにアクセスする際（直接・委任いずれも）は、都度明示的なToken Exchangeで単一audienceのトークンを取得する（§5参照）。
+
 **スコープとトポロジー制御**（各クライアントに付与するoptional client scopeのみで委任トポロジーを制御する。Client Policiesは使わない）
 
 | スコープ | 対象audience | 付与するクライアント | 意味 |
@@ -55,23 +57,25 @@
 | `account:transact` | account-service | payment-service のみ | 通常の入出金・振込処理 |
 | `analyst:read` | analyst-attribute-service | account-service のみ | アナリストの担当地域・権限レベル照会 |
 
-`account:freeze`は`fraud-mcp-server`にも`fraud-agent`にも一切付与しない。AIエージェントがどれだけ「凍結すべき」と提案しても、Keycloakのスコープ設計上そもそも凍結APIを呼べるトークンを取得できない、という形で認可レイヤーで強制する（[permission-matrix.md](permission-matrix.md) 表1・表2）。
+`account:freeze`は`fraud-mcp-server`にも`fraud-agent`にも一切付与しない。AIエージェントがどれだけ「凍結すべき」と提案しても、Keycloakのスコープ設計上そもそも凍結APIを呼べるトークンを取得できない、という形で認可レイヤーで強制する（[access-control-design.md](access-control-design.md) 表1・表2）。
 
 ## 5. トークンチェーン
 
+ログイン直後のトークン（`aud=frontend`、単一audience、それ以上のスコープを持たない）を起点に、目的ごとに異なる単一audienceトークンを都度Token Exchangeで取得する（[ADR 0005](adr/0005-single-audience-tokens-only.md)）。frontendが「ログイントークンをそのまま使う近道」は存在しない。
+
 **① 提案生成パス（AI起因、読み取り＋提案のみ）**
 ```
-analystトークン(aud=frontend, scope=account:read+account:freeze)
-  → Token Exchange① (frontend実行, audience=fraud-mcp-server, scope=account:read)
-  → Token Exchange② (fraud-mcp-server実行, audience=account-service, scope=account:read/account:propose)
-  → account-serviceがToken Exchange③ (audience=analyst-attribute-service, scope=analyst:read) でアクセス制御
+analystトークン(aud=frontend)
+  → Token Exchange (frontend実行, audience=fraud-mcp-server, scope=account:read)
+  → Token Exchange (fraud-mcp-server実行, audience=account-service, scope=account:read/account:propose)
+  → account-serviceがToken Exchange (audience=analyst-attribute-service, scope=analyst:read) でアクセス制御
 ```
 
 **② 確定パス（人間起因、決定論的操作）**
 ```
-analystトークン(aud=frontend, scope=account:read+account:freeze)
-  → account-serviceを直接呼ぶ（audience mapperにより交換不要。ログイン時点で発行されたトークンをそのまま使う）
-  → account-serviceが同じくanalyst-attribute-serviceへ再照会（多層防御）
+analystトークン(aud=frontend)
+  → Token Exchange (frontend実行, audience=account-service, scope=account:freeze)
+  → account-serviceが同じくanalyst-attribute-serviceへ照会（提案生成パスと同じ判定ロジック）
   → 凍結実行。①で記録された提案IDと紐付けて記録
 ```
 
@@ -81,7 +85,7 @@ payment-serviceの client_credentials トークン(scope=account:transact)
   → account-serviceが通常のスコープチェックのみで処理（analyst-attribute-serviceへの照会は発生しない）
 ```
 
-`sub`は①②を通じて常に元のanalystのまま維持される（Impersonation方式、Keycloak Standard Token Exchange V2を使用予定）ため、「AIが何を見て何を提案したか」と「人間が何を確定したか」を同一`sub`かつ異なる`jti`/`scope`で追跡でき、監査で再構成できる。
+`sub`は①②を通じて常に元のanalystのまま維持される（Impersonation方式、Keycloak Standard Token Exchange V2を使用予定）ため、「AIが何を見て何を提案したか」と「人間が何を確定したか」を同一`sub`かつ異なる`jti`/`scope`で追跡でき、監査で再構成できる。①②はどちらもfrontendが自身のログイントークン（`aud=frontend`）を`subject_token`として、目的の異なる別々のToken Exchangeを実行した結果であり、1つのトークンが複数の用途を兼ねることはない。
 
 ## 6. ローカル実行環境
 

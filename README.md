@@ -30,7 +30,7 @@ make down    # クラスタを完全削除
 - [docs/architecture.md](docs/architecture.md) — 現在有効なアーキテクチャの断面（どう構築するか）
 - [docs/adr/](docs/adr/) — 個々の設計判断の根拠・選択経緯
 - [docs/services.md](docs/services.md) — 各サービスの存在意義・提供機能・保有データ
-- [docs/permission-matrix.md](docs/permission-matrix.md) — 業務要件をどう実現しているかのディシジョンテーブル
+- [docs/access-control-design.md](docs/access-control-design.md) — 業務要件をどう実現しているかのディシジョンテーブル
 - [docs/use-cases.md](docs/use-cases.md) — 具体的な業務シナリオとトークンチェーンの流れ
 - [docs/insights.md](docs/insights.md) — 実装中に見つかった罠・気づき（k3d/WSL2のcgroup v1問題など）
 - [docs/backlog.md](docs/backlog.md) — 未着手の改善項目・未決定事項

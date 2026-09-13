@@ -15,8 +15,8 @@
 
 ## 属性・アクセス制御の粒度
 
-- **口座属性の拡張要否**：現状は地域(`region`)とティア(`standard`/`high-value`)の2軸のみ（permission-matrix.md 表5）。実装を進める中でさらに軸が必要になるか要検討
-- **アナリストの担当地域が複数ある場合の表現**：配列で持つ想定（permission-matrix.md 表6）だが、Keycloakロール/属性のどちらに載せるかは未定
+- **口座属性の拡張要否**：現状は地域(`region`)とティア(`standard`/`high-value`)の2軸のみ（access-control-design.md 表5）。実装を進める中でさらに軸が必要になるか要検討
+- **アナリストの担当地域が複数ある場合の表現**：配列で持つ想定（access-control-design.md 表6）だが、Keycloakロール/属性のどちらに載せるかは未定
 
 ## 監査
 
