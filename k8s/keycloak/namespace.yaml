@@ -1,0 +1,7 @@
+# アプリ層（Keycloak・後続の各サービス）をまとめる名前空間。
+# クラスタ基盤（k3d/cluster-config.yaml）とは分離し、`make undeploy`で
+# アプリ層だけを削除できるようにする。
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gekko

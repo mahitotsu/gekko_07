@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  namespace: gekko
+spec:
+  selector:
+    app: keycloak
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+    - name: http-mgmt
+      port: 9000
+      targetPort: http-mgmt

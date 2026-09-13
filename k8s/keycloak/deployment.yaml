@@ -1,0 +1,84 @@
+# ローカル実行用のKeycloak（start-devモード）。
+# 永続化なし（PVC未使用）：Pod再作成のたびにk8s/keycloak/realm-configmap.yamlのrealmが
+# 再importされ、常に同じ状態から始まる。これは「使い捨てクラスタで毎回同じ状態を再現する」
+# 目的に合わせた意図的な選択であり、実データの永続化が必要になった時点で見直す
+# （docs/backlog.md参照）。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  namespace: gekko
+  labels:
+    app: keycloak
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: keycloak
+  template:
+    metadata:
+      labels:
+        app: keycloak
+    spec:
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak:26.7.0
+          args: ["start-dev", "--import-realm"]
+          env:
+            - name: KC_BOOTSTRAP_ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-admin
+                  key: username
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-admin
+                  key: password
+            # ADR 0004: 外部公開はkubectl port-forwardで行い、KC_HOSTNAMEは
+            # ホストから到達する固定URLに固定する（`kubectl port-forward svc/keycloak 3000:8080`）。
+            - name: KC_HOSTNAME
+              value: "http://localhost:3000"
+            - name: KC_HTTP_ENABLED
+              value: "true"
+            - name: KC_HEALTH_ENABLED
+              value: "true"
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: http-mgmt
+              containerPort: 9000
+          volumeMounts:
+            - name: realm-import
+              mountPath: /opt/keycloak/data/import
+              readOnly: true
+          resources:
+            # WSL2側のメモリ逼迫が既知の問題のため（docs/insights.md）、requestsは控えめにする。
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http-mgmt
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http-mgmt
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          startupProbe:
+            httpGet:
+              path: /health/started
+              port: http-mgmt
+            failureThreshold: 60
+            periodSeconds: 5
+      volumes:
+        - name: realm-import
+          configMap:
+            name: keycloak-realm-gekko

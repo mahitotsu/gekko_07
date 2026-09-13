@@ -1,0 +1,149 @@
+# realm・クライアント・スコープの定義（architecture.md §4のクライアント・スコープ設計表をそのまま反映）。
+# KeycloakはPod起動時に`--import-realm`でこのJSONを読み込む（k8s/keycloak/deployment.yaml参照）。
+# クライアントシークレットは記載しない（未指定の場合はKeycloakが起動時に自動生成する。
+# 各サービス実装時にKeycloak管理コンソール／Admin REST APIから取得して使うこと）。
+#
+# 各クライアントのdefaultClientScopesは空にしている。profile/email/roles等のKeycloak標準
+# client scopeは管理コンソールでrealmを新規作成した場合にのみ自動生成される組み込みscopeで、
+# --import-realmでの直接importでは生成されない（参照すると"doesn't exist. Ignoring"警告に
+# なるだけで実害はないが、実機確認済みの事実として記録する）。そのためログイントークンには
+# 現状sub等のコアclaimのみが載る。プロフィール表示等でpreferred_username等が必要になったら、
+# その時点でclientScopesに明示的に定義を追加する。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-realm-gekko
+  namespace: gekko
+data:
+  gekko-realm.json: |
+    {
+      "realm": "gekko",
+      "enabled": true,
+      "displayName": "gekko - 不正検知・口座凍結サンプル",
+      "clientScopes": [
+        {
+          "name": "account:read",
+          "description": "取引履歴・不審取引・口座情報の読み取り（対象audience: account-service）",
+          "protocol": "openid-connect",
+          "attributes": {
+            "include.in.token.scope": "true",
+            "display.on.consent.screen": "false"
+          }
+        },
+        {
+          "name": "account:propose",
+          "description": "凍結案の記録（可逆・低リスク。対象audience: account-service）",
+          "protocol": "openid-connect",
+          "attributes": {
+            "include.in.token.scope": "true",
+            "display.on.consent.screen": "false"
+          }
+        },
+        {
+          "name": "account:freeze",
+          "description": "口座凍結の実行（不可逆・高リスク。対象audience: account-service。frontendのみに付与）",
+          "protocol": "openid-connect",
+          "attributes": {
+            "include.in.token.scope": "true",
+            "display.on.consent.screen": "false"
+          }
+        },
+        {
+          "name": "account:transact",
+          "description": "入出金・振込処理（機械間認証。対象audience: account-service。payment-serviceのみに付与）",
+          "protocol": "openid-connect",
+          "attributes": {
+            "include.in.token.scope": "true",
+            "display.on.consent.screen": "false"
+          }
+        },
+        {
+          "name": "analyst:read",
+          "description": "アナリストの担当地域・権限レベル照会（対象audience: analyst-attribute-service。account-serviceのみに付与）",
+          "protocol": "openid-connect",
+          "attributes": {
+            "include.in.token.scope": "true",
+            "display.on.consent.screen": "false"
+          }
+        }
+      ],
+      "clients": [
+        {
+          "clientId": "frontend",
+          "name": "frontend (BFF)",
+          "description": "アナリスト向けBFF。ログイン（Authorization Code + PKCE）と用途ごとのToken Exchangeを実行する",
+          "enabled": true,
+          "protocol": "openid-connect",
+          "publicClient": false,
+          "standardFlowEnabled": true,
+          "implicitFlowEnabled": false,
+          "directAccessGrantsEnabled": false,
+          "serviceAccountsEnabled": false,
+          "authorizationServicesEnabled": false,
+          "fullScopeAllowed": false,
+          "redirectUris": ["http://localhost:3000/*"],
+          "webOrigins": ["http://localhost:3000"],
+          "attributes": {
+            "standard.token.exchange.enabled": "true",
+            "pkce.code.challenge.method": "S256"
+          },
+          "defaultClientScopes": [],
+          "optionalClientScopes": ["account:read", "account:freeze"]
+        },
+        {
+          "clientId": "fraud-mcp-server",
+          "name": "fraud-mcp-server",
+          "description": "fraud-agentの代理としてaccount-serviceへアクセスする（MCP⇔REST/gRPC変換を担う）",
+          "enabled": true,
+          "protocol": "openid-connect",
+          "publicClient": false,
+          "standardFlowEnabled": false,
+          "implicitFlowEnabled": false,
+          "directAccessGrantsEnabled": false,
+          "serviceAccountsEnabled": false,
+          "authorizationServicesEnabled": false,
+          "fullScopeAllowed": false,
+          "attributes": {
+            "standard.token.exchange.enabled": "true"
+          },
+          "defaultClientScopes": [],
+          "optionalClientScopes": ["account:read", "account:propose"]
+        },
+        {
+          "clientId": "payment-service",
+          "name": "payment-service",
+          "description": "通常の入出金・振込処理。account-serviceへ機械間認証（client_credentials）でアクセスする",
+          "enabled": true,
+          "protocol": "openid-connect",
+          "publicClient": false,
+          "standardFlowEnabled": false,
+          "implicitFlowEnabled": false,
+          "directAccessGrantsEnabled": false,
+          "serviceAccountsEnabled": true,
+          "authorizationServicesEnabled": false,
+          "fullScopeAllowed": false,
+          "attributes": {},
+          "defaultClientScopes": [],
+          "optionalClientScopes": ["account:transact"]
+        },
+        {
+          "clientId": "account-service",
+          "name": "account-service",
+          "description": "口座・取引データを保有する共有マイクロサービス。analyst-attribute-serviceへの委任元",
+          "enabled": true,
+          "protocol": "openid-connect",
+          "publicClient": false,
+          "standardFlowEnabled": false,
+          "implicitFlowEnabled": false,
+          "directAccessGrantsEnabled": false,
+          "serviceAccountsEnabled": false,
+          "authorizationServicesEnabled": false,
+          "fullScopeAllowed": false,
+          "attributes": {
+            "standard.token.exchange.enabled": "true"
+          },
+          "defaultClientScopes": [],
+          "optionalClientScopes": ["analyst:read"]
+        }
+      ]
+    }
