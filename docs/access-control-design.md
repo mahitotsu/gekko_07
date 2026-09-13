@@ -64,6 +64,10 @@
 
 fraud-mcp-server（ひいてはAIエージェント）が`account:freeze`を持つ経路は存在しない。凍結を実行できるのは、frontendが確定パス用に発行するトークンのみであり、これはアナリストがUIで決定論的操作（「凍結を確定」ボタン）を行った場合にのみ発行・使用される。
 
+### scopeチェックの実施箇所（MUST）
+
+この表のスコープチェックは、**Envoyサイドカーの受信側（アプリの外）で行うか、やむを得ずaccount-serviceのアプリ内で行う場合もリクエストの入口（ハンドラの先頭、表5のABAC判定より前）でのみ**行う。ビジネスロジックの途中や、表5のABAC判定の後にスコープチェックを行ってはならない。理由は[ADR 0006](adr/0006-claim-vs-external-attribute-criteria.md)を参照。
+
 ## 表3: analyst-attribute-serviceの照会可否
 
 | 呼び出し元 | 照会可否 |

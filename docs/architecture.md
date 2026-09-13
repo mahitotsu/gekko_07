@@ -33,6 +33,7 @@
 - 次ホップごとに専用のegressリスナーを1つずつ用意する（例：fraud-mcp-serverのサイドカーは「account-service宛て」専用リスナーを1つ持つ）。これによりext_authzサービスは「このリスナーに来た＝このaudienceへの交換」と静的に決め打ちでき、動的なaudience解決ロジックが不要になる
 - `ext_authz`の応答ヘッダー許可リスト（`allowed_upstream_headers`）に`Authorization`を含める
 - 実装順序：まず1ホップ（fraud-mcp-server→account-service）で先行検証し、パターンが固まってから残りのホップへ横展開する
+- サイドカーの受信側（ingress）では、可能な限りscope検証（[access-control-design.md](access-control-design.md) 表2）もアプリの外で完結させる。業務データに依存する認可判定（表5等）はアプリ内に残さざるを得ない。scopeチェックの実施箇所に関するルールは[ADR 0006](adr/0006-claim-vs-external-attribute-criteria.md)を参照
 
 ## 4. Keycloakのクライアント・スコープ設計
 
