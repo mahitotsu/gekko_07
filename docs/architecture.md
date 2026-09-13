@@ -4,7 +4,7 @@
 
 ## 1. 採用する認可サーバー
 
-**Keycloak**を使用する（バージョン・realm設計の詳細は実装時に決定）。トークンのクレームに含めるデータと、業務サービス側に外部化して都度照会するデータの切り分けは、オーナーシップ・機密性・鮮度要件の3軸で判断する（[ADR 0006](adr/0006-claim-vs-external-attribute-criteria.md)）。この基準の具体的な適用例は[access-control-design.md](access-control-design.md)の「認証」節を参照。
+**Keycloak**を使用する（バージョン・realm設計の詳細は実装時に決定）。トークンのクレームに含めるデータと、業務サービス側に外部化して都度照会するデータの切り分けは、役割（委譲の天井か実行時の個別業務判断か）・オーナーシップ・機密性の3軸で判断する（[ADR 0006](adr/0006-claim-vs-external-attribute-criteria.md)）。この基準の具体的な適用例は[access-control-design.md](access-control-design.md)の「認証」節を参照。
 
 ## 2. シナリオとサービス構成
 

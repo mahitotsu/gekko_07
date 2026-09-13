@@ -17,7 +17,7 @@
 | `iss` | Keycloakのrealm発行者 |
 | scope | 最小限（`openid`程度）。`account:read`・`account:freeze`等のスコープはこの時点では一切持たない |
 
-このトークンには、アナリストの担当地域・権限レベルは一切含まれない。これらはanalyst-attribute-serviceが保持する外部属性であり、必要になった都度、後続のToken Exchangeの先で照会される（表5）。クレームにするか業務データとして外部化するかの判断基準（オーナーシップ・機密性・鮮度要件の3軸）は[ADR 0006](adr/0006-claim-vs-external-attribute-criteria.md)を参照。担当地域・権限レベルは3軸全てで「外部化すべき」側に該当する：正典は業務ドメイン（人事上の配属情報）であり、fraud-mcp-server等の中継者に見せる必要がなく、権限剥奪を即時に反映する必要があるため。
+このトークンには、アナリストの担当地域・権限レベルは一切含まれない。これらはanalyst-attribute-serviceが保持する外部属性であり、必要になった都度、後続のToken Exchangeの先で照会される（表5）。クレームにするか業務データとして外部化するかの判断基準（役割・オーナーシップ・機密性の3軸）は[ADR 0006](adr/0006-claim-vs-external-attribute-criteria.md)を参照。担当地域・権限レベルは3軸全てで「外部化すべき」側に該当する：これは実行時の個別業務判断（今このアナリストが何をできるか）のもとになるデータであり、正典は業務ドメイン（人事上の配属情報）であり、fraud-mcp-server等の中継者に見せる必要がないため。
 
 このログイントークンをそのままaccount-service等の呼び出しに使う経路は存在しない。account-serviceへのアクセスが必要になった時点で、frontendが目的別に明示的なToken Exchangeを実行する（表1、architecture.md §5）。ログイントークンをDPoP等で送信者拘束するかどうかは未決定（[backlog.md](backlog.md)参照）。
 
