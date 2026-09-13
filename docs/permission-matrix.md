@@ -1,6 +1,6 @@
 # 権限マップ（ディシジョンテーブル）
 
-architecture.mdで決めた認可設計を、条件と結果が漏れなく列挙できる形（ディシジョンテーブル）で整理する。性質の異なる認可判断ごとに表を分ける。gekko_05の同名ドキュメントと同じ構成に従う。
+architecture.mdで決めた認可設計を、条件と結果が漏れなく列挙できる形（ディシジョンテーブル）で整理する。性質の異なる認可判断ごとに表を分ける。
 
 ## 表1: 委任トポロジー（Keycloak層）
 
@@ -14,7 +14,7 @@ architecture.mdで決めた認可設計を、条件と結果が漏れなく列�
 | account-service（交換③、audience=analyst-attribute-service） | DENY | DENY | DENY | ALLOW |
 | analyst-attribute-service | DENY | DENY | DENY | DENY |
 
-- ALLOWは4マスのみ。委任チェーンは`frontend → fraud-mcp-server → account-service → analyst-attribute-service`の一本道で、ホップ飛ばし（例：fraud-mcp-serverが直接analyst-attribute-serviceを呼ぶ）は構造上不可能（`optionalClientScopes`の割当で実現。gekko_05 ADR0007と同じ方式）
+- ALLOWは4マスのみ。委任チェーンは`frontend → fraud-mcp-server → account-service → analyst-attribute-service`の一本道で、ホップ飛ばし（例：fraud-mcp-serverが直接analyst-attribute-serviceを呼ぶ）は構造上不可能（各クライアントへの`optionalClientScopes`の割当のみで実現。Client Policiesは使わない）
 - 「frontend（交換①）」で発行されるトークンは`account:read`のみを持ち、`account:freeze`は含まれない。これがAIエージェントに凍結実行権限を渡さないための核心の仕組み（表2参照）
 
 ## 表2: account-serviceのスコープ別操作可否
@@ -67,10 +67,10 @@ payment-serviceはユーザー委任チェーンに参加しない機械間認�
 | 属性未登録 | DENY | DENY | DENY |
 
 - 担当地域はアナリストごとに複数持てる（表6参照）
-- 「地域不一致」はgekko_05の支店不一致（表5）と同じ考え方で、読み取り系エンドポイントでは個別のDENYではなく**結果セットから除外**という形で現れる可能性がある（実装時に確定。use-cases.md参照）
+- 「地域不一致」は、読み取り系エンドポイントでは個別のDENYではなく**結果セットから除外**という形で現れる可能性がある（実装時に確定。use-cases.md参照）
 - juniorがhigh-value口座の凍結を試みた場合、AIエージェント経由（提案止まり）でも人間の確定操作でも、この表に従ってaccount-serviceが拒否する
 
-## テストアナリスト
+## 表6: テストアナリスト
 
 | アナリスト | 担当地域 | 権限レベル |
 |---|---|---|

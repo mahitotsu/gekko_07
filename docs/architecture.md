@@ -4,7 +4,7 @@
 
 ## 1. 採用する認可サーバー
 
-**Keycloak**を使用する（gekko_05から継続。バージョン・realm設計の詳細は実装時に決定）。
+**Keycloak**を使用する（バージョン・realm設計の詳細は実装時に決定）。
 
 ## 2. シナリオとサービス構成
 
@@ -45,7 +45,7 @@
 | `payment-service` | confidential, client_credentials | 機械間認証。ユーザー委任なし |
 | `account-service` | confidential | analyst-attribute-serviceへの委任元 |
 
-**スコープとトポロジー制御**（gekko_05 ADR0007と同じ、optional client scopeによる許可制。Client Policiesは使わない）
+**スコープとトポロジー制御**（各クライアントに付与するoptional client scopeのみで委任トポロジーを制御する。Client Policiesは使わない）
 
 | スコープ | 対象audience | 付与するクライアント | 意味 |
 |---|---|---|---|
@@ -70,7 +70,7 @@ analystトークン(aud=frontend, scope=account:read+account:freeze)
 **② 確定パス（人間起因、決定論的操作）**
 ```
 analystトークン(aud=frontend, scope=account:read+account:freeze)
-  → account-serviceを直接呼ぶ（audience mapperにより交換不要。gekko_05のfrontend→order-service直接呼び出しと同じパターン）
+  → account-serviceを直接呼ぶ（audience mapperにより交換不要。ログイン時点で発行されたトークンをそのまま使う）
   → account-serviceが同じくanalyst-attribute-serviceへ再照会（多層防御）
   → 凍結実行。①で記録された提案IDと紐付けて記録
 ```
@@ -81,20 +81,20 @@ payment-serviceの client_credentials トークン(scope=account:transact)
   → account-serviceが通常のスコープチェックのみで処理（analyst-attribute-serviceへの照会は発生しない）
 ```
 
-`sub`は①②を通じて常に元のanalystのまま維持される（gekko_05と同じくImpersonation方式、Keycloak Standard Token Exchange V2を使用予定）ため、「AIが何を見て何を提案したか」と「人間が何を確定したか」を同一`sub`かつ異なる`jti`/`scope`で追跡でき、監査で再構成できる。
+`sub`は①②を通じて常に元のanalystのまま維持される（Impersonation方式、Keycloak Standard Token Exchange V2を使用予定）ため、「AIが何を見て何を提案したか」と「人間が何を確定したか」を同一`sub`かつ異なる`jti`/`scope`で追跡でき、監査で再構成できる。
 
 ## 6. ローカル実行環境
 
 **k3d**（[ADR 0003](adr/0003-k3d-without-istio.md)）。Istioは当面不採用、サイドカーは素のEnvoyを手動構成する。
 
 - クラスタ定義は[k3d/cluster-config.yaml](../k3d/cluster-config.yaml)。単一サーバーノード、Traefik・servicelbは無効化（Ingressを使わないため。[ADR 0004](adr/0004-external-access-via-port-forward.md)）
-- 外部公開はIngressではなく`kubectl port-forward`で行う（[ADR 0004](adr/0004-external-access-via-port-forward.md)）。edge-proxy相当のServiceに直接port-forwardし、`KC_HOSTNAME`はdocker compose時代と同じ`http://localhost:3000`のまま維持する
+- 外部公開はIngressではなく`kubectl port-forward`で行う（[ADR 0004](adr/0004-external-access-via-port-forward.md)）。edge-proxy相当のServiceに直接port-forwardし、`KC_HOSTNAME`はホストからブラウザで到達する固定URL（`http://localhost:3000`を想定）に固定する
 - クラスタのup/down/stop/start/statusは`make`タスクで操作する（[Makefile](../Makefile)）
 - 実行に必要なWSL2側の前提条件（cgroup v2化）とその対応経緯は[insights.md](insights.md)を参照
 
 ## 7. 監査
 
-gekko_05の`(jti, audience)`突合方式を踏襲しつつ、AIの提案と人間の確定を紐付けるための`proposal_id`を追加する。
+トークンの`jti`（発行識別子）と`audience`の組を突合キーとする方式に加え、AIの提案と人間の確定を紐付けるための`proposal_id`を導入する。
 
 - account-serviceは提案の記録（propose）時に`proposal_id`を発行し、`sub`・`jti`・根拠データとともに記録する
 - 凍結実行（freeze）時は、確定に使われた`proposal_id`（存在する場合）と、その時の`sub`・`jti`を記録する

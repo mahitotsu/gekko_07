@@ -12,7 +12,7 @@
 | Ingress + 独自ホスト名 | Ingressコントローラ、Ingressリソース、ホストOS側のDNS解決（`/etc/hosts`かnip.io） |
 | **`kubectl port-forward`（採用）** | 何も要らない。`kubectl`があれば動く |
 
-docker compose時代（gekko_05）は`ports: ["3000:80"]`一発で`http://localhost:3000`がホストから使え、`KC_HOSTNAME`もこの値に固定していた。Ingressを使う場合、Pod側とホスト側でDNSの見え方が非対称になり（Pod側はCoreDNSでService名を自動解決できるが、ホスト側の独自ホスト名はデフォルトでは何の意味も持たない）、これを解決するための部品（Ingressコントローラ、ホストDNS設定）が新たに必要になる。
+Ingressを使う場合、Pod側とホスト側でDNSの見え方が非対称になる（Pod側はCoreDNSでService名を自動解決できるが、ホスト側の独自ホスト名はデフォルトでは何の意味も持たない）。これを解決するための部品（Ingressコントローラ、ホストDNS設定）が新たに必要になる一方、`kubectl port-forward`ならホストの`localhost:<port>`にそのまま接続できるため、この非対称性自体が発生しない。
 
 ## Decision
 
@@ -20,7 +20,7 @@ docker compose時代（gekko_05）は`ports: ["3000:80"]`一発で`http://localh
 
 - edge-proxy相当のService（nginx等、パスベースで内部の各サービスに振り分ける）を通常のDeployment/Serviceとしてデプロイする
 - `kubectl port-forward svc/edge-proxy 3000:80`でホストの`localhost:3000`に接続する
-- `KC_HOSTNAME`はdocker compose時代と同じ`http://localhost:3000`のまま維持する
+- `KC_HOSTNAME`はこの`http://localhost:3000`に固定する
 
 これにより[ADR 0003](0003-k3d-without-istio.md)で不要と判断したTraefik（k3d標準同梱のIngressコントローラ）・servicelbを無効化し、クラスタを軽量に保てる（`k3d/cluster-config.yaml`参照）。
 

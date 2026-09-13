@@ -5,9 +5,9 @@
 
 ## Context
 
-gekko_05の[ADR 0002](https://github.com/example/gekko_05/blob/main/docs/adr/0002-token-exchange-in-application-layer.md)（同名・別リポジトリ）では、Token Exchangeを各サービスのアプリケーション本体に実装し、Envoy等のプロキシへは委譲しないと決定していた。理由はRFC 8693の意味論を学習目的でコードとして直接見せるためであり、当時の目的（Token Exchangeの学習）には合致していた。
+Token Exchangeロジックの置き場として、各サービスのアプリケーション本体に実装するか、Envoy等のサイドカープロキシに委譲するかを検討した。
 
-gekko_07では目的が変わり、「サービス実装言語に依存しない横断的関心事として、Token Exchangeを1箇所に集約できる」というサイドカー方式の価値を実演したい。加えて、gekko_05では言語ごとに同じRFC 8693クライアントロジックを重複実装していた（`TokenExchangeClient.java`/`tokenexchange.go`/`token_exchange.rs`等）。
+アプリケーション本体に実装する場合、RFC 8693の意味論がコードとして直接見えるという利点はあるが、サービスの実装言語ごとに同じToken Exchangeクライアントロジック（トークンエンドポイントへの`grant_type=urn:ietf:params:oauth:grant-type:token-exchange`呼び出し、レスポンス解釈、エラーハンドリング）を重複実装することになる。今回は複数言語でサービスを実装する方針（requirements.md参照）のため、この重複が顕在化しやすい。
 
 Envoyでの実現方式として以下を検討した。
 
@@ -29,6 +29,6 @@ Envoyでの実現方式として以下を検討した。
 
 ## Consequences
 
-- gekko_05で発生した「言語ごとのRFC 8693クライアント重複実装」が発生しない
+- サービスの実装言語ごとのToken Exchangeクライアント重複実装が発生しない
 - サイドカー方式そのものの検証コストが増える（Envoy bootstrap設定、ext_authzサービスの実装、Kubernetesマニフェスト）。1ホップで先行検証してから残りのホップへ横展開する方針とする（backlog.md参照）
-- アプリ層でのDPoP検証（gekko_05ではfrontend接点のみに適用）を今回もアプリ層に残すかサイドカー側に寄せるかは未決定（backlog.md参照）
+- アプリ層でのDPoP検証をアプリ層に残すかサイドカー側に寄せるかは未決定（backlog.md参照）

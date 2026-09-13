@@ -1,8 +1,8 @@
 # gekko_07
 
-Token Exchange (RFC 8693) をEnvoyサイドカーへ移し、マイクロサービス群にAIエージェントを組み込むサンプル。**現在は設計段階**（k3dクラスタの土台のみ実装済み）。目的・背景・要求水準は[docs/requirements.md](docs/requirements.md)を参照。
+OAuth 2.0 Token Exchange (RFC 8693) をEnvoyサイドカー（ext_authz）に実装し、マイクロサービス群とAIエージェントが連携するローカル実行可能なサンプル。**現在は設計段階**（k3dクラスタの土台のみ実装済み）。目的・背景・要求水準は[docs/requirements.md](docs/requirements.md)を参照。
 
-前作[gekko_05](../gekko_05)はToken Exchangeをアプリ層に実装する学習用サンプルだった。本リポジトリはその発展として、(1) Token Exchangeをサービスの実装言語に依存しないEnvoyサイドカーへ移す、(2) マイクロサービス群にAIエージェントを組み込み、エージェントの権限をスコープで厳格に制限しつつ最終判断は人間の決定論的操作で確定する設計を示す、の2点を新たに実演する（gekko_05との違いは[docs/requirements.md](docs/requirements.md)の対比表を参照）。
+想定ユースケースは金融の不正検知・口座凍結（[ADR 0001](docs/adr/0001-scenario-fraud-detection-with-agent-assist.md)）。AIエージェントが取引パターンから凍結を提案し、アナリストが確認の上で決定論的な操作を行って初めて確定する。エージェントの権限はKeycloakのスコープ設計で読み取り・提案のみに制限し、実行権限（凍結）は一切持たせない。
 
 ## 現在の進捗
 

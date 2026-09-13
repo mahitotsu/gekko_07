@@ -2,7 +2,7 @@
 
 具体的な業務シナリオごとに、どのサービスがどう連携して実現するかを示す。各サービスの役割は[services.md](services.md)、認可判定の詳細は[permission-matrix.md](permission-matrix.md)を参照。
 
-異常系は「どのように拒否が観測されるか」も明記する。gekko_05のuse-cases.mdと同じ方針で、リクエスト自体がエラーになる場合と、処理は完了しつつ結果セットが絞り込まれる場合を区別する。
+異常系は「どのように拒否が観測されるか」も明記する。同じ「拒否」でも、リクエスト自体がエラーになる場合と、処理は完了しつつ結果セットが絞り込まれる場合があり、両者を区別する。
 
 ## 不正検知・口座凍結
 
@@ -60,7 +60,7 @@ UC1と同じ流れだが、手順6で大阪のhigh-value口座も結果に含ま
 2. account-serviceのスコープチェック（permission-matrix.md 表2）でDENY
 ```
 
-**拒否の見え方**：これはリクエスト時点のスコープ不足によるHTTPエラー（403相当）であり、UC3/UC4の「結果セットの絞り込み」とは異なる種類の拒否。そもそも`fraud-mcp-server`クライアントには`account:freeze`のoptional client scopeが割り当てられていない（permission-matrix.md 表1脚注）ため、Token Exchangeの時点で`account:freeze`を要求しても`invalid_scope`等で拒否される（gekko_05の表1「対角線DENY」と同じ、トークン自体が取得できないパターン）。
+**拒否の見え方**：これはリクエスト時点のスコープ不足によるHTTPエラー（403相当）であり、UC3/UC4の「結果セットの絞り込み」とは異なる種類の拒否。そもそも`fraud-mcp-server`クライアントには`account:freeze`のoptional client scopeが割り当てられていない（permission-matrix.md 表1脚注）ため、Token Exchangeの時点で`account:freeze`を要求しても`invalid_scope`等で拒否される（トークン自体がそもそも取得できないパターン）。
 
 ### UC6: 正常系（payment-serviceによる通常の入出金処理）
 

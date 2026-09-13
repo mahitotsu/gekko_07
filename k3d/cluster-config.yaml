@@ -2,8 +2,8 @@
 # `k3d cluster create --config k3d/cluster-config.yaml` で読み込む。
 #
 # 外部公開は Ingress ではなく `kubectl port-forward` で行う方針
-# （edge-proxy相当のServiceに直接port-forwardし、KC_HOSTNAMEをdocker compose時代と
-# 同じ http://localhost:3000 のまま維持できるようにするため）。そのため k3s に
+# （edge-proxy相当のServiceに直接port-forwardし、KC_HOSTNAMEを
+# http://localhost:3000 に固定できるようにするため）。そのため k3s に
 # 標準同梱される Traefik（Ingressコントローラ）と servicelb（LoadBalancer実装）は
 # 使わないので無効化し、クラスタを軽量に保つ。
 #
