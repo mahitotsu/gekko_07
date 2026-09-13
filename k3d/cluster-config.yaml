@@ -1,0 +1,32 @@
+# k3dクラスタの宣言的定義。
+# `k3d cluster create --config k3d/cluster-config.yaml` で読み込む。
+#
+# 外部公開は Ingress ではなく `kubectl port-forward` で行う方針
+# （edge-proxy相当のServiceに直接port-forwardし、KC_HOSTNAMEをdocker compose時代と
+# 同じ http://localhost:3000 のまま維持できるようにするため）。そのため k3s に
+# 標準同梱される Traefik（Ingressコントローラ）と servicelb（LoadBalancer実装）は
+# 使わないので無効化し、クラスタを軽量に保つ。
+#
+# 過去にimageをrancher/k3s:v1.32.13-k3s1に固定していた時期があった。理由：
+# k3d既定（k3d v5.9.0同梱のk3s v1.35系）のkubeletは、cgroup v1ホスト（当時の
+# WSL2、Dockerのcgroup driverがcgroupfs）では「kubelet is configured to not
+# run on a host using cgroup v1」で起動を拒否し、起動→シャットダウンを無限に
+# 繰り返してAPIサーバーに一切到達できなくなることを実機で確認した。恒久対応と
+# してWSL2側を`.wslconfig`の`kernelCommandLine = cgroup_no_v1=all`でcgroup v2化
+# 済み（`docker info`でCgroup Version: 2を確認済み）のため、image指定は削除し
+# k3d既定（最新のk3s）に戻した。
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: gekko07
+servers: 1
+agents: 0
+options:
+  k3s:
+    extraArgs:
+      - arg: --disable=traefik
+        nodeFilters:
+          - server:*
+      - arg: --disable=servicelb
+        nodeFilters:
+          - server:*
