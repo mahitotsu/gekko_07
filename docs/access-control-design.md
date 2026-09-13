@@ -1,6 +1,6 @@
 # アクセス制御設計（ディシジョンテーブル）
 
-[access-control-requirements.md](access-control-requirements.md)で定めた業務要件（BR1〜BR8）を、architecture.mdの認可設計がどう実現しているかを、条件と結果が漏れなく列挙できる形（ディシジョンテーブル）で示す。各表の見出しに対応する要件番号を明記し、業務要件と実装の対応関係を追跡できるようにする。性質の異なる認可判断ごとに表を分ける。
+[access-control-requirements.md](access-control-requirements.md)で定めた業務要件（BR0〜BR8）を、architecture.mdの認可設計がどう実現しているかを、条件と結果が漏れなく列挙できる形（ディシジョンテーブル）で示す。各表の見出しに対応する要件番号を明記し、業務要件と実装の対応関係を追跡できるようにする。性質の異なる認可判断ごとに表を分ける。
 
 ## 認証（アナリストのログイントークン、BR0に対応）
 
@@ -55,6 +55,8 @@
 
 ### どのトークンがどのスコープを保有するか
 
+architecture.md §4のクライアント別スコープ割当を前提に、実際に発生する交換パスごとにトークンが保有するスコープを列挙したものが以下の表である。
+
 | トークン | 発行経路 | 保有スコープ |
 |---|---|---|
 | frontendが発行するトークン（account-service宛て、確定パス用） | frontendが`aud=frontend`のログイントークンを`subject_token`にToken Exchange | `account:read`, `account:freeze` |
@@ -68,7 +70,9 @@ fraud-mcp-server（ひいてはAIエージェント）が`account:freeze`を持�
 
 この表のスコープチェックは、**Envoyサイドカーの受信側（アプリの外）で行うか、やむを得ずaccount-serviceのアプリ内で行う場合もリクエストの入口（ハンドラの先頭、表5のABAC判定より前）でのみ**行う。ビジネスロジックの途中や、表5のABAC判定の後にスコープチェックを行ってはならない。理由は[ADR 0006](adr/0006-claim-vs-external-attribute-criteria.md)を参照。
 
-## 表3: analyst-attribute-serviceの照会可否
+## 表3: analyst-attribute-serviceの照会可否（BR4に対応）
+
+account-service以外の経路（fraud-mcp-server等）がanalyst-attribute-serviceへ直接到達できないことを保証する表。これにより、表5のABAC判定は必ずaccount-serviceを経由した最新の属性照会に基づいて行われ、BR4（AIエージェントの閲覧範囲はアナリスト本人を超えない）の前提が成り立つ。
 
 | 呼び出し元 | 照会可否 |
 |---|---|

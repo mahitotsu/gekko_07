@@ -1,6 +1,6 @@
 # アクセス制御要件
 
-「誰が何をできなければならないか」「誰が何をできてはいけないか」を、Keycloak・スコープ・トークンといった実装手段に一切触れない**業務要件**として定義する。[access-control-design.md](access-control-design.md)の各表は、ここで定めた要件番号（BR1, BR2, ...）に対応付けて検証できるようにする。
+「誰が何をできなければならないか」「誰が何をできてはいけないか」を、Keycloak・スコープ・トークンといった実装手段に一切触れない**業務要件**として定義する。[access-control-design.md](access-control-design.md)の各表は、ここで定めた要件番号（BR0, BR1, ...）に対応付けて検証できるようにする。
 
 ## 登場する主体
 
@@ -57,7 +57,7 @@
 |---|---|
 | BR0 | [access-control-design.md](access-control-design.md) 認証（アナリストのログイントークン）。全てのToken Exchangeは認証済みのログイントークンを起点とするため、未認証の主体はそもそも`subject_token`を持てず、以降のどの表にも到達できない |
 | BR1, BR2, BR3 | [access-control-design.md](access-control-design.md) 表5（口座別アクセス可否） |
-| BR4 | [access-control-design.md](access-control-design.md) 表1（`sub`がアナリスト本人のまま維持されるため、経由するサービスが増えても表5の判定はアナリスト本人の属性に対して行われる） |
+| BR4 | [access-control-design.md](access-control-design.md) 表1（`sub`がアナリスト本人のまま維持されるため、経由するサービスが増えても表5の判定はアナリスト本人の属性に対して行われる）・表3（account-service以外はanalyst-attribute-serviceへ到達できないため、迂回して別の属性を取得することもできない） |
 | BR5 | [access-control-design.md](access-control-design.md) 表1・表2（`account:freeze`スコープがfraud-mcp-server/fraud-agentに割り当てられない） |
 | BR6 | [access-control-design.md](access-control-design.md) 表2（`account:freeze`はアナリストのログイントークンのみが保有） |
 | BR7 | [access-control-design.md](access-control-design.md) 表4（payment-serviceのclient_credentialsアクセス。業務属性チェックなし） |

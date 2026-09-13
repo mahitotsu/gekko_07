@@ -60,7 +60,7 @@ UC1と同じ流れだが、手順6で大阪のhigh-value口座も結果に含ま
 2. account-serviceのスコープチェック（access-control-design.md 表2）でDENY
 ```
 
-**拒否の見え方**：これはリクエスト時点のスコープ不足によるHTTPエラー（403相当）であり、UC3/UC4の「結果セットの絞り込み」とは異なる種類の拒否。そもそも`fraud-mcp-server`クライアントには`account:freeze`のoptional client scopeが割り当てられていない（access-control-design.md 表1脚注）ため、Token Exchangeの時点で`account:freeze`を要求しても`invalid_scope`等で拒否される（トークン自体がそもそも取得できないパターン）。
+**拒否の見え方**：これはリクエスト時点のスコープ不足によるHTTPエラー（403相当）であり、UC3/UC4の「結果セットの絞り込み」とは異なる種類の拒否。そもそも`fraud-mcp-server`クライアントには`account:freeze`のoptional client scopeが割り当てられていない（architecture.md §4、access-control-design.md 表2）ため、Token Exchangeの時点で`account:freeze`を要求しても`invalid_scope`等で拒否される（トークン自体がそもそも取得できないパターン）。
 
 ### UC6: 正常系（payment-serviceによる通常の入出金処理）
 

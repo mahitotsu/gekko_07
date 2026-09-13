@@ -44,7 +44,7 @@
   - 凍結提案の記録（`account:propose`）
   - 口座凍結の実行（`account:freeze`）。実行時にanalyst-attribute-serviceへ再照会し業務属性を再検証する（多層防御）
   - 入出金・振込処理（`account:transact`）。この操作のみ業務属性チェックを行わない（機械間認証のため）
-  - アナリスト経由のリクエストでは、呼び出し元の担当地域・権限レベルに応じて閲覧・凍結可能な口座を制限する（access-control-design.md 表5相当）
+  - アナリスト経由のリクエストでは、呼び出し元の担当地域・権限レベルに応じて閲覧・凍結可能な口座を制限する（access-control-design.md 表5）
 - **保有データ**：口座（地域`region`、ティア`standard`/`high-value`）、取引履歴、凍結提案（誰が・何を根拠に提案したか）、凍結実行記録（誰が・どの提案を確定したか）
 - **連携相手**：fraud-mcp-server・payment-service・frontendから呼ばれる。アナリスト経由のリクエストではanalyst-attribute-serviceへさらに委任する
 
