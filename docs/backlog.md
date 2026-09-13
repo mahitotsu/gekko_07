@@ -11,7 +11,7 @@
 
 - **先行検証するホップの確定**：[ADR 0002](adr/0002-token-exchange-in-envoy-sidecar.md)で「1ホップ先行検証→横展開」の方針は決めたが、対象ホップ（fraud-mcp-server→account-service想定）の具体的な実装（Envoy bootstrap設定、ext_authzサービスのプロトコル：HTTPモード想定）はこれから
 - **DPoPの適用範囲**：フロントエンド接点（ブラウザ〜frontend間）のみに適用するか、Envoyサイドカー化に伴いDPoP検証もサイドカー側（ext_authzまたは別フィルタ）に寄せるかは未決定
-- **Token Exchange結果のキャッシュ**：`(subject jti, audience)`単位でのキャッシュを検討しているが、ext_authzサービス側に持たせるか、どの範囲で共有するかは未決定
+- **Token Exchange結果のキャッシュ**：`(subject jti, audience)`単位でのキャッシュを検討しているが、ext_authzサービス側に持たせるか、どの範囲で共有するかは未決定。キャッシュTTLは[ADR 0006](adr/0006-claim-vs-external-attribute-criteria.md)の鮮度要件の議論を踏まえ、性能とのトレードオフを意図的に選んだ短い値にする（ログイントークンの有効期間に引きずられて長くならないよう注意する）
 
 ## 属性・アクセス制御の粒度
 
