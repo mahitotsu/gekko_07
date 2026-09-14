@@ -4,8 +4,11 @@
 
 ## Token Exchange / Envoyサイドカー
 
-- **先行検証するホップの確定**：[ADR 0002](adr/0002-token-exchange-in-envoy-sidecar.md)で「1ホップ先行検証→横展開」の方針は決めたが、対象ホップ（fraud-mcp-server→account-service想定）の具体的な実装（Envoy bootstrap設定、ext_authzサービスのプロトコル：HTTPモード想定）はこれから
-- **scope検証をサイドカー側（受信側）に寄せるか**：[ADR 0006](adr/0006-claim-vs-external-attribute-criteria.md)の通り、scopeの検証（表2）はトークン単体で完結するためEnvoyの`jwt_authn`＋`rbac`フィルタ等でaccount-serviceのアプリコードに到達する前に判定できる余地がある。ABAC判定（表5）はアプリ内に残さざるを得ないため、scope検証だけを切り出すかどうかは未定
+- **account-serviceの実APIパス設計と(パス,メソッド)→スコープ対応表の拡張**：[ADR 0010](adr/0010-egress-listener-granularity.md)で、(呼び出し元, audience)だけではscopeが一意に決まらない2ケース（frontend→account-service、fraud-mcp-server→account-service）は、account-service自身の実APIパスから解決する設計にしたが、その実APIパス自体が未設計。先行検証（下記）が対象とする2エンドポイント分だけでも先に決める必要がある
+- **先行検証するホップの具体的なEnvoy設定**：[ADR 0002](adr/0002-token-exchange-in-envoy-sidecar.md)・[ADR 0009](adr/0009-envoy-ingress-responsibility-and-bypass-prevention.md)・[ADR 0010](adr/0010-egress-listener-granularity.md)でegress/ingress双方の方式・パターンは決めたが、実際のYAML（`hostAliases`、Envoy `virtual_hosts`、`ExtAuthzPerRoute`のcontext_extensions、jwt_authn/rbacフィルタ、合言葉ヘッダーをLuaフィルタ等でどう付与するか）はこれから書く。対象は fraud-mcp-server→account-service の`account:read`/`account:propose`（いずれもパターン①）。あわせてアプリのegressポートがPod外から到達不能であることを実機確認する
+- **client_credentials発行・素通し・トークンを値として取得する3パターンの実機検証**：[ADR 0010](adr/0010-egress-listener-granularity.md)でEnvoy標準機能のみで実現できる設計（②`allowed_upstream_headers`は①と共通、③はext_authzを呼ばない単純プロキシ、④`direct_response`+`allowed_client_headers_on_success`）まで固めたが、実機での動作確認はこれから（特に④のext_authz+direct_responseの組み合わせは実機で挙動を要確認）
+- **合言葉env var名の統一命名**：[ADR 0009](adr/0009-envoy-ingress-responsibility-and-bypass-prevention.md)で「言語をまたいで統一命名にする」方針は決めたが、具体的な名前（例：`HANDSHAKE_TOKEN_FILE`）は各サービス実装時に確定する
+- **Unixドメインソケット化の再検討**：[ADR 0009](adr/0009-envoy-ingress-responsibility-and-bypass-prevention.md)でTCP loopback+合言葉方式を採用しUnixドメインソケット化は見送ったが、「同一Pod内でアプリが侵害された場合」まで守る要求が出てきたら再検討する
 - **DPoPの適用範囲**：フロントエンド接点（ブラウザ〜frontend間）のみに適用するか、Envoyサイドカー化に伴いDPoP検証もサイドカー側（ext_authzまたは別フィルタ）に寄せるかは未決定
 - **Token Exchange結果のキャッシュ**：`(subject jti, audience)`単位でのキャッシュを検討しているが、ext_authzサービス側に持たせるか、どの範囲で共有するかは未決定。キャッシュTTLは性能とのトレードオフを意図的に選んだ短い値にする
 - **交換後トークンのアクセストークン有効期間**：[ADR 0006](adr/0006-claim-vs-external-attribute-criteria.md)は、トークン漏洩・誤用時の被害範囲を抑える多層防御として交換後トークンの有効期間を短く設定する方針を前提にしている。ログイントークンとは別に、各クライアント（frontend/fraud-mcp-server/account-service）が交換で得るトークンのAccess Token Lifespanを具体的に何秒にするかは未決定

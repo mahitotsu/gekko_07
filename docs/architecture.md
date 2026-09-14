@@ -28,12 +28,20 @@
 
 **各サービスのEnvoyサイドカーから呼ばれるext_authzサービスとして実装する**（[ADR 0002](adr/0002-token-exchange-in-envoy-sidecar.md)）。アプリケーション本体にはToken Exchangeのコードを一切持たせない。
 
-- 各サービスのPodはアプリコンテナ＋Envoyサイドカーの2コンテナ構成
-- アプリは次ホップの呼び出し先を`localhost:<egressポート>`宛てに叩くだけで、Envoyの`ext_authz`（HTTPモード）フィルタが呼び出しを横取りし、ext_authzサービスがToken Exchangeを実行してから実際のアップストリームへ転送する
-- 次ホップごとに専用のegressリスナーを1つずつ用意する（例：fraud-mcp-serverのサイドカーは「account-service宛て」専用リスナーを1つ持つ）。これによりext_authzサービスは「このリスナーに来た＝このaudienceへの交換」と静的に決め打ちでき、動的なaudience解決ロジックが不要になる
-- `ext_authz`の応答ヘッダー許可リスト（`allowed_upstream_headers`）に`Authorization`を含める
-- 実装順序：まず1ホップ（fraud-mcp-server→account-service）で先行検証し、パターンが固まってから残りのホップへ横展開する
-- サイドカーの受信側（ingress）でscope検証（[access-control-design.md](access-control-design.md) 表2）をアプリの外で完結させるか、やむを得ずアプリ内で行う場合もリクエストの入口でのみ行う（ビジネスロジックの途中や、業務データに依存する認可判定（表5等）の後で行ってはならない。理由は[ADR 0006](adr/0006-claim-vs-external-attribute-criteria.md)を参照）。表5等の業務データに依存する認可判定自体はアプリ内に残さざるを得ない
+- 各サービスのPodは**initContainer 1つ＋アプリコンテナ＋Envoyサイドカーの構成**（initContainerの役割は§3後半・[ADR 0009](adr/0009-envoy-ingress-responsibility-and-bypass-prevention.md)参照）
+- アプリは相手サービスの**実サービス名・実APIパスをそのまま**使ってリクエストを組み立てる（例：`http://account-service/accounts/123/transactions`）。人工的なURLプレフィックスやegress専用ポートは使わない。Podの`hostAliases`で相手サービス名を`127.0.0.1`へ静的にマッピングし、Envoyサイドカーが1つのリスナー上の複数`virtual_hosts`（`domains`でサービス名をマッチ）で受け、`ext_authz`（HTTPモード）フィルタが横取りしてToken Exchangeを実行してから実際のアップストリームへ転送する（[ADR 0010](adr/0010-egress-listener-granularity.md)）
+- **audienceはHostヘッダーから自動導出する**。Keycloakクライアントid＝Kubernetes Service名＝audience名を常に同一の文字列にする（MUST。[access-control-design.md](access-control-design.md)表1の既存の前提をKubernetes Service名にも拡張したもの）ため、ext_authzサービスはCheckRequestの`Host`をそのまま`audience`として使え、リスナー・ルートごとの明示設定が不要になる
+- **scopeは常に「相手サービスの(パス, メソッド) → scope」という単一の仕組みで決める**（[access-control-design.md](access-control-design.md) 表2を拡張した対応表。account-service自身のingress側rbacポリシーと共有する単一の情報源）。特別扱いするケースはない——scopeがpathによらず1つだけのホップ（payment-service→account-service、account-service→analyst-attribute-service、frontend→fraud-mcp-server）は、この仕組みがワイルドカードルート1本に潰れているだけであり、account-serviceの実APIパス設計を待たずに今すぐ書ける。scopeがpathで変わるホップ（frontend→account-service、fraud-mcp-server→account-service。それぞれ`account:read`/`account:freeze`、`account:read`/`account:propose`）は複数ルートが要り、対応表の拡張（未着手。ADR 0010参照）を待つ。アプリのコードは常に実ホスト名・実パス・実メソッドで普通にAPIを呼ぶだけで、どちらのケースかを意識しない
+- egressで必要な処理は4種類ある（ADR 0010）：①Token Exchange（大半のホップ、透過的プロキシ）②client_credentials発行（payment-service→account-service、透過的プロキシ）③素通し（fraud-agent→fraud-mcp-server、ext_authzを呼ばない単純プロキシ）④トークンを値として取得（frontend→fraud-mcp-server。①と同じext_authz呼び出しだが実サービスは呼ばない合成的な呼び出しで、この1ケースのみ人工的な専用パス`http://fraud-mcp-server/_mint-token`を使う。ルートを`direct_response`にし交換後トークンを`allowed_client_headers_on_success`で呼び出し元自身への応答として返す）
+- `ext_authz`の応答ヘッダー許可リスト（①②：`allowed_upstream_headers`に`Authorization`を含める。④：`allowed_client_headers_on_success`に交換後トークンを返すヘッダー名を含める）
+- 実装順序：まず1ホップ分＝fraud-mcp-server→account-serviceの`account:read`/`account:propose`（いずれもパターン①、かつscopeが実パス起点で決まる2ケースの一方）で先行検証し、パターンが固まってから残りのホップ・他の3パターンへ横展開する。この先行検証のため、account-serviceの実APIパスはこの2エンドポイント分だけ先に決めておく
+
+**サイドカーの受信側（ingress）の責務**（[ADR 0009](adr/0009-envoy-ingress-responsibility-and-bypass-prevention.md)）：
+
+- JWT検証（`jwt_authn`フィルタ：署名・`iss`・`exp`・`aud`がこのサービス自身であること）とscope検証（`rbac`フィルタ：[access-control-design.md](access-control-design.md) 表2）はEnvoy側で完結させる。表5等の業務データに依存する認可判定自体はアプリ内に残さざるを得ない（理由は[ADR 0006](adr/0006-claim-vs-external-attribute-criteria.md)参照）
+- 検証済みの身元はヘッダー（`x-auth-sub`等）でアプリへ転送し、アプリは自前のJWTライブラリを持たない
+- **Envoyを経由しない直接アクセスのバイパス防止**（3層。詳細はADR 0009）：①アプリは`127.0.0.1`にのみbindし、Serviceはアプリのポートではなく Envoyのリスナーを指す（構造的な防止）②アプリ自身も接続元がloopbackでなければ拒否する（多層防御）③initContainerがPod起動時に生成しemptyDirで共有する使い捨ての合言葉を、jwt_authn/rbacを通過した後にのみEnvoyがヘッダーへ付与し、アプリはこれを検証してから他の認証ヘッダーを信用する（Envoyの設定ミスや誤操作によるバイパスの検知）
+- 上記②③の検証ロジックはk8s環境外でもテスト可能にする。ただし「テスト時は検証をスキップする」条件分岐は作らない（[CWE-489](https://cwe.mitre.org/data/definitions/489.html)）。検証ロジックは環境によらず単一とし、期待値の読み出し元（ファイルパス等）のみ環境変数で設定可能にする
 
 ## 4. Keycloakのクライアント・スコープ設計
 

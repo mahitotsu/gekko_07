@@ -16,3 +16,5 @@
 | [0006](0006-claim-vs-external-attribute-criteria.md) | トークンのクレームにするか業務データとして外部化するかの判断基準 | Accepted |
 | [0007](0007-per-service-language-selection.md) | 各サービスの実装言語・フレームワークの選定 | Accepted |
 | [0008](0008-per-service-datastore-strategy.md) | サービスごとのデータストア戦略（Keycloakを含む） | Accepted |
+| [0009](0009-envoy-ingress-responsibility-and-bypass-prevention.md) | Envoy ingress側の責務範囲とバイパス防止 | Accepted |
+| [0010](0010-egress-listener-granularity.md) | egressは実サービス名への透過的な呼び出しとし、audienceはHostヘッダーから自動導出する | Accepted |
