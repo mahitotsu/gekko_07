@@ -1,0 +1,88 @@
+# fraud-mcp-serverの最小スタブDeployment(1ホップ先行検証用。ADR 0002/0009/0010)。
+# hostAliasesで"account-service"を127.0.0.1へ静的にマッピングし、アプリが実サービス名・実APIパスで
+# 普通にHTTPリクエストを組み立てるだけで、同一Pod内のEnvoy(egress)が横取りする(ADR 0010)。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fraud-mcp-server-stub
+  namespace: gekko
+  labels:
+    app: fraud-mcp-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fraud-mcp-server
+  template:
+    metadata:
+      labels:
+        app: fraud-mcp-server
+    spec:
+      hostAliases:
+        - ip: "127.0.0.1"
+          hostnames: ["account-service"]
+      initContainers:
+        - name: handshake-init
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - "head -c32 /dev/urandom | od -An -tx1 | tr -d ' \\n' > /handshake/token"
+          volumeMounts:
+            - name: handshake
+              mountPath: /handshake
+      containers:
+        - name: app
+          image: python:3.12-alpine
+          command: ["python3", "/scripts/app.py"]
+          env:
+            - name: APP_BIND_HOST
+              value: "127.0.0.1"
+            - name: APP_PORT
+              value: "9000"
+            - name: HANDSHAKE_TOKEN_FILE
+              value: "/handshake/token"
+          volumeMounts:
+            - name: app-script
+              mountPath: /scripts
+              readOnly: true
+            - name: handshake
+              mountPath: /handshake
+              readOnly: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+        - name: envoy
+          image: envoyproxy/envoy:v1.31.5
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              export HANDSHAKE_TOKEN="$(cat /handshake/token)"
+              exec envoy -c /etc/envoy/envoy.yaml
+          volumeMounts:
+            - name: envoy-config
+              mountPath: /etc/envoy
+              readOnly: true
+            - name: handshake
+              mountPath: /handshake
+              readOnly: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "300m"
+              memory: "128Mi"
+      volumes:
+        - name: app-script
+          configMap:
+            name: fraud-mcp-server-stub-app
+        - name: envoy-config
+          configMap:
+            name: fraud-mcp-server-envoy
+        - name: handshake
+          emptyDir: {}

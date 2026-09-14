@@ -1,0 +1,138 @@
+# ext_authzサービス本体(ADR 0002)。architecture.md §3のPod構成(initContainer＋app＋Envoy)に
+# ext_authzは含まれないため、各サービスのサイドカーではなくクラスタで共有する独立サービスとして
+# 実装する。Dockerfileは書かず、Keycloakのdb-init-*と同じパターン(ConfigMapのスクリプトをstock
+# イメージへcommandでマウント実行)にする。
+#
+# Envoyのext_authz(HTTPモード)は、外部認可サーバーへのチェックリクエストに
+# Host/Method/Path/Content-Length/Authorizationを常に自動転送する(allowed_headersの設定とは
+# 無関係。Envoy公式v3 APIリファレンスで確認済み。ADR 0010の実機検証で判明し同ADRを訂正した)。
+# ExtAuthzPerRouteのcontext_extensionsはgRPCモード限定でHTTPモードには一切伝わらないため使わない。
+# 本サービスは、この自動転送されるHost(=audience)とPath+Method(=access-control-design.md 表2の
+# 対応表で解決するscope)だけからToken Exchangeリクエストを組み立てる。
+#
+# 今回は1ホップの先行検証(fraud-mcp-server→account-service)のみが対象のため、Token Exchangeを
+# 実行するクライアント(client_id)はfraud-mcp-server固定にする。呼び出し元ごとに資格情報を
+# 切り替える一般化は横展開時の課題(backlog.md参照)。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ext-authz-app
+  namespace: gekko
+data:
+  app.py: |
+    import http.server
+    import json
+    import os
+    import re
+    import socketserver
+    import sys
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    TOKEN_URL = os.environ.get(
+        "KEYCLOAK_TOKEN_URL",
+        "http://keycloak.gekko.svc.cluster.local:8080/realms/gekko/protocol/openid-connect/token",
+    )
+    CLIENT_ID = os.environ.get("TOKEN_EXCHANGE_CLIENT_ID", "fraud-mcp-server")
+    CLIENT_SECRET_FILE = os.environ.get("TOKEN_EXCHANGE_CLIENT_SECRET_FILE", "/secrets/client-secret")
+    LISTEN_PORT = int(os.environ.get("LISTEN_PORT", "8080"))
+
+    # access-control-design.md 表2をそのまま反映した(path, method) -> scope の対応表。
+    # account-service自身のrbacポリシー(k8s/account-service/envoy-configmap.yaml)と同じ表2が
+    # 単一の情報源であることに変わりはなく、ここはそれをコードに落としたコピーにすぎない。
+    SCOPE_RULES = [
+        (re.compile(r"^/accounts/[^/]+/freeze-proposals$"), "POST", "account:propose"),
+        (re.compile(r"^/accounts/[^/]+(/.*)?$"), "GET", "account:read"),
+    ]
+
+
+    def resolve_scope(path, method):
+        for pattern, expected_method, scope in SCOPE_RULES:
+            if method == expected_method and pattern.match(path):
+                return scope
+        return None
+
+
+    def read_client_secret():
+        with open(CLIENT_SECRET_FILE) as f:
+            return f.read().strip()
+
+
+    def exchange_token(subject_token, audience, scope):
+        data = urllib.parse.urlencode(
+            {
+                "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+                "client_id": CLIENT_ID,
+                "client_secret": read_client_secret(),
+                "subject_token": subject_token,
+                "subject_token_type": "urn:ietf:params:oauth:token-type:access_token",
+                "audience": audience,
+                "scope": scope,
+            }
+        ).encode()
+        req = urllib.request.Request(
+            TOKEN_URL, data=data, headers={"Content-Type": "application/x-www-form-urlencoded"}
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            body = json.loads(resp.read())
+            return body["access_token"]
+
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def deny(self, code, msg):
+            print(f"DENY {code}: {msg}", file=sys.stderr, flush=True)
+            self.send_response(code)
+            self.end_headers()
+
+        def do_check(self):
+            # Envoyが自動転送するHost/Method/Path/Authorizationヘッダーを優先し、
+            # 無ければ実際のリクエストライン(self.command/self.path)にフォールバックする
+            # (ext_authz HTTPモードの正確な転送方式は実機で確認済みだが、将来のEnvoy挙動変化にも
+            # 頑健にしておく)。
+            host = self.headers.get("Host")
+            method = self.headers.get("Method") or self.command
+            path = self.headers.get("Path") or self.path
+            auth = self.headers.get("Authorization")
+
+            if not host or not auth or not auth.startswith("Bearer "):
+                self.deny(400, "missing host/authorization")
+                return
+
+            scope = resolve_scope(path, method)
+            if not scope:
+                self.deny(403, f"no scope mapping for {method} {path}")
+                return
+
+            subject_token = auth[len("Bearer ") :]
+            try:
+                new_token = exchange_token(subject_token, host, scope)
+            except urllib.error.HTTPError as e:
+                self.deny(403, f"token exchange rejected: {e.code} {e.read()!r}")
+                return
+            except Exception as e:  # noqa: BLE001 - スタブなので広く捕捉してfail closeする
+                self.deny(403, f"token exchange failed: {e!r}")
+                return
+
+            print(f"ALLOW {method} {path} aud={host} scope={scope}", flush=True)
+            self.send_response(200)
+            self.send_header("Authorization", f"Bearer {new_token}")
+            self.end_headers()
+
+        do_GET = do_check
+        do_POST = do_check
+        do_PUT = do_check
+        do_DELETE = do_check
+
+        def log_message(self, fmt, *args):
+            print("%s - %s" % (self.address_string(), fmt % args), flush=True)
+
+
+    class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
+        daemon_threads = True
+
+
+    if __name__ == "__main__":
+        srv = Server(("0.0.0.0", LISTEN_PORT), Handler)
+        print(f"ext-authz-service listening on :{LISTEN_PORT}", flush=True)
+        srv.serve_forever()

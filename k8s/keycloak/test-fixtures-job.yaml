@@ -1,0 +1,47 @@
+# test-fixtures-configmap.yamlのスクリプトを実行する1回限りのJob(keycloak-db-init-jobと同じ
+# パターン)。kcadm.shはKeycloakイメージに同梱されているため追加イメージは不要。
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: keycloak-test-fixtures
+  namespace: gekko
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: fixtures
+          image: quay.io/keycloak/keycloak:26.7.0
+          command: ["/bin/bash", "/scripts/fixtures.sh"]
+          env:
+            - name: KEYCLOAK_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-admin
+                  key: password
+            - name: FRONTEND_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: frontend-client
+                  key: client-secret
+            - name: FRAUD_MCP_SERVER_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: fraud-mcp-server-client
+                  key: client-secret
+            - name: YAMADA_ANALYST_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: yamada-analyst
+                  key: password
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: script
+          configMap:
+            name: keycloak-test-fixtures
+            defaultMode: 0755

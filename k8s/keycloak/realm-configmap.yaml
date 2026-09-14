@@ -23,12 +23,36 @@ data:
       "clientScopes": [
         {
           "name": "account:read",
-          "description": "取引履歴・不審取引・口座情報の読み取り（対象audience: account-service）",
+          "description": "取引履歴・不審取引・口座情報の読み取り（対象audience: account-service。frontend→fraud-mcp-server間のToken Exchangeでも同名で使うため、audienceマッパーをaccount-service・fraud-mcp-serverの2つ持つ。実際にどちらのaudienceになるかはToken Exchangeリクエストのaudienceパラメータで1つに絞り込まれる。ADR 0005の単一audience原則は保たれる）",
           "protocol": "openid-connect",
           "attributes": {
             "include.in.token.scope": "true",
             "display.on.consent.screen": "false"
-          }
+          },
+          "protocolMappers": [
+            {
+              "name": "audience-account-service",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-audience-mapper",
+              "consentRequired": false,
+              "config": {
+                "included.client.audience": "account-service",
+                "id.token.claim": "false",
+                "access.token.claim": "true"
+              }
+            },
+            {
+              "name": "audience-fraud-mcp-server",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-audience-mapper",
+              "consentRequired": false,
+              "config": {
+                "included.client.audience": "fraud-mcp-server",
+                "id.token.claim": "false",
+                "access.token.claim": "true"
+              }
+            }
+          ]
         },
         {
           "name": "account:propose",
@@ -37,7 +61,20 @@ data:
           "attributes": {
             "include.in.token.scope": "true",
             "display.on.consent.screen": "false"
-          }
+          },
+          "protocolMappers": [
+            {
+              "name": "audience-account-service",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-audience-mapper",
+              "consentRequired": false,
+              "config": {
+                "included.client.audience": "account-service",
+                "id.token.claim": "false",
+                "access.token.claim": "true"
+              }
+            }
+          ]
         },
         {
           "name": "account:freeze",
@@ -46,7 +83,20 @@ data:
           "attributes": {
             "include.in.token.scope": "true",
             "display.on.consent.screen": "false"
-          }
+          },
+          "protocolMappers": [
+            {
+              "name": "audience-account-service",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-audience-mapper",
+              "consentRequired": false,
+              "config": {
+                "included.client.audience": "account-service",
+                "id.token.claim": "false",
+                "access.token.claim": "true"
+              }
+            }
+          ]
         },
         {
           "name": "account:transact",
@@ -55,7 +105,20 @@ data:
           "attributes": {
             "include.in.token.scope": "true",
             "display.on.consent.screen": "false"
-          }
+          },
+          "protocolMappers": [
+            {
+              "name": "audience-account-service",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-audience-mapper",
+              "consentRequired": false,
+              "config": {
+                "included.client.audience": "account-service",
+                "id.token.claim": "false",
+                "access.token.claim": "true"
+              }
+            }
+          ]
         },
         {
           "name": "analyst:read",
@@ -64,7 +127,20 @@ data:
           "attributes": {
             "include.in.token.scope": "true",
             "display.on.consent.screen": "false"
-          }
+          },
+          "protocolMappers": [
+            {
+              "name": "audience-analyst-attribute-service",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-audience-mapper",
+              "consentRequired": false,
+              "config": {
+                "included.client.audience": "analyst-attribute-service",
+                "id.token.claim": "false",
+                "access.token.claim": "true"
+              }
+            }
+          ]
         }
       ],
       "clients": [

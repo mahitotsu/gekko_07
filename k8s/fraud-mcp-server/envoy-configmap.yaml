@@ -1,0 +1,91 @@
+# fraud-mcp-server egress側Envoy設定(ADR 0002/0010)。127.0.0.1の1リスナーで、hostAliases
+# (deployment.yaml参照)により"account-service"宛てのリクエストを受け止め、ext_authz(HTTPモード)
+# がToken Exchangeを行ってから実アップストリーム(K8s Service account-service)へ転送する。
+#
+# scopeはExtAuthzPerRouteのcontext_extensionsでは渡さない(gRPCモード限定でHTTPモードには
+# 伝わらないため。ADR 0010訂正箇所参照)。ext_authzサービス自身が、Envoyが自動転送する
+# Host/Path/Methodから表2の対応表でscopeを解決する。そのためこのroute_config自体は
+# 宛先の振り分け(パスパターンごとに同じクラスタへ)だけを担い、scope解決ロジックを持たない。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fraud-mcp-server-envoy
+  namespace: gekko
+data:
+  envoy.yaml: |
+    admin:
+      address:
+        socket_address: { address: 127.0.0.1, port_value: 9901 }
+    static_resources:
+      listeners:
+        - name: egress
+          address:
+            socket_address: { address: 127.0.0.1, port_value: 80 }
+          filter_chains:
+            - filters:
+                - name: envoy.filters.network.http_connection_manager
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                    stat_prefix: egress_http
+                    route_config:
+                      name: egress_route
+                      virtual_hosts:
+                        - name: account_service
+                          domains: ["account-service"]
+                          routes:
+                            # 表2:POST /accounts/{id}/freeze-proposals -> account:propose
+                            - match:
+                                safe_regex:
+                                  google_re2: {}
+                                  regex: "^/accounts/[^/]+/freeze-proposals$"
+                                headers:
+                                  - name: ":method"
+                                    string_match: { exact: "POST" }
+                              route: { cluster: account_service_upstream }
+                            # 表2:GET /accounts/{id}/** -> account:read(読み取り系はこの配下)
+                            - match:
+                                prefix: "/accounts/"
+                              route: { cluster: account_service_upstream }
+                    http_filters:
+                      - name: envoy.filters.http.ext_authz
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+                          http_service:
+                            server_uri:
+                              uri: "http://ext-authz-service.gekko.svc.cluster.local:8080"
+                              cluster: ext_authz_cluster
+                              timeout: 5s
+                            authorization_request:
+                              allowed_headers:
+                                patterns:
+                                  - exact: "authorization"
+                            authorization_response:
+                              allowed_upstream_headers:
+                                patterns:
+                                  - exact: "authorization"
+                          # ext_authzが不到達・異常時はfail close(既定でもfalseだが明示する)
+                          failure_mode_allow: false
+                      - name: envoy.filters.http.router
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+      clusters:
+        - name: account_service_upstream
+          type: STRICT_DNS
+          lb_policy: ROUND_ROBIN
+          load_assignment:
+            cluster_name: account_service_upstream
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address: { address: account-service.gekko.svc.cluster.local, port_value: 8080 }
+        - name: ext_authz_cluster
+          type: STRICT_DNS
+          lb_policy: ROUND_ROBIN
+          load_assignment:
+            cluster_name: ext_authz_cluster
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address: { address: ext-authz-service.gekko.svc.cluster.local, port_value: 8080 }

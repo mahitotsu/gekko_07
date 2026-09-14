@@ -1,0 +1,122 @@
+# account-service ingress側Envoy設定(ADR 0009)。jwt_authn(署名・iss・aud検証、クレームを
+# x-auth-*ヘッダーへ)→rbac(access-control-design.md 表2のscope要求)→lua(rbac通過後にのみ
+# 合言葉ヘッダーを付与。ADR 0009 §2③)→router、の順で通す。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: account-service-envoy
+  namespace: gekko
+data:
+  envoy.yaml: |
+    admin:
+      address:
+        socket_address: { address: 127.0.0.1, port_value: 9901 }
+    static_resources:
+      listeners:
+        - name: ingress
+          address:
+            socket_address: { address: 0.0.0.0, port_value: 8080 }
+          filter_chains:
+            - filters:
+                - name: envoy.filters.network.http_connection_manager
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                    stat_prefix: ingress_http
+                    route_config:
+                      name: local_route
+                      virtual_hosts:
+                        - name: account_service
+                          domains: ["*"]
+                          routes:
+                            - match: { prefix: "/" }
+                              route: { cluster: app_upstream }
+                    http_filters:
+                      - name: envoy.filters.http.jwt_authn
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication
+                          providers:
+                            keycloak:
+                              issuer: "http://localhost:3000/realms/gekko"
+                              audiences: ["account-service"]
+                              remote_jwks:
+                                http_uri:
+                                  uri: "http://keycloak.gekko.svc.cluster.local:8080/realms/gekko/protocol/openid-connect/certs"
+                                  cluster: keycloak_jwks
+                                  timeout: 5s
+                                cache_duration: 300s
+                              forward: true
+                              claim_to_headers:
+                                - header_name: "x-auth-sub"
+                                  claim_name: "sub"
+                                - header_name: "x-auth-scope"
+                                  claim_name: "scope"
+                                - header_name: "x-auth-jti"
+                                  claim_name: "jti"
+                          rules:
+                            - match: { prefix: "/" }
+                              requires: { provider_name: "keycloak" }
+                      - name: envoy.filters.http.rbac
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBAC
+                          rules:
+                            action: ALLOW
+                            policies:
+                              read:
+                                permissions:
+                                  - and_rules:
+                                      rules:
+                                        - header: { name: ":method", string_match: { exact: "GET" } }
+                                        - url_path:
+                                            path: { prefix: "/accounts/" }
+                                principals:
+                                  - header: { name: "x-auth-scope", string_match: { contains: "account:read" } }
+                              propose:
+                                permissions:
+                                  - and_rules:
+                                      rules:
+                                        - header: { name: ":method", string_match: { exact: "POST" } }
+                                        - url_path:
+                                            path:
+                                              safe_regex:
+                                                google_re2: {}
+                                                regex: "^/accounts/[^/]+/freeze-proposals$"
+                                principals:
+                                  - header: { name: "x-auth-scope", string_match: { contains: "account:propose" } }
+                      - name: envoy.filters.http.lua
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+                          default_source_code:
+                            inline_string: |
+                              -- rbacの後に配置しているため、ここに到達するのはrbacを通過した
+                              -- リクエストのみ(ADR 0009 §2③:素通りしたリクエストに付与しては
+                              -- 意味がない)。
+                              function envoy_on_request(request_handle)
+                                local token = os.getenv("HANDSHAKE_TOKEN")
+                                if token then
+                                  request_handle:headers():replace("x-gekko-handshake", token)
+                                end
+                              end
+                      - name: envoy.filters.http.router
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+      clusters:
+        - name: app_upstream
+          type: STATIC
+          lb_policy: ROUND_ROBIN
+          load_assignment:
+            cluster_name: app_upstream
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address: { address: 127.0.0.1, port_value: 9000 }
+        - name: keycloak_jwks
+          type: STRICT_DNS
+          lb_policy: ROUND_ROBIN
+          load_assignment:
+            cluster_name: keycloak_jwks
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address: { address: keycloak.gekko.svc.cluster.local, port_value: 8080 }

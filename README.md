@@ -9,8 +9,8 @@ OAuth 2.0 Token Exchange (RFC 8693) をEnvoyサイドカー（ext_authz）に実
 - [x] k3dクラスタの土台（[k3d/cluster-config.yaml](k3d/cluster-config.yaml)、[Makefile](Makefile)）
 - [x] シナリオ・サービス構成・権限設計・各サービスの技術スタック（本READMEの「ドキュメントの読み方」参照）
 - [x] Keycloak realm・クライアント設定（[k8s/keycloak/](k8s/keycloak/)。PostgreSQLへ永続化（[k8s/postgres/](k8s/postgres/)、[ADR 0008](docs/adr/0008-per-service-datastore-strategy.md)）。実機検証内容・未検証事項は[docs/insights.md](docs/insights.md)・[docs/backlog.md](docs/backlog.md)参照）
-- [ ] 各サービスの実装
-- [ ] Envoyサイドカー・ext_authzサービス
+- [x] Envoyサイドカー・ext_authzサービスの1ホップ先行検証（fraud-mcp-server→account-service、`account:read`/`account:propose`。[k8s/ext-authz/](k8s/ext-authz/)・[k8s/account-service/](k8s/account-service/)・[k8s/fraud-mcp-server/](k8s/fraud-mcp-server/)、`make deploy-verify-hop && make verify-hop`。いずれもスタブ実装。残りのホップ・パターンは未検証。詳細は[docs/insights.md](docs/insights.md)・[docs/backlog.md](docs/backlog.md)参照）
+- [ ] 各サービスの実装（本実装。現状はスタブのみ）
 - [ ] MCPサーバー・AIエージェント
 
 ## クイックスタート
@@ -24,6 +24,10 @@ make undeploy           # アプリ層だけを削除（クラスタは残す）
 make stop               # クラスタを停止（状態は保持）
 make start              # 停止したクラスタを再開
 make down               # クラスタを完全削除
+
+make deploy-verify-hop  # Envoy/ext_authzの1ホップ先行検証用スタブ一式をデプロイ（make deploy実行済み前提）
+make verify-hop         # 上記の検証スクリプトを実行
+make undeploy-verify-hop # 1ホップ先行検証用スタブ一式を削除
 ```
 
 `make keycloak-forward`を実行した状態で`http://localhost:3000`にアクセスすると管理コンソールに到達できる。管理者ユーザー名・パスワードは`make deploy`実行時に標準出力へ表示される（`.secrets/`にも保存され、以後の`make deploy`では同じ値。ただしPostgresへの永続化後は初回ブートストラップ時のみ有効な値になる点に注意。詳細はMakefileのコメント参照）。

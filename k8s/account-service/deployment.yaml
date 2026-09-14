@@ -1,0 +1,93 @@
+# account-serviceの最小スタブDeployment(1ホップ先行検証用。ADR 0002/0009/0010)。
+# Service名・ラベルは本実装と同じ"account-service"にする(ADR 0010 MUST:
+# Keycloakクライアントid=K8s Service名=audience名を常に同一の文字列にする)。
+# Deployment名は"account-service-stub"とし、本実装完成時にこのDeploymentごと差し替える。
+#
+# Pod構成はinitContainer(合言葉生成)＋app＋Envoyの3者(architecture.md §3)。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: account-service-stub
+  namespace: gekko
+  labels:
+    app: account-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: account-service
+  template:
+    metadata:
+      labels:
+        app: account-service
+    spec:
+      initContainers:
+        # ADR 0009 §2③:Pod内合言葉。initContainerの完了がメインコンテナ起動前に保証されるため、
+        # 「先に生成、後で両方が読む」がレースコンディションなく書ける。
+        - name: handshake-init
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - "head -c32 /dev/urandom | od -An -tx1 | tr -d ' \\n' > /handshake/token"
+          volumeMounts:
+            - name: handshake
+              mountPath: /handshake
+      containers:
+        - name: app
+          image: python:3.12-alpine
+          command: ["python3", "/scripts/app.py"]
+          env:
+            - name: APP_BIND_HOST
+              value: "127.0.0.1" # ADR 0009 主対策①:Pod外から直接到達不能にする
+            - name: APP_PORT
+              value: "9000"
+            - name: HANDSHAKE_TOKEN_FILE
+              value: "/handshake/token"
+          volumeMounts:
+            - name: app-script
+              mountPath: /scripts
+              readOnly: true
+            - name: handshake
+              mountPath: /handshake
+              readOnly: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+        - name: envoy
+          image: envoyproxy/envoy:v1.31.5
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              export HANDSHAKE_TOKEN="$(cat /handshake/token)"
+              exec envoy -c /etc/envoy/envoy.yaml
+          ports:
+            - name: http
+              containerPort: 8080
+          volumeMounts:
+            - name: envoy-config
+              mountPath: /etc/envoy
+              readOnly: true
+            - name: handshake
+              mountPath: /handshake
+              readOnly: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "300m"
+              memory: "128Mi"
+      volumes:
+        - name: app-script
+          configMap:
+            name: account-service-stub-app
+        - name: envoy-config
+          configMap:
+            name: account-service-envoy
+        - name: handshake
+          emptyDir: {}

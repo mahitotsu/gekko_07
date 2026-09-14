@@ -35,11 +35,13 @@ architecture.md §3は「次ホップごとに専用のegressリスナーを1つ
 
 [access-control-design.md](../access-control-design.md)表1の注記で、本システムは既に「各サービスのaudience名とKeycloakのクライアントidを同一にする」ことを前提にしている。この前提を**KubernetesのService名にも拡張し、audience名＝Keycloakクライアントid＝Kubernetes Service名＝アプリが呼び出すホスト名を、常に同一の文字列にする**（MUST）。
 
-この結果、ext_authzサービスはCheckRequestに含まれる`Host`（`:authority`）ヘッダーの値を、そのままToken Exchangeの`audience`パラメータとして使える。audienceをリスナー・ルートごとに静的設定する必要がなくなり、設定の重複が1つ減る。
+この結果、ext_authzサービスはCheckRequestに含まれる`Host`ヘッダーの値を、そのままToken Exchangeの`audience`パラメータとして使える。audienceをリスナー・ルートごとに静的設定する必要がなくなり、設定の重複が1つ減る。
+
+**〔1ホップ先行検証で訂正〕** 当初はこの`Host`をEnvoyの`ExtAuthzPerRoute.check_settings.context_extensions`経由でext_authzサービスへ渡す想定だったが、実機検証の結果、`context_extensions`はgRPCモードのext_authz限定の機能であり、[ADR 0002](0002-token-exchange-in-envoy-sidecar.md)で採用したHTTPモードのext_authzには一切伝わらない（Envoy公式v3 APIリファレンスで確認：「These settings are only applied to a filter configured with a grpc_service.」）ことが判明した。一方、HTTPモードのext_authzは`Host`・`Method`・`Path`・`Content-Length`・`Authorization`を、`authorization_request.allowed_headers`の設定とは無関係に**常に自動的に**外部認可サーバーへのリクエストへ含めることも確認した。したがって実際の実装では、Envoy側のroute設定にcontext_extensionsは一切登場せず、ext_authzサービス自身が受け取った`Host`と`Path`+`Method`から§3の対応表を解決する。選択（HTTPモードext_authz・Hostからのaudience自動導出）そのものは変わらないため、実装メカニズムのこの訂正のみ本文に反映する。
 
 ### 3. scopeは常に「(ホスト, パス, メソッド) → scope」という単一の仕組みで決める
 
-scopeは最終的に相手サービスの**実際のAPIパス・メソッド**から決まるべきものであり、これは相手サービス自身が公開する契約（[access-control-design.md](../access-control-design.md)表2を拡張した`(パス, メソッド) → スコープ`対応表）を参照して解決する。この対応表を、呼び出し元のEnvoyルート（host+pathマッチング）の`ExtAuthzPerRoute.check_settings.context_extensions`にそのまま落とし込む。**これは全ての委任関係に対して同じ1つの仕組みであり、特別扱いするケースはない**（`audience`は§2の通りHostヘッダーから自動導出されるため、context_extensionsに持たせるのは`scope`のみでよい）。
+scopeは最終的に相手サービスの**実際のAPIパス・メソッド**から決まるべきものであり、これは相手サービス自身が公開する契約（[access-control-design.md](../access-control-design.md)表2を拡張した`(パス, メソッド) → スコープ`対応表）を参照して解決する。**この対応表はext_authzサービス自身がコードとして持ち**、CheckRequestで自動転送される`Path`+`Method`（§2訂正箇所参照）から解決する。**これは全ての委任関係に対して同じ1つの仕組みであり、特別扱いするケースはない**（`audience`は§2の通り自動転送される`Host`から導出されるため、Envoy側のroute設定はどのクラスタへ転送するかという宛先の振り分けだけを担い、scope解決ロジックを持たない）。
 
 [services.md](../services.md)の7つの委任関係を実際に当てはめると、結果として2種類の見た目になる。
 
@@ -80,6 +82,6 @@ egressで必要な処理は4種類ある。①②③は透過的なプロキシ�
 
 - architecture.md §3の記述を「実サービス名への透過的呼び出し」「audienceはHostヘッダーから自動導出」「scopeは常に(ホスト,パス,メソッド)→scopeという単一の仕組みで決める（結果としてワイルドカード1本のホストと複数ルートが要るホストに分かれる）」に更新した
 - **MUST**：Keycloakクライアントid＝Kubernetes Service名＝audience名は、常に同一の文字列にする（今後実装する全サービスのマニフェストで守る）
-- 先行検証（ADR 0002が予定するfraud-mcp-server→account-service）で、`hostAliases`＋Envoy `virtual_hosts`による透過的ルーティングを実機確認する。このホップは複数ルートが要る側（`account:read`/`account:propose`）だが、パスパターンは[access-control-design.md](../access-control-design.md)表2に拡張済みのため、先行検証を妨げる未決定事項はない
+- 先行検証（ADR 0002が予定するfraud-mcp-server→account-service）で、`hostAliases`＋Envoy `virtual_hosts`による透過的ルーティングを実機確認**済み**（`account:read`/`account:propose`いずれも200・期待した`x-auth-*`ヘッダーで到達）。パスパターンは[access-control-design.md](../access-control-design.md)表2に拡張済みだったため、先行検証を妨げる未決定事項はなかった
 - account-serviceの完全なAPI設計（レスポンス形式・ページネーション等の実装詳細）はaccount-service実装着手時に行うが、Envoyのroute解決に必要なパスパターン自体は表2に既に決まっているため、これはもう「egress設計のブロッカー」ではない
-- ext_authzサービスと実際のEnvoy bootstrap設定（`hostAliases`、`virtual_hosts`、`ExtAuthzPerRoute`、`direct_response`、`allowed_client_headers_on_success`の具体的なYAML記述）は未着手。パターン①②④は`context_extensions`（scope。ワイルドカードルートでは静的な1値、複数ルートのホストでは実パス起点）を読むという共通のロジックでext_authz側を実装できるため、先行検証の際にまとめて確認する。パターン③（素通し）はext_authzを呼ばない構成のため別枠で確認する
+- ext_authzサービスと実際のEnvoy bootstrap設定（`hostAliases`、`virtual_hosts`、`ExtAuthzPerRoute`）は、パターン①（Token Exchange、fraud-mcp-server→account-service）について実機検証済み（`k8s/ext-authz/`・`k8s/account-service/`・`k8s/fraud-mcp-server/`。scopeは§2・§3訂正の通りcontext_extensionsを使わずext_authz側で解決する）。パターン②④（`direct_response`、`allowed_client_headers_on_success`）・パターン③（素通し）は未検証のまま（[backlog.md](../backlog.md)参照）

@@ -8,6 +8,50 @@
 - **原因**：実機検証や調査で判明した根本原因
 - **対応**：実際に取った対応・回避策
 
+## Envoy / ext_authz / Token Exchange（1ホップ先行検証、fraud-mcp-server→account-service）
+
+[k8s/ext-authz/](../k8s/ext-authz/)・[k8s/account-service/](../k8s/account-service/)・[k8s/fraud-mcp-server/](../k8s/fraud-mcp-server/)・[scripts/verify-hop.sh](../scripts/verify-hop.sh)で実施。`account:read`/`account:propose`いずれもEnvoy egress(ext_authzによるToken Exchange)→Envoy ingress(jwt_authn/rbac/合言葉)→アプリ、という経路全体が200で通り、期待した`x-auth-*`ヘッダーが転送されることを確認した。Pod外からアプリポートへの直接到達が拒否されることも確認した（ADR 0009主対策①）。
+
+### ext_authz(HTTPモード)のcontext_extensionsはgRPCモード限定
+
+**症状**：ADR 0010の設計通り`ExtAuthzPerRoute.check_settings.context_extensions`でscopeをext_authzサービスへ渡そうとしたが、Envoy公式v3 APIリファレンスを確認すると「These settings are only applied to a filter configured with a grpc_service.」と明記されていた。ADR 0002はHTTPモードのext_authzを採用しているため、この方式はそもそも機能しない。
+
+**原因**：`context_extensions`はgRPCモードのCheckRequest.attributes専用の仕組みで、HTTPモードには伝達経路がない。
+
+**対応**：HTTPモードのext_authzは、`Host`・`Method`・`Path`・`Content-Length`・`Authorization`を`authorization_request.allowed_headers`の設定と無関係に常に自動転送することも確認済み。ext_authzサービス自身が、この自動転送される`Host`（audience）と`Path`+`Method`（access-control-design.md 表2の対応表で解決するscope）だけからToken Exchangeリクエストを組み立てるよう設計を訂正した（[k8s/ext-authz/app-configmap.yaml](../k8s/ext-authz/app-configmap.yaml)）。ADR 0010・architecture.md §3を直接訂正済み（決定自体ではなく実装メカニズムの誤りだったため、新ADRは起こしていない）。
+
+### Keycloak Standard Token Exchange V2:audience解決にはclient scope側のAudience protocol mapperが要る
+
+**症状**：`grant_type=urn:ietf:params:oauth:grant-type:token-exchange`で`audience=fraud-mcp-server`を指定しても`{"error":"invalid_request","error_description":"Requested audience not available: fraud-mcp-server"}`で拒否される。`fraud-mcp-server`・`account-service`とも`standard.token.exchange.enabled: true`は設定済みで、クライアント設定に差はなかった。
+
+**原因**：Standard Token Exchange V2は、要求元クライアント（この例ではfrontend）に割り当てられたclient scope（`scope`パラメータで要求したもの）が、対象audienceを指す`oidc-audience-mapper`（protocol mapper）を持っていない限り、そのaudienceを解決できない。対象クライアント側の設定は不要（公式ドキュメントに明記）だが、要求元側のscopeにmapperが必要という点は明文化されていなかった。`account-service`向けは元々`account:read`等のclientScopeにこのmapperを設定していたため動いていたが、`fraud-mcp-server`向けには存在しなかった。
+
+**対応**：[k8s/keycloak/realm-configmap.yaml](../k8s/keycloak/realm-configmap.yaml)の`account:read`clientScopeに、`account-service`向けと`fraud-mcp-server`向けの**2つの**`oidc-audience-mapper`を持たせた。1つのscopeに複数audienceのmapperを持たせても、実際に発行されるトークンはToken Exchangeリクエストの`audience`パラメータで指定した1つだけに絞り込まれ（他方は含まれない）、ADR 0005の単一audience原則は崩れないことを実機で確認した。同名scopeが複数の実際の委任関係（今回はfrontend→account-service・frontend→fraud-mcp-serverの両方で`account:read`を使う）にまたがる場合は、この「1scope・複数audience mapper」パターンが必要になる。
+
+### kcadm.sh `get <collection> -q <field>=<value>` は一部のリソースでサーバー側フィルタが効かない
+
+**症状**：`kcadm.sh get client-scopes -r gekko -q name=account:read`の結果を`grep -m1 '"id"'`で拾ったIDに対して操作したところ、実際には無関係な組み込みscope（`offline_access`、配列の先頭要素）を操作してしまっていた。`clients`エンドポイントの`-q clientId=xxx`は正しく絞り込めていたため、しばらく気づかなかった。
+
+**原因**：`-q`はkcadmのREST呼び出しにクエリパラメータとして付与されるだけで、対象エンドポイントがそのクエリパラメータをサーバー側で解釈するかどうかはエンドポイントごとに異なる。`/admin/realms/{realm}/clients?clientId=`は有効なフィルタだが、`/admin/realms/{realm}/client-scopes`は`name`によるサーバー側フィルタを持たず、`-q`は黙って無視され全件が返る。
+
+**対応**：`client-scopes`のように`-q`が効くか不明なエンドポイントでは、まず`get client-scopes -r gekko`で全件のname/idの対応をローカルで確認してから対象IDを特定する（`fixtures.sh`の`client_id_of()`ヘルパーは`clients`エンドポイント限定でのみ使う設計にしている）。
+
+### Keycloak 26のDeclarative User Profile:email/氏名未設定だとROPCログインが「Account is not fully set up」で失敗する
+
+**症状**：`kcadm.sh create users -s username=... -s enabled=true`だけでユーザーを作成し、`set-password --temporary=false`でパスワードを設定しても、Resource Owner Password Credentials（direct grant）でのログインが`{"error":"invalid_grant","error_description":"Account is not fully set up"}`で失敗する。ユーザーの`requiredActions`は空配列で、パスワードcredentialも正しく設定されていた。
+
+**原因**：Keycloak 26のDeclarative User Profileが、`email`・`firstName`・`lastName`等の必須プロフィール属性の欠落を検出し、ログイン時に動的に（ユーザーの`requiredActions`配列には現れない形で）`VERIFY_PROFILE`相当の要求を発生させる。
+
+**対応**：[k8s/keycloak/test-fixtures-configmap.yaml](../k8s/keycloak/test-fixtures-configmap.yaml)のテストユーザー作成時に`email`（`example.invalid`ドメイン。RFC 2606で予約された実在解決されないドメイン）・`emailVerified=true`・`firstName`・`lastName`を明示的に設定するようにした。
+
+### ログイントークンに`aud`クレームが実は含まれていない（未対応・既知のギャップ）
+
+**症状**：`frontend`クライアントでROPCログインして得たトークンをデコードすると、`aud`クレームが一切存在しなかった（`azp: frontend`はあるが`aud`は無し）。access-control-design.md「認証」節は「ログイントークンの`aud`は`frontend`（単一）」と明記している。
+
+**原因**：`aud`クレームは、要求元クライアントに割り当てられたclient scope上のAudience protocol mapperから生成される（上記「Keycloak Standard Token Exchange V2」の項参照）。ログイン自体（Authorization Code / ROPC）はToken Exchangeではなく、かつfrontend自身への自己audience付与マッパーを持つscopeは一つも定義していないため、素のログイントークンには`aud`が乗らない。
+
+**対応**：未対応。この1ホップ先行検証の経路（フロントエンドが発行済みの委任トークンをsubject_tokenとして使う場面）には影響しないため今回は見送ったが、frontend実装時にはfrontend自身を指す`oidc-audience-mapper`を持つdefault（optionalではなく）client scope、またはfrontendクライアント自身の"dedicated"protocol mapperを追加する必要がある（backlog.md参照）。
+
 ## k3d / WSL2
 
 ### k3dクラスタが起動直後にAPIサーバーへ一切到達できない（cgroup v1非互換）

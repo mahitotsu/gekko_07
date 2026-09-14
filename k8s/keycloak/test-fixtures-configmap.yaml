@@ -1,0 +1,58 @@
+# 1ホップ先行検証(fraud-mcp-server→account-service)のためだけの最小限のテスト用フィクスチャ。
+# 本番の認可設計(architecture.md §4)は変更しない。frontendのdirectAccessGrantsEnabledのみ
+# 一時的にtrueにする(フロントエンド実装前でもブラウザなしでログインし、実際のToken Exchange
+# チェーンを検証するため)。フロントエンド実装時に見直す(backlog.md参照)。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-test-fixtures
+  namespace: gekko
+data:
+  fixtures.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    KCADM=/opt/keycloak/bin/kcadm.sh
+    SERVER="http://keycloak.gekko.svc.cluster.local:8080"
+
+    "$KCADM" config credentials --server "$SERVER" --realm master --user admin --password "$KEYCLOAK_ADMIN_PASSWORD"
+
+    client_id_of() {
+      "$KCADM" get clients -r gekko -q "clientId=$1" | grep -m1 '"id"' | sed -E 's/.*"id" *: *"([^"]+)".*/\1/'
+    }
+
+    FRONTEND_ID="$(client_id_of frontend)"
+    "$KCADM" update "clients/$FRONTEND_ID" -r gekko \
+      -s directAccessGrantsEnabled=true \
+      -s "secret=$FRONTEND_CLIENT_SECRET"
+
+    FRAUD_MCP_ID="$(client_id_of fraud-mcp-server)"
+    "$KCADM" update "clients/$FRAUD_MCP_ID" -r gekko \
+      -s "secret=$FRAUD_MCP_SERVER_CLIENT_SECRET"
+
+    # テストアナリスト(access-control-design.md 表6)。冪等: 既にいれば作り直さない。
+    #
+    # email/firstName/lastNameが未設定だと、ユーザーのrequiredActions配列が空でも
+    # 「Account is not fully set up」(Keycloak 26のDeclarative User Profileが必須属性の
+    # 欠落を検出し、ROPCログイン時に動的にVERIFY_PROFILEを要求する)でログインが失敗することを
+    # 実機で確認した。テスト目的でも実在に見えるメールアドレスは使わず、example.invalid
+    # (RFC 2606で予約された、実在解決されないドメイン)を使う。
+    if ! "$KCADM" get users -r gekko -q username=yamada-analyst | grep -q '"username"'; then
+      "$KCADM" create users -r gekko \
+        -s username=yamada-analyst \
+        -s enabled=true \
+        -s email=yamada-analyst@example.invalid \
+        -s emailVerified=true \
+        -s firstName=Yamada \
+        -s lastName=Analyst
+    fi
+    USER_ID="$("$KCADM" get users -r gekko -q username=yamada-analyst | grep -m1 '"id"' | sed -E 's/.*"id" *: *"([^"]+)".*/\1/')"
+    "$KCADM" update "users/$USER_ID" -r gekko \
+      -s enabled=true \
+      -s email=yamada-analyst@example.invalid \
+      -s emailVerified=true \
+      -s firstName=Yamada \
+      -s lastName=Analyst
+    "$KCADM" set-password -r gekko --userid "$USER_ID" --new-password "$YAMADA_ANALYST_PASSWORD" --temporary=false
+
+    echo "keycloak test fixtures ready"

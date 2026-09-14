@@ -1,0 +1,53 @@
+# ext_authzサービス(ADR 0002)。各サービスのEnvoyサイドカー(egress)から呼ばれる共有サービス。
+# 1ホップ先行検証の対象であるfraud-mcp-server用のToken Exchange資格情報のみを持つ
+# (backlog.md「ext-authzサービスの呼び出し元汎用化」参照)。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ext-authz-service
+  namespace: gekko
+  labels:
+    app: ext-authz-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ext-authz-service
+  template:
+    metadata:
+      labels:
+        app: ext-authz-service
+    spec:
+      containers:
+        - name: ext-authz
+          image: python:3.12-alpine
+          command: ["python3", "/scripts/app.py"]
+          env:
+            - name: TOKEN_EXCHANGE_CLIENT_ID
+              value: "fraud-mcp-server"
+            - name: TOKEN_EXCHANGE_CLIENT_SECRET_FILE
+              value: "/secrets/client-secret"
+          ports:
+            - name: http
+              containerPort: 8080
+          volumeMounts:
+            - name: app-script
+              mountPath: /scripts
+              readOnly: true
+            - name: client-secret
+              mountPath: /secrets
+              readOnly: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+      volumes:
+        - name: app-script
+          configMap:
+            name: ext-authz-app
+        - name: client-secret
+          secret:
+            secretName: fraud-mcp-server-client

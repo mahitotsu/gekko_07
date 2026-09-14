@@ -4,9 +4,11 @@
 
 ## Token Exchange / Envoyサイドカー
 
-- **先行検証するホップの具体的なEnvoy設定**：[ADR 0002](adr/0002-token-exchange-in-envoy-sidecar.md)・[ADR 0009](adr/0009-envoy-ingress-responsibility-and-bypass-prevention.md)・[ADR 0010](adr/0010-egress-listener-granularity.md)でegress/ingress双方の方式・パターンは決めたが、実際のYAML（`hostAliases`、Envoy `virtual_hosts`、`ExtAuthzPerRoute`のcontext_extensions、jwt_authn/rbacフィルタ、合言葉ヘッダーをLuaフィルタ等でどう付与するか）はこれから書く。対象は fraud-mcp-server→account-service の`account:read`/`account:propose`（いずれもパターン①）。あわせてアプリのegressポートがPod外から到達不能であることを実機確認する
-- **client_credentials発行・素通し・トークンを値として取得する3パターンの実機検証**：[ADR 0010](adr/0010-egress-listener-granularity.md)でEnvoy標準機能のみで実現できる設計（②`allowed_upstream_headers`は①と共通、③はext_authzを呼ばない単純プロキシ、④`direct_response`+`allowed_client_headers_on_success`）まで固めたが、実機での動作確認はこれから（特に④のext_authz+direct_responseの組み合わせは実機で挙動を要確認）
-- **合言葉env var名の統一命名**：[ADR 0009](adr/0009-envoy-ingress-responsibility-and-bypass-prevention.md)で「言語をまたいで統一命名にする」方針は決めたが、具体的な名前（例：`HANDSHAKE_TOKEN_FILE`）は各サービス実装時に確定する
+- **client_credentials発行・素通し・トークンを値として取得する3パターンの実機検証**：[ADR 0010](adr/0010-egress-listener-granularity.md)でEnvoy標準機能のみで実現できる設計（②`allowed_upstream_headers`は①と共通、③はext_authzを呼ばない単純プロキシ、④`direct_response`+`allowed_client_headers_on_success`）まで固めたが、実機での動作確認はこれから（特に④のext_authz+direct_responseの組み合わせは実機で挙動を要確認）。パターン①（Token Exchange、fraud-mcp-server→account-service）は実機検証済み（[insights.md](insights.md)参照）
+- **ext-authzサービスの呼び出し元汎用化（複数クライアント対応）**：[k8s/ext-authz/](../k8s/ext-authz/)は1ホップ先行検証のため`fraud-mcp-server`のToken Exchange資格情報のみを固定で持つ。残りのホップ（frontend→account-service/fraud-mcp-server、payment-service→account-service、account-service→analyst-attribute-service）へ横展開する際、呼び出し元ごとに資格情報を切り替える仕組みが要る
+- **frontendのdirectAccessGrantsEnabled一時許可の後始末**：[k8s/keycloak/test-fixtures-job.yaml](../k8s/keycloak/test-fixtures-job.yaml)は、フロントエンド未実装でもブラウザなしでログインし1ホップ先行検証を行うため、`frontend`クライアントの`directAccessGrantsEnabled`を一時的にtrueにしている。frontend実装時に、自動テストで使い続けるか、Authorization Code + PKCEのみに戻すかを判断する
+- **ログイントークンに`aud=frontend`が実際には乗っていない**：ROPCログインで得たトークンを実機で確認したところ`aud`クレーム自体が存在しなかった（access-control-design.md「認証」節の記述と食い違う）。frontend自身を指す`oidc-audience-mapper`を持つdefault client scope（またはfrontendクライアント自身のdedicated protocol mapper）を追加する必要がある（[insights.md](insights.md)「ログイントークンにaudクレームが実は含まれていない」参照）
+- **合言葉ヘッダー名・env var名の確定**：1ホップ先行検証でヘッダー名`x-gekko-handshake`・env var名`HANDSHAKE_TOKEN_FILE`を採用し、Python実装のスタブ間で統一した（[k8s/account-service/app-configmap.yaml](../k8s/account-service/app-configmap.yaml)等）。Java/TypeScript/Rust/Go等、他言語での本実装時にも同じ命名を踏襲する
 - **Unixドメインソケット化の再検討**：[ADR 0009](adr/0009-envoy-ingress-responsibility-and-bypass-prevention.md)でTCP loopback+合言葉方式を採用しUnixドメインソケット化は見送ったが、「同一Pod内でアプリが侵害された場合」まで守る要求が出てきたら再検討する
 - **DPoPの適用範囲**：フロントエンド接点（ブラウザ〜frontend間）のみに適用するか、Envoyサイドカー化に伴いDPoP検証もサイドカー側（ext_authzまたは別フィルタ）に寄せるかは未決定
 - **Token Exchange結果のキャッシュ**：`(subject jti, audience)`単位でのキャッシュを検討しているが、ext_authzサービス側に持たせるか、どの範囲で共有するかは未決定。キャッシュTTLは性能とのトレードオフを意図的に選んだ短い値にする
@@ -29,7 +31,7 @@
 
 ## Keycloak
 
-- **`standard.token.exchange.enabled`属性の機能的検証**：[k8s/keycloak/realm-configmap.yaml](../k8s/keycloak/realm-configmap.yaml)でfrontend/fraud-mcp-server/account-serviceに設定した属性キー。Admin REST APIで値が保持されていることは確認済みだが（`GET /admin/realms/gekko/clients`で属性が返ってくる）、実際にRFC 8693トークン交換リクエストが通ることまでは未検証（ログインフローを持つ実サービスがまだ無いため）。frontendの実装時、最初のToken Exchange検証と合わせて確認する
+- **`standard.token.exchange.enabled`属性の機能的検証**：1ホップ先行検証（frontend→fraud-mcp-server、fraud-mcp-server→account-service）でRFC 8693トークン交換リクエストが実際に通ることを確認済み（[insights.md](insights.md)参照）。ただしaudience解決には対象audience向けの`oidc-audience-mapper`がclient scope側に必要という追加の前提が判明した（同insights.md）。account-service→analyst-attribute-serviceの経路（analyst-attribute-serviceはまだKeycloakクライアントとして未定義）は未検証のまま
 - **標準client scope（profile/email/roles等）の要否**：`--import-realm`での直接importでは自動生成されないため現状未定義（詳細はrealm-configmap.yamlのコメント参照）。ログイントークンに`preferred_username`等が必要になった時点でclientScopesに明示定義を追加する
 
 ## インフラ

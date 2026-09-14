@@ -19,7 +19,13 @@ KEYCLOAK_ADMIN_PASSWORD := $(call get_secret,keycloak-admin-password)
 POSTGRES_SUPERUSER_PASSWORD := $(call get_secret,postgres-superuser-password)
 KEYCLOAK_DB_PASSWORD := $(call get_secret,keycloak-db-password)
 
-.PHONY: up down stop start status clean deploy undeploy keycloak-forward
+# 1ホップ先行検証（ADR 0002/0009/0010）専用のテスト用シークレット。本番の認可設計には使わない
+# （deploy-verify-hop/verify-hop参照）。
+FRONTEND_CLIENT_SECRET := $(call get_secret,frontend-client-secret)
+FRAUD_MCP_SERVER_CLIENT_SECRET := $(call get_secret,fraud-mcp-server-client-secret)
+YAMADA_ANALYST_PASSWORD := $(call get_secret,yamada-analyst-password)
+
+.PHONY: up down stop start status clean deploy undeploy keycloak-forward deploy-verify-hop undeploy-verify-hop verify-hop
 
 # -------------------------
 # クラスタ操作
@@ -93,6 +99,46 @@ undeploy:
 # ホストのlocalhost:3000をKeycloakへport-forwardする（ADR 0004。フォアグラウンドで動き続けるプロセス）
 keycloak-forward:
 	kubectl -n $(NAMESPACE) port-forward svc/keycloak 3000:8080
+
+# -------------------------
+# 1ホップ先行検証（ADR 0002/0009/0010、fraud-mcp-server→account-service）
+# -------------------------
+# ここでデプロイするaccount-service/fraud-mcp-server/ext-authz-serviceはいずれもスタブ実装であり、
+# 各サービスの本実装（未着手）とは別物。既存のdeploy/undeployとは独立させてあるため、
+# Keycloak・Postgresだけを触りたい場合はこのターゲット群を無視してよい。
+
+# スタブ一式＋テスト用Keycloakフィクスチャをデプロイする（make deploy実行済み・クラスタ起動済み前提）
+deploy-verify-hop:
+	@kubectl create secret generic frontend-client -n $(NAMESPACE) \
+		--from-literal=client-secret=$(FRONTEND_CLIENT_SECRET) \
+		--dry-run=client -o yaml | kubectl apply -f -
+	@kubectl create secret generic fraud-mcp-server-client -n $(NAMESPACE) \
+		--from-literal=client-secret=$(FRAUD_MCP_SERVER_CLIENT_SECRET) \
+		--dry-run=client -o yaml | kubectl apply -f -
+	@kubectl create secret generic yamada-analyst -n $(NAMESPACE) \
+		--from-literal=password=$(YAMADA_ANALYST_PASSWORD) \
+		--dry-run=client -o yaml | kubectl apply -f -
+	kubectl delete job keycloak-test-fixtures -n $(NAMESPACE) --ignore-not-found
+	kubectl apply -f k8s/keycloak/test-fixtures-configmap.yaml -f k8s/keycloak/test-fixtures-job.yaml
+	kubectl -n $(NAMESPACE) wait --for=condition=complete job/keycloak-test-fixtures --timeout=60s
+	kubectl apply -f k8s/ext-authz/app-configmap.yaml -f k8s/ext-authz/deployment.yaml -f k8s/ext-authz/service.yaml
+	kubectl apply -f k8s/account-service/app-configmap.yaml -f k8s/account-service/envoy-configmap.yaml -f k8s/account-service/deployment.yaml -f k8s/account-service/service.yaml
+	kubectl apply -f k8s/fraud-mcp-server/app-configmap.yaml -f k8s/fraud-mcp-server/envoy-configmap.yaml -f k8s/fraud-mcp-server/deployment.yaml
+	kubectl -n $(NAMESPACE) rollout status deployment/ext-authz-service --timeout=120s
+	kubectl -n $(NAMESPACE) rollout status deployment/account-service-stub --timeout=120s
+	kubectl -n $(NAMESPACE) rollout status deployment/fraud-mcp-server-stub --timeout=120s
+
+# scripts/verify-hop.shを実行する（deploy-verify-hop実行済み前提）
+verify-hop:
+	./scripts/verify-hop.sh
+
+# 1ホップ先行検証用のスタブ一式・テストフィクスチャを削除する
+undeploy-verify-hop:
+	kubectl delete -f k8s/fraud-mcp-server/deployment.yaml -f k8s/fraud-mcp-server/envoy-configmap.yaml -f k8s/fraud-mcp-server/app-configmap.yaml --ignore-not-found
+	kubectl delete -f k8s/account-service/service.yaml -f k8s/account-service/deployment.yaml -f k8s/account-service/envoy-configmap.yaml -f k8s/account-service/app-configmap.yaml --ignore-not-found
+	kubectl delete -f k8s/ext-authz/service.yaml -f k8s/ext-authz/deployment.yaml -f k8s/ext-authz/app-configmap.yaml --ignore-not-found
+	kubectl delete -f k8s/keycloak/test-fixtures-job.yaml -f k8s/keycloak/test-fixtures-configmap.yaml --ignore-not-found
+	kubectl delete secret frontend-client fraud-mcp-server-client yamada-analyst -n $(NAMESPACE) --ignore-not-found
 
 # クラスタのコンテナを停止する（状態は保持したまま。再開はstartで）
 stop:
