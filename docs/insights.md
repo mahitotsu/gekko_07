@@ -44,13 +44,13 @@
 
 **対応**：[k8s/keycloak/test-fixtures-configmap.yaml](../k8s/keycloak/test-fixtures-configmap.yaml)のテストユーザー作成時に`email`（`example.invalid`ドメイン。RFC 2606で予約された実在解決されないドメイン）・`emailVerified=true`・`firstName`・`lastName`を明示的に設定するようにした。
 
-### ログイントークンに`aud`クレームが実は含まれていない（未対応・既知のギャップ）
+### ログイントークンに`aud`クレームが実は含まれていなかった（解消済み）
 
 **症状**：`frontend`クライアントでROPCログインして得たトークンをデコードすると、`aud`クレームが一切存在しなかった（`azp: frontend`はあるが`aud`は無し）。access-control-design.md「認証」節は「ログイントークンの`aud`は`frontend`（単一）」と明記している。
 
-**原因**：`aud`クレームは、要求元クライアントに割り当てられたclient scope上のAudience protocol mapperから生成される（上記「Keycloak Standard Token Exchange V2」の項参照）。ログイン自体（Authorization Code / ROPC）はToken Exchangeではなく、かつfrontend自身への自己audience付与マッパーを持つscopeは一つも定義していないため、素のログイントークンには`aud`が乗らない。
+**原因**：`aud`クレームは、要求元クライアントに割り当てられたclient scope上のAudience protocol mapperから生成される（上記「Keycloak Standard Token Exchange V2」の項参照）。ログイン自体（Authorization Code / ROPC）はToken Exchangeではなく、かつfrontend自身への自己audience付与マッパーを持つscopeは一つも定義していなかったため、素のログイントークンには`aud`が乗らなかった。
 
-**対応**：未対応。この1ホップ先行検証の経路（フロントエンドが発行済みの委任トークンをsubject_tokenとして使う場面）には影響しないため今回は見送ったが、frontend実装時にはfrontend自身を指す`oidc-audience-mapper`を持つdefault（optionalではなく）client scope、またはfrontendクライアント自身の"dedicated"protocol mapperを追加する必要がある（backlog.md参照）。
+**対応**：[k8s/keycloak/realm-configmap.yaml](../k8s/keycloak/realm-configmap.yaml)の`frontend`クライアント定義に、`included.client.audience: frontend`の`oidc-audience-mapper`を**client直下の"dedicated"protocolMappers**として追加した（clientScope経由ではない。理由：ログイン時は`scope`パラメータで何かを明示的に要求するわけではないため、"defaultClientScopes"にscopeを追加する方式より、常にそのクライアント宛てのトークンに付与される"dedicated"mapperの方が素直）。実機で`aud: "frontend"`が単独で乗ることを確認済み。Token Exchangeで`audience=fraud-mcp-server`等を要求した場合の交換後トークンには`frontend`は混入せず、要求した1つのaudienceだけになることも確認済み（ADR 0005の単一audience原則は崩れない）。
 
 ## k3d / WSL2
 
