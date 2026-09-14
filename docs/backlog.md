@@ -4,7 +4,6 @@
 
 ## Token Exchange / Envoyサイドカー
 
-- **account-serviceの実APIパス設計と(パス,メソッド)→スコープ対応表の拡張**：[ADR 0010](adr/0010-egress-listener-granularity.md)で、(呼び出し元, audience)だけではscopeが一意に決まらない2ケース（frontend→account-service、fraud-mcp-server→account-service）は、account-service自身の実APIパスから解決する設計にしたが、その実APIパス自体が未設計。先行検証（下記）が対象とする2エンドポイント分だけでも先に決める必要がある
 - **先行検証するホップの具体的なEnvoy設定**：[ADR 0002](adr/0002-token-exchange-in-envoy-sidecar.md)・[ADR 0009](adr/0009-envoy-ingress-responsibility-and-bypass-prevention.md)・[ADR 0010](adr/0010-egress-listener-granularity.md)でegress/ingress双方の方式・パターンは決めたが、実際のYAML（`hostAliases`、Envoy `virtual_hosts`、`ExtAuthzPerRoute`のcontext_extensions、jwt_authn/rbacフィルタ、合言葉ヘッダーをLuaフィルタ等でどう付与するか）はこれから書く。対象は fraud-mcp-server→account-service の`account:read`/`account:propose`（いずれもパターン①）。あわせてアプリのegressポートがPod外から到達不能であることを実機確認する
 - **client_credentials発行・素通し・トークンを値として取得する3パターンの実機検証**：[ADR 0010](adr/0010-egress-listener-granularity.md)でEnvoy標準機能のみで実現できる設計（②`allowed_upstream_headers`は①と共通、③はext_authzを呼ばない単純プロキシ、④`direct_response`+`allowed_client_headers_on_success`）まで固めたが、実機での動作確認はこれから（特に④のext_authz+direct_responseの組み合わせは実機で挙動を要確認）
 - **合言葉env var名の統一命名**：[ADR 0009](adr/0009-envoy-ingress-responsibility-and-bypass-prevention.md)で「言語をまたいで統一命名にする」方針は決めたが、具体的な名前（例：`HANDSHAKE_TOKEN_FILE`）は各サービス実装時に確定する

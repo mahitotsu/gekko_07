@@ -48,14 +48,12 @@ scopeは最終的に相手サービスの**実際のAPIパス・メソッド**�
 | payment-service → account-service | `account:transact`のみ | パスに依存しないワイルドカードルート1本（`prefix: "/"`）でscopeを固定 |
 | account-service → analyst-attribute-service | `analyst:read`のみ | 同上 |
 | frontend → fraud-mcp-server | `account:read`のみ | 同上 |
-| frontend → account-service | `account:read` または `account:freeze` | 実パス・メソッドごとに複数ルート（例：`GET /accounts/*` → `account:read`、`POST /accounts/*/freeze` → `account:freeze`） |
-| fraud-mcp-server → account-service | `account:read` または `account:propose` | 同上（例：`GET`系 → `account:read`、`POST /freeze-proposals` → `account:propose`） |
+| frontend → account-service | `account:read` または `account:freeze` | `GET /accounts/{id}/**` → `account:read`、`POST /accounts/{id}/freeze` → `account:freeze` |
+| fraud-mcp-server → account-service | `account:read` または `account:propose` | `GET /accounts/{id}/**` → `account:read`、`POST /accounts/{id}/freeze-proposals` → `account:propose` |
 
-「scopeがpathによらず1つだけ」なホスト（前者3つ）は、たまたまルートが1本（ワイルドカード）に潰れているだけであり、これはaccount-serviceの実APIパス設計を待たずに今すぐ書ける。「scopeがpathで変わる」ホスト（後者2つ）は、ルートが複数本必要で、それぞれのパスパターンを知る必要がある。**両者は設計上の別カテゴリではなく、同じ仕組みが生成する結果の違いにすぎない**。
+「scopeがpathによらず1つだけ」なホスト（前者3つ）は、たまたまルートが1本（ワイルドカード）に潰れているだけであり、「scopeがpathで変わる」ホスト（後者2つ）はルートが複数本になる。**両者は設計上の別カテゴリではなく、同じ仕組みが生成する結果の違いにすぎない**。
 
-- account-serviceのAPI設計時に、表2を具体的な`(パス, メソッド) → スコープ`の対応表に拡張する。この表は**account-service自身のingress側rbacポリシーと、account-serviceを呼ぶ全ての呼び出し元（frontend, fraud-mcp-server）のegress側scope解決の、両方が参照する単一の情報源にする**（重複した設定を持たない）
-- アプリのコードは常に「実ホスト名・実パス・実メソッドで普通にAPIを呼ぶ」だけでよい。そのAPIコールに対応するEnvoyルートが1本のワイルドカードなのか複数の実パスマッチなのかは、アプリのコード側が意識する必要は一切ない
-- **account-serviceの実APIパスが未設計の現時点では、frontend→account-service・fraud-mcp-server→account-serviceの2つだけがブロックされる**（backlog.mdに記録）。それ以外は今すぐワイルドカードルートで完成する
+パスパターンは[access-control-design.md](../access-control-design.md)表2に拡張済み（account-service自身のingress側rbacポリシーと、これを呼ぶ全ての呼び出し元のegress側scope解決の、両方が参照する単一の情報源）。「account-serviceの完全なAPI設計（レスポンス形式・ページネーション等）」を待つ必要はない——Envoyのroute解決に要るのは表2のパスパターンだけであり、これは既に決まっているため、この節はもう未解決ではない。アプリのコードは常に「実ホスト名・実パス・実メソッドで普通にAPIを呼ぶ」だけでよい。そのAPIコールに対応するEnvoyルートが1本のワイルドカードなのか複数の実パスマッチなのかは、アプリのコード側が意識する必要は一切ない。
 
 ### 4. egressの4パターン（維持・一部更新）
 
@@ -82,6 +80,6 @@ egressで必要な処理は4種類ある。①②③は透過的なプロキシ�
 
 - architecture.md §3の記述を「実サービス名への透過的呼び出し」「audienceはHostヘッダーから自動導出」「scopeは常に(ホスト,パス,メソッド)→scopeという単一の仕組みで決める（結果としてワイルドカード1本のホストと複数ルートが要るホストに分かれる）」に更新した
 - **MUST**：Keycloakクライアントid＝Kubernetes Service名＝audience名は、常に同一の文字列にする（今後実装する全サービスのマニフェストで守る）
-- 先行検証（ADR 0002が予定するfraud-mcp-server→account-service）で、`hostAliases`＋Envoy `virtual_hosts`による透過的ルーティングを実機確認する。**このホップは複数ルートが要る側**（`account:read`/`account:propose`）でもあるため、先行検証の時点でaccount-serviceの実APIパスを（少なくともこの2エンドポイント分は）先に決めておく必要がある。これは想定外の依存関係ではなく、むしろ先行検証の範囲を現実的に絞る材料になる（account-serviceの全APIを設計してからでなく、まずこの2エンドポイントだけ決めればよい）
-- **未解決**：account-serviceの実APIパス設計と、それに基づく表2の`(パス, メソッド)→スコープ`拡張（frontend→account-service、fraud-mcp-server→account-serviceの2ホップ分）。account-service実装着手時に取り組む（backlog.mdに記録）。それ以外のホップ（payment-service, account-service→analyst-attribute-service, frontend→fraud-mcp-server）はワイルドカードルート1本で今すぐ完成する
+- 先行検証（ADR 0002が予定するfraud-mcp-server→account-service）で、`hostAliases`＋Envoy `virtual_hosts`による透過的ルーティングを実機確認する。このホップは複数ルートが要る側（`account:read`/`account:propose`）だが、パスパターンは[access-control-design.md](../access-control-design.md)表2に拡張済みのため、先行検証を妨げる未決定事項はない
+- account-serviceの完全なAPI設計（レスポンス形式・ページネーション等の実装詳細）はaccount-service実装着手時に行うが、Envoyのroute解決に必要なパスパターン自体は表2に既に決まっているため、これはもう「egress設計のブロッカー」ではない
 - ext_authzサービスと実際のEnvoy bootstrap設定（`hostAliases`、`virtual_hosts`、`ExtAuthzPerRoute`、`direct_response`、`allowed_client_headers_on_success`の具体的なYAML記述）は未着手。パターン①②④は`context_extensions`（scope。ワイルドカードルートでは静的な1値、複数ルートのホストでは実パス起点）を読むという共通のロジックでext_authz側を実装できるため、先行検証の際にまとめて確認する。パターン③（素通し）はext_authzを呼ばない構成のため別枠で確認する

@@ -44,14 +44,14 @@
 
 ## 表2: account-serviceのスコープ別操作可否（BR5・BR6に対応）
 
-条件は「トークンが保有するスコープ」と「操作種別」の2軸。
+条件は「トークンが保有するスコープ」と「操作種別」の2軸。パスパターンは、account-service自身のingress側rbacポリシーと、account-serviceを呼ぶ全ての呼び出し元のegress側scope解決（[ADR 0010](adr/0010-egress-listener-granularity.md)）の両方が参照する単一の情報源である。account-serviceの実装時にAPIの詳細（レスポンス形式・ページネーション等）を決める際も、このパスパターン自体は変えない（変える場合はここを直接書き換える）。
 
-| 操作 | 必要スコープ |
-|---|---|
-| 取引履歴・不審取引の照会（read） | `account:read` |
-| 凍結提案の記録（propose） | `account:propose` |
-| 口座凍結の実行（freeze） | `account:freeze`（実行時にanalyst-attribute-serviceへの再照会あり。表5参照） |
-| 入出金・振込処理（transact） | `account:transact`（業務属性チェックなし） |
+| 操作 | 必要スコープ | パスパターン（Envoyのroute解決用） |
+|---|---|---|
+| 取引履歴・不審取引の照会（read） | `account:read` | `GET /accounts/{id}/**`（get_flagged_transactions・get_account_history・ダッシュボード表示を含む、読み取り系は全てこの配下） |
+| 凍結提案の記録（propose） | `account:propose` | `POST /accounts/{id}/freeze-proposals` |
+| 口座凍結の実行（freeze） | `account:freeze`（実行時にanalyst-attribute-serviceへの再照会あり。表5参照） | `POST /accounts/{id}/freeze` |
+| 入出金・振込処理（transact） | `account:transact`（業務属性チェックなし） | `POST /accounts/{id}/transactions` |
 
 ### どのトークンがどのスコープを保有するか
 
