@@ -19,3 +19,7 @@
 | [0009](0009-envoy-ingress-responsibility-and-bypass-prevention.md) | Envoy ingress側の責務範囲とバイパス防止 | Accepted |
 | [0010](0010-egress-listener-granularity.md) | egressは実サービス名への透過的な呼び出しとし、audienceはHostヘッダーから自動導出する | Accepted |
 | [0011](0011-scenario-ai-assisted-unfreeze.md) | シナリオを「AI支援による口座凍結解除」に変更（凍結は自動検知エンジンが実行） | Accepted |
+| [0012](0012-spiffe-spire-mtls-single-hop.md) | fraud-mcp-server→account-serviceの1ホップにSPIFFE/SPIREでmTLSを導入する | Accepted |
+| [0013](0013-dpop-sender-constraining.md) | fraud-mcp-server→account-serviceの1ホップにDPoPでトークン送信者拘束を導入する | Superseded by 0015 |
+| [0014](0014-fraud-agent-token-exchange.md) | fraud-agent→fraud-mcp-serverをToken Exchangeに変更し、frontendの事前トークン取得（パターン④）を廃止する | Accepted |
+| [0015](0015-dpop-removal-and-fraud-detection-engine-mtls.md) | DPoPを撤去し、SPIRE mTLSをfraud-detection-engine→account-serviceへ横展開する | Accepted |

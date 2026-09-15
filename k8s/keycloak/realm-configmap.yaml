@@ -23,7 +23,7 @@ data:
       "clientScopes": [
         {
           "name": "account:read",
-          "description": "取引履歴・不審取引・口座情報の読み取り（対象audience: account-service。frontend→fraud-mcp-server間のToken Exchangeでも同名で使うため、audienceマッパーをaccount-service・fraud-mcp-serverの2つ持つ。実際にどちらのaudienceになるかはToken Exchangeリクエストのaudienceパラメータで1つに絞り込まれる。ADR 0005の単一audience原則は保たれる）",
+          "description": "取引履歴・不審取引・口座情報の読み取り（対象audience: account-service。frontend→fraud-agent、fraud-agent→fraud-mcp-server間のToken Exchangeでも同名で使うため、audienceマッパーをaccount-service・fraud-agent・fraud-mcp-serverの3つ持つ。実際にどのaudienceになるかはToken Exchangeリクエストのaudienceパラメータで1つに絞り込まれる。ADR 0005の単一audience原則は保たれる。ADR 0014でfraud-agentマッパーを追加）",
           "protocol": "openid-connect",
           "attributes": {
             "include.in.token.scope": "true",
@@ -37,6 +37,17 @@ data:
               "consentRequired": false,
               "config": {
                 "included.client.audience": "account-service",
+                "id.token.claim": "false",
+                "access.token.claim": "true"
+              }
+            },
+            {
+              "name": "audience-fraud-agent",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-audience-mapper",
+              "consentRequired": false,
+              "config": {
+                "included.client.audience": "fraud-agent",
                 "id.token.claim": "false",
                 "access.token.claim": "true"
               }
@@ -178,6 +189,25 @@ data:
               }
             }
           ]
+        },
+        {
+          "clientId": "fraud-agent",
+          "name": "fraud-agent",
+          "description": "AIエージェント本体。frontendから受け取ったトークン（aud=fraud-agent）を自身でfraud-mcp-server宛てに再exchangeする（ADR 0014）",
+          "enabled": true,
+          "protocol": "openid-connect",
+          "publicClient": false,
+          "standardFlowEnabled": false,
+          "implicitFlowEnabled": false,
+          "directAccessGrantsEnabled": false,
+          "serviceAccountsEnabled": false,
+          "authorizationServicesEnabled": false,
+          "fullScopeAllowed": false,
+          "attributes": {
+            "standard.token.exchange.enabled": "true"
+          },
+          "defaultClientScopes": [],
+          "optionalClientScopes": ["account:read"]
         },
         {
           "clientId": "fraud-mcp-server",

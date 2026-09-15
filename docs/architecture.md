@@ -31,12 +31,12 @@
 - 各サービスのPodは**initContainer 1つ＋アプリコンテナ＋Envoyサイドカーの構成**（initContainerの役割は§3後半・[ADR 0009](adr/0009-envoy-ingress-responsibility-and-bypass-prevention.md)参照）
 - アプリは相手サービスの**実サービス名・実APIパスをそのまま**使ってリクエストを組み立てる（例：`http://account-service/accounts/123/transactions`）。人工的なURLプレフィックスやegress専用ポートは使わない。Podの`hostAliases`で相手サービス名を`127.0.0.1`へ静的にマッピングし、Envoyサイドカーが1つのリスナー上の複数`virtual_hosts`（`domains`でサービス名をマッチ）で受け、`ext_authz`（HTTPモード）フィルタが横取りしてToken Exchangeを実行してから実際のアップストリームへ転送する（[ADR 0010](adr/0010-egress-listener-granularity.md)）
 - **audienceはHostヘッダーから自動導出する**。Keycloakクライアントid＝Kubernetes Service名＝audience名を常に同一の文字列にする（MUST。[access-control-design.md](access-control-design.md)表1の既存の前提をKubernetes Service名にも拡張したもの）ため、ext_authzサービスはCheckRequestに**自動転送される**`Host`ヘッダー（後述）をそのまま`audience`として使え、リスナー・ルートごとの明示設定が不要になる
-- **scopeは常に「相手サービスの(パス, メソッド) → scope」という単一の仕組みで決める**（[access-control-design.md](access-control-design.md) 表2に拡張済みの対応表。account-service自身のingress側rbacポリシーと共有する単一の情報源）。特別扱いするケースはない——scopeがpathによらず1つだけのホップ（fraud-detection-engine→account-service、account-service→analyst-attribute-service、frontend→fraud-mcp-server）は、この仕組みがワイルドカードルート1本に潰れているだけ。scopeがpathで変わるホップ（frontend→account-service、fraud-mcp-server→account-service。それぞれ`account:read`/`account:unfreeze`、`account:read`/`account:propose`）は複数ルートになる。パスパターンは表2に決まっているため、account-serviceの完全なAPI実装を待たずに全ホップのEnvoy route設計が今すぐ完成する。アプリのコードは常に実ホスト名・実パス・実メソッドで普通にAPIを呼ぶだけで、どちらのケースかを意識しない
+- **scopeは常に「相手サービスの(パス, メソッド) → scope」という単一の仕組みで決める**（[access-control-design.md](access-control-design.md) 表2に拡張済みの対応表。account-service自身のingress側rbacポリシーと共有する単一の情報源）。特別扱いするケースはない——scopeがpathによらず1つだけのホップ（fraud-detection-engine→account-service、account-service→analyst-attribute-service、frontend→fraud-agent、fraud-agent→fraud-mcp-server）は、この仕組みがワイルドカードルート1本に潰れているだけ。scopeがpathで変わるホップ（frontend→account-service、fraud-mcp-server→account-service。それぞれ`account:read`/`account:unfreeze`、`account:read`/`account:propose`）は複数ルートになる。パスパターンは表2に決まっているため、account-serviceの完全なAPI実装を待たずに全ホップのEnvoy route設計が今すぐ完成する。アプリのコードは常に実ホスト名・実パス・実メソッドで普通にAPIを呼ぶだけで、どちらのケースかを意識しない
   - この対応表は**ext_authzサービス自身がコードとして持つ**。HTTPモードのext_authzは`Host`・`Method`・`Path`・`Content-Length`・`Authorization`を常に自動転送するため（Envoyの標準動作。`ExtAuthzPerRoute`の`context_extensions`はgRPCモード限定で使わない。[ADR 0010](adr/0010-egress-listener-granularity.md)の訂正箇所参照）、Envoy側のroute設定はどのクラスタへ転送するかという宛先の振り分けだけを担う
-- egressで必要な処理は4種類ある（ADR 0010）：①Token Exchange（大半のホップ、透過的プロキシ）②client_credentials発行（fraud-detection-engine→account-service、透過的プロキシ）③素通し（fraud-agent→fraud-mcp-server、ext_authzを呼ばない単純プロキシ）④トークンを値として取得（frontend→fraud-mcp-server。①と同じext_authz呼び出しだが実サービスは呼ばない合成的な呼び出しで、この1ケースのみ人工的な専用パス`http://fraud-mcp-server/_mint-token`を使う。ルートを`direct_response`にし交換後トークンを`allowed_client_headers_on_success`で呼び出し元自身への応答として返す）
-- `ext_authz`の応答ヘッダー許可リスト（①②：`allowed_upstream_headers`に`Authorization`を含める。④：`allowed_client_headers_on_success`に交換後トークンを返すヘッダー名を含める）
-- 実装順序：まず1ホップ分＝fraud-mcp-server→account-serviceの`account:read`/`account:propose`（いずれもパターン①）で先行検証**済み**（`k8s/ext-authz/`・`k8s/account-service/`・`k8s/fraud-mcp-server/`、`scripts/verify-hop.sh`。詳細は[insights.md](insights.md)）。残りのホップ・他の3パターン（②③④）は未検証（[backlog.md](backlog.md)参照）
-- Keycloak側で見落としやすい前提：Token Exchangeの`audience`パラメータが実際に解決されるには、要求元クライアントに割り当てたclient scope（`account:read`等）が、対象audienceを指す`oidc-audience-mapper`（protocol mapper）を持っている必要がある（[k8s/keycloak/realm-configmap.yaml](../k8s/keycloak/realm-configmap.yaml)）。`account:read`のように同名scopeが複数audience（account-service・fraud-mcp-server）へ使われる場合は、そのscopeに両方のマッパーを持たせてよい——実際に発行されるトークンは、その時の`audience`パラメータで指定した1つだけに絞り込まれ、単一audience原則（[ADR 0005](adr/0005-single-audience-tokens-only.md)）は保たれる（実機で確認済み）
+- egressで必要な処理は2種類ある（ADR 0010、[ADR 0014](adr/0014-fraud-agent-token-exchange.md)で③④廃止）：①Token Exchange（大半のホップ、透過的プロキシ。frontend→fraud-agent・fraud-agent→fraud-mcp-serverもここに含まれる）②client_credentials発行（fraud-detection-engine→account-service、透過的プロキシ）
+- `ext_authz`の応答ヘッダー許可リスト（①②とも`allowed_upstream_headers`に`Authorization`を含める）
+- 実装順序：まず1ホップ分＝fraud-mcp-server→account-serviceの`account:read`/`account:propose`（いずれもパターン①）で先行検証**済み**（`k8s/ext-authz/`・`k8s/account-service/`・`k8s/fraud-mcp-server/`、`scripts/verify-hop.sh`。詳細は[insights.md](insights.md)）。残りのホップは未検証（[backlog.md](backlog.md)参照）
+- Keycloak側で見落としやすい前提：Token Exchangeの`audience`パラメータが実際に解決されるには、要求元クライアントに割り当てたclient scope（`account:read`等）が、対象audienceを指す`oidc-audience-mapper`（protocol mapper）を持っている必要がある（[k8s/keycloak/realm-configmap.yaml](../k8s/keycloak/realm-configmap.yaml)）。`account:read`のように同名scopeが複数audience（account-service・fraud-agent・fraud-mcp-server）へ使われる場合は、そのscopeに全てのマッパーを持たせてよい——実際に発行されるトークンは、その時の`audience`パラメータで指定した1つだけに絞り込まれ、単一audience原則（[ADR 0005](adr/0005-single-audience-tokens-only.md)）は保たれる（実機で確認済み）
 
 **サイドカーの受信側（ingress）の責務**（[ADR 0009](adr/0009-envoy-ingress-responsibility-and-bypass-prevention.md)）：
 
@@ -45,6 +45,10 @@
 - **Envoyを経由しない直接アクセスのバイパス防止**（3層。詳細はADR 0009）：①アプリは`127.0.0.1`にのみbindし、Serviceはアプリのポートではなく Envoyのリスナーを指す（構造的な防止）②アプリ自身も接続元がloopbackでなければ拒否する（多層防御）③initContainerがPod起動時に生成しemptyDirで共有する使い捨ての合言葉を、jwt_authn/rbacを通過した後にのみEnvoyがヘッダーへ付与し、アプリはこれを検証してから他の認証ヘッダーを信用する（Envoyの設定ミスや誤操作によるバイパスの検知）。付与方式はADR 0009が候補に挙げた`envoy.filters.http.lua`を採用し、rbacより後段に置くことでフィルタ順序による保証を実現した（実機確認済み）
 - 上記②③の検証ロジックはk8s環境外でもテスト可能にする。ただし「テスト時は検証をスキップする」条件分岐は作らない（[CWE-489](https://cwe.mitre.org/data/definitions/489.html)）。検証ロジックは環境によらず単一とし、期待値の読み出し元（ファイルパス等）のみ環境変数で設定可能にする
 
+**mTLS（ワークロードID）**（[ADR 0012](adr/0012-spiffe-spire-mtls-single-hop.md)・[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)）：上記のOAuth Token Exchangeは「誰が何をしてよいか」という業務認可層であり、「誰と話しているか」という通信路の身元検証・暗号化とは独立の関心事である。account-serviceへの呼び出し元(fraud-mcp-server・fraud-detection-engine)は全て、SPIFFE/SPIREが発行するX.509-SVIDによるmTLS＋ALPNネゴシエーションのHTTP/2で接続する（`k8s/spire/`）。SPIRE agentのWorkload API（UDS）をEnvoyのSDSフィルタが参照し、証明書のプロビジョニング・ローテーションはSPIREが自動で行うため、Envoy bootstrap設定・アプリ本体のどちらにも証明書のライフサイクル管理コードは一切現れない。account-serviceのingressリスナーは単一のmTLS必須filter_chainのみで構成されており、plaintextでの到達経路は存在しない（ADR 0012が残していた既知の限界はADR 0015で解消済み）。他ホップ（frontend方向、analyst-attribute-service方向）への横展開、`ext-authz-service`自体のSPIFFE化は未着手（backlog.md参照）。
+
+トークン送信者拘束（DPoP、RFC 9449）は[ADR 0013](adr/0013-dpop-sender-constraining.md)で一度導入したが、このホップは既にmTLSで呼び出し元の身元を限定済みのため実利の重複が大きく、[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)で撤去した。実機検証で得た知見（Token Exchangeを跨いだDPoP拘束は「拘束のスロットが委任チェーンに1箇所、終端ホップのみ」という制約を持つ）はbacklog.mdに残してある。
+
 ## 4. Keycloakのクライアント・スコープ設計
 
 **クライアント**
@@ -52,6 +56,7 @@
 | クライアント | 種別 | 備考 |
 |---|---|---|
 | `frontend` | confidential, standard token exchange有効 | アナリスト向けBFF |
+| `fraud-agent` | confidential, standard token exchange有効 | AIエージェント本体。frontendから受け取ったトークンを自身でfraud-mcp-server宛てに再exchangeする（[ADR 0014](adr/0014-fraud-agent-token-exchange.md)） |
 | `fraud-mcp-server` | confidential | AIエージェントの代理としてaccount-serviceを呼ぶ |
 | `fraud-detection-engine` | confidential, client_credentials | 機械間認証。ユーザー委任なし |
 | `account-service` | confidential | analyst-attribute-serviceへの委任元 |
@@ -63,6 +68,8 @@
 | スコープ | 対象audience | 付与するクライアント | 意味 |
 |---|---|---|---|
 | `account:read` | account-service | frontend, fraud-mcp-server | 取引・口座の読み取り |
+| `account:read` | fraud-agent | **frontend のみ** | AIエージェントとのチャット開始（委任チェーンの入口。[ADR 0014](adr/0014-fraud-agent-token-exchange.md)） |
+| `account:read` | fraud-mcp-server | **fraud-agent のみ** | MCPツール呼び出し（[ADR 0014](adr/0014-fraud-agent-token-exchange.md)） |
 | `account:propose` | account-service | fraud-mcp-server のみ | 凍結解除案の記録（可逆・低リスク） |
 | `account:freeze` | account-service | **fraud-detection-engine のみ** | 口座凍結の自動実行（機械間認証。業務属性チェックなし） |
 | `account:unfreeze` | account-service | **frontend のみ** | 口座凍結の解除の実行（不可逆・高リスク） |
@@ -77,7 +84,8 @@
 **① 提案生成パス（AI起因、読み取り＋提案のみ）**
 ```
 analystトークン(aud=frontend)
-  → Token Exchange (frontend実行, audience=fraud-mcp-server, scope=account:read)
+  → Token Exchange (frontend実行, audience=fraud-agent, scope=account:read)
+  → Token Exchange (fraud-agent実行, audience=fraud-mcp-server, scope=account:read)
   → Token Exchange (fraud-mcp-server実行, audience=account-service, scope=account:read/account:propose)
   → account-serviceがToken Exchange (audience=analyst-attribute-service, scope=analyst:read) でアクセス制御
 ```

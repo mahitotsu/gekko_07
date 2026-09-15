@@ -31,16 +31,18 @@
 - 「実際に交換をリクエストしたプロセスが誰か」という素性は、この表のALLOW/DENY判定に一切現れない。判定に使われるのは「提示されたトークンのaudience」と「要求元として認証されたクライアント資格情報」だけである
 - この表はあくまで「どのaudience間でToken Exchangeが許可されているか」という認可トポロジーを示すものであり、「そのトークンを提示しているプロセスが本当にその正当な保持者かどうか」は別の関心事である。ベアラートークンである以上、盗まれたトークン文字列は誰でも提示できてしまう。これを防ぐには送信者拘束（DPoP、RFC 9449等）のような別の仕組みが必要で、本表の許可トポロジー単体では保証されない（DPoPの適用範囲は未決定。[backlog.md](backlog.md)参照）
 
-| 元audience \ 先audience | account-service | fraud-mcp-server | analyst-attribute-service |
-|---|---|---|---|
-| frontend | ALLOW | ALLOW | DENY |
-| fraud-mcp-server | ALLOW | DENY | DENY |
-| account-service | DENY | DENY | ALLOW |
-| analyst-attribute-service | DENY | DENY | DENY |
+| 元audience \ 先audience | account-service | fraud-agent | fraud-mcp-server | analyst-attribute-service |
+|---|---|---|---|---|
+| frontend | ALLOW | ALLOW | DENY | DENY |
+| fraud-agent | DENY | — | ALLOW | DENY |
+| fraud-mcp-server | ALLOW | DENY | — | DENY |
+| account-service | DENY | DENY | DENY | ALLOW |
+| analyst-attribute-service | DENY | DENY | DENY | DENY |
 
-- ALLOWは3マスのみ。frontendの行に2つALLOWがあるのは、frontendが1つのログイントークン（`aud=frontend`）から、目的の異なる2つの単一audienceトークン（account-service向け・fraud-mcp-server向け）をそれぞれ個別のToken Exchangeで取得するため（[ADR 0005](adr/0005-single-audience-tokens-only.md)）。1つのトークンが複数audienceを同時に持つわけではない
-- fraud-mcp-server→account-serviceの1マス以外、AIエージェント側の経路にはanalyst-attribute-serviceへの到達手段がない。ホップ飛ばし（例：fraud-mcp-serverが直接analyst-attribute-serviceを呼ぶ）は構造上不可能（各クライアントへの`optionalClientScopes`の割当のみで実現。Client Policiesは使わない）
-- frontend→fraud-mcp-serverの交換で発行されるトークンは`account:read`のみを持ち、`account:unfreeze`は含まれない。これがAIエージェントに凍結解除の実行権限を渡さないための核心の仕組み（表2参照）
+- ALLOWは4マスのみ。frontendの行に2つALLOWがあるのは、frontendが1つのログイントークン（`aud=frontend`）から、目的の異なる2つの単一audienceトークン（account-service向け・fraud-agent向け）をそれぞれ個別のToken Exchangeで取得するため（[ADR 0005](adr/0005-single-audience-tokens-only.md)）。1つのトークンが複数audienceを同時に持つわけではない
+- 委任チェーンはfrontend→fraud-agent→fraud-mcp-server→account-serviceの4ホップになった（[ADR 0014](adr/0014-fraud-agent-token-exchange.md)）。各ホップは常に「自分宛て（`aud`が自分自身のクライアントidと一致する）」トークンだけを`subject_token`として次のToken Exchangeに使う。これにより「元audience」と「それを正当に提示できる唯一のクライアント」の1対1対応（下記注意点参照）が保たれる
+- fraud-mcp-server→account-serviceの1マス以外、AIエージェント側の経路にはanalyst-attribute-serviceへの到達手段がない。ホップ飛ばし（例：fraud-agentやfraud-mcp-serverが直接account-service・analyst-attribute-serviceを呼ぶ）は構造上不可能（各クライアントへの`optionalClientScopes`の割当のみで実現。Client Policiesは使わない）
+- frontend→fraud-agent、fraud-agent→fraud-mcp-serverいずれの交換で発行されるトークンも`account:read`のみを持ち、`account:unfreeze`は含まれない。これがAIエージェントに凍結解除の実行権限を渡さないための核心の仕組み（表2参照）
 
 ## 表2: account-serviceのスコープ別操作可否（BR5・BR6に対応）
 
@@ -60,11 +62,12 @@ architecture.md §4のクライアント別スコープ割当を前提に、実�
 | トークン | 発行経路 | 保有スコープ |
 |---|---|---|
 | frontendが発行するトークン（account-service宛て、確定パス用） | frontendが`aud=frontend`のログイントークンを`subject_token`にToken Exchange | `account:read`, `account:unfreeze` |
-| frontendが発行するトークン（fraud-mcp-server宛て、提案生成パス用） | 同上、target audienceのみ異なる | `account:read`のみ |
+| frontendが発行するトークン（fraud-agent宛て、提案生成パス用） | 同上、target audienceのみ異なる（[ADR 0014](adr/0014-fraud-agent-token-exchange.md)） | `account:read`のみ |
+| fraud-agentが発行するトークン（fraud-mcp-server宛て） | fraud-agentが受け取った`aud=fraud-agent`のトークンを`subject_token`にToken Exchange（[ADR 0014](adr/0014-fraud-agent-token-exchange.md)） | `account:read`のみ |
 | fraud-mcp-serverが発行するトークン（account-service宛て） | fraud-mcp-serverがToken Exchange | `account:read`, `account:propose` |
 | fraud-detection-engineのclient_credentialsトークン | client_credentials（委任チェーン外） | `account:freeze`のみ |
 
-fraud-mcp-server（ひいてはAIエージェント）が`account:unfreeze`を持つ経路は存在しない。凍結解除を実行できるのは、frontendが確定パス用に発行するトークンのみであり、これはアナリストがUIで決定論的操作（「凍結解除を確定」ボタン）を行った場合にのみ発行・使用される。
+fraud-agent・fraud-mcp-server（ひいてはAIエージェント）が`account:unfreeze`を持つ経路は存在しない。凍結解除を実行できるのは、frontendが確定パス用に発行するトークンのみであり、これはアナリストがUIで決定論的操作（「凍結解除を確定」ボタン）を行った場合にのみ発行・使用される。
 
 ### scopeチェックの実施箇所（MUST）
 

@@ -11,7 +11,8 @@ architecture.md §3は「次ホップごとに専用のegressリスナーを1つ
 |---|---|---|---|
 | frontend | account-service | `account:read` | 取引ダッシュボード |
 | frontend | account-service | `account:unfreeze` | 凍結解除確定ボタン |
-| frontend | fraud-mcp-server | `account:read` | チャットUI開始時 |
+| frontend | fraud-agent | `account:read` | チャットUI開始時（〔[ADR 0014](0014-fraud-agent-token-exchange.md)で訂正〕当初は`fraud-mcp-server`宛てだったが、以降を参照） |
+| fraud-agent | fraud-mcp-server | `account:read` | MCPツール呼び出し（〔[ADR 0014](0014-fraud-agent-token-exchange.md)で追加〕） |
 | fraud-mcp-server | account-service | `account:read` | 取引照会系MCPツール |
 | fraud-mcp-server | account-service | `account:propose` | 凍結解除案記録MCPツール |
 | fraud-detection-engine | account-service | `account:freeze` | 自動凍結（client_credentials、subject_tokenの交換ではない） |
@@ -49,27 +50,26 @@ scopeは最終的に相手サービスの**実際のAPIパス・メソッド**�
 |---|---|---|
 | fraud-detection-engine → account-service | `account:freeze`のみ | パスに依存しないワイルドカードルート1本（`prefix: "/"`）でscopeを固定 |
 | account-service → analyst-attribute-service | `analyst:read`のみ | 同上 |
-| frontend → fraud-mcp-server | `account:read`のみ | 同上 |
+| frontend → fraud-agent | `account:read`のみ | 同上（〔[ADR 0014](0014-fraud-agent-token-exchange.md)で訂正〕当初は`frontend → fraud-mcp-server`だった） |
+| fraud-agent → fraud-mcp-server | `account:read`のみ | 同上（〔[ADR 0014](0014-fraud-agent-token-exchange.md)で追加〕） |
 | frontend → account-service | `account:read` または `account:unfreeze` | `GET /accounts/{id}/**` → `account:read`、`POST /accounts/{id}/unfreeze` → `account:unfreeze` |
 | fraud-mcp-server → account-service | `account:read` または `account:propose` | `GET /accounts/{id}/**` → `account:read`、`POST /accounts/{id}/unfreeze-proposals` → `account:propose` |
 
-「scopeがpathによらず1つだけ」なホスト（前者3つ）は、たまたまルートが1本（ワイルドカード）に潰れているだけであり、「scopeがpathで変わる」ホスト（後者2つ）はルートが複数本になる。**両者は設計上の別カテゴリではなく、同じ仕組みが生成する結果の違いにすぎない**。
+「scopeがpathによらず1つだけ」なホスト（前者4つ）は、たまたまルートが1本（ワイルドカード）に潰れているだけであり、「scopeがpathで変わる」ホスト（後者2つ）はルートが複数本になる。**両者は設計上の別カテゴリではなく、同じ仕組みが生成する結果の違いにすぎない**。
 
 パスパターンは[access-control-design.md](../access-control-design.md)表2に拡張済み（account-service自身のingress側rbacポリシーと、これを呼ぶ全ての呼び出し元のegress側scope解決の、両方が参照する単一の情報源）。「account-serviceの完全なAPI設計（レスポンス形式・ページネーション等）」を待つ必要はない——Envoyのroute解決に要るのは表2のパスパターンだけであり、これは既に決まっているため、この節はもう未解決ではない。アプリのコードは常に「実ホスト名・実パス・実メソッドで普通にAPIを呼ぶ」だけでよい。そのAPIコールに対応するEnvoyルートが1本のワイルドカードなのか複数の実パスマッチなのかは、アプリのコード側が意識する必要は一切ない。
 
-### 4. egressの4パターン（維持・一部更新）
+### 4. egressの2パターン（当初4パターン→[ADR 0014](0014-fraud-agent-token-exchange.md)で③④廃止）
 
-egressで必要な処理は4種類ある。①②③は透過的なプロキシ（実サービスを呼んでいるつもりでリクエストを組み立て、Envoyが横取りして転送する）という共通の形を持つ。④だけは性質が異なり、実サービスを一切呼ばない合成的な呼び出しである。
+egressで必要な処理は当初4種類あるとしていたが、③・④は[ADR 0014](0014-fraud-agent-token-exchange.md)で廃止した（利用者がいなくなったため）。現在有効なのは①②のみで、いずれも透過的なプロキシ（実サービスを呼んでいるつもりでリクエストを組み立て、Envoyが横取りして転送する）という共通の形を持つ。
 
-**① Token Exchange**：frontend→account-service/fraud-mcp-server、fraud-mcp-server→account-service、account-service→analyst-attribute-service。ext_authzは`authorization_response.allowed_upstream_headers`で交換後トークンを`Authorization`ヘッダーとして実アップストリームへの転送リクエストに乗せる。
+**① Token Exchange**：frontend→account-service/fraud-agent、fraud-agent→fraud-mcp-server、fraud-mcp-server→account-service、account-service→analyst-attribute-service。ext_authzは`authorization_response.allowed_upstream_headers`で交換後トークンを`Authorization`ヘッダーとして実アップストリームへの転送リクエストに乗せる。
 
 **② client_credentials発行**：fraud-detection-engine→account-service。①と同じ`allowed_upstream_headers`の仕組みを使うが、Token Exchangeではなくclient_credentials grantを使う（取得したトークンのキャッシュ・更新が主な仕事になる）。
 
-**③ 素通し**：fraud-agent→fraud-mcp-server（frontendが交換済みのトークンをそのまま使い回す。services.md参照）。ext_authz自体を呼ぶ必要がなく、単純なプロキシとして構成する（Authorizationヘッダーを一切書き換えない）。
+〔[ADR 0014](0014-fraud-agent-token-exchange.md)で削除〕当初存在した**③ 素通し**（fraud-agent→fraud-mcp-server。frontendが交換済みのトークンをそのまま使い回す単純プロキシ）と**④ トークンを値として取得**（frontend→fraud-mcp-server。実サービスを呼ばない合成的な呼び出し。人工的な専用パス`http://fraud-mcp-server/_mint-token`＋`direct_response`）は、fraud-agent自身がToken Exchangeを行う設計（①に統合）に変更したことで不要になった。③はfraud-agentのアプリ本体がトークンを意識する必要があり[ADR 0002](0002-token-exchange-in-envoy-sidecar.md)の原則と矛盾していた点、④は実アップストリームを持たない特殊ケースだった点が、いずれも解消される。詳細は[ADR 0014](0014-fraud-agent-token-exchange.md)を参照。
 
-**④ トークンを値として取得**：frontend→fraud-mcp-server（チャットUI開始時。services.md参照）。①と同じext_authz呼び出しを行うが、実サービスを呼ぶための実パスが無いため、フロントエンドが「トークンを取得するためだけの」専用パス（例：`http://fraud-mcp-server/_mint-token`。実APIではなく、この呼び出しだけが唯一の例外として人工的なパスを持つ）を呼ぶ。ルート側を実アップストリームへの転送ではなく`route.direct_response`（例：HTTP 204）として構成し、ext_authzの`authorization_response.allowed_client_headers_on_success`で交換後トークンを**呼び出し元（frontendアプリ自身）への応答ヘッダー**として返す。アプリのコード上でも「実サービスを呼んでいるのではなくトークンを取得している」ことが明確に分かる、実パスのないURLである点を意図的なシグナルとして扱う。
-
-以上①〜④とも、audience（Hostヘッダーから自動導出）・scope（相手サービスの対応表から解決、③④は例外）の組み合わせにより、[ADR 0002](0002-token-exchange-in-envoy-sidecar.md)が目指した「動的な解決ロジックを持たない」という設計目標を、宛先の文字列を人工的に発明することなく実現する。
+以上①②とも、audience（Hostヘッダーから自動導出）・scope（相手サービスの対応表から解決）の組み合わせにより、[ADR 0002](0002-token-exchange-in-envoy-sidecar.md)が目指した「動的な解決ロジックを持たない」という設計目標を、宛先の文字列を人工的に発明することなく実現する。
 
 ### 5. 「アプリがscopeを指定する」方式は採用しない（変更なし）
 
@@ -84,5 +84,5 @@ egressで必要な処理は4種類ある。①②③は透過的なプロキシ�
 - **MUST**：Keycloakクライアントid＝Kubernetes Service名＝audience名は、常に同一の文字列にする（今後実装する全サービスのマニフェストで守る）
 - 先行検証（ADR 0002が予定するfraud-mcp-server→account-service）で、`hostAliases`＋Envoy `virtual_hosts`による透過的ルーティングを実機確認**済み**（`account:read`/`account:propose`いずれも200・期待した`x-auth-*`ヘッダーで到達）。パスパターンは[access-control-design.md](../access-control-design.md)表2に拡張済みだったため、先行検証を妨げる未決定事項はなかった
 - account-serviceの完全なAPI設計（レスポンス形式・ページネーション等の実装詳細）はaccount-service実装着手時に行うが、Envoyのroute解決に必要なパスパターン自体は表2に既に決まっているため、これはもう「egress設計のブロッカー」ではない
-- ext_authzサービスと実際のEnvoy bootstrap設定（`hostAliases`、`virtual_hosts`、`ExtAuthzPerRoute`）は、パターン①（Token Exchange、fraud-mcp-server→account-service）に加え、パターン②（client_credentials、fraud-detection-engine→account-service）についても実機検証**済み**（`k8s/ext-authz/`・`k8s/account-service/`・`k8s/fraud-mcp-server/`・`k8s/fraud-detection-engine/`。scopeは§2・§3訂正の通りcontext_extensionsを使わずext_authz側で解決する）。パターン②は、subject_tokenを持たない呼び出し元向けに、ext_authzサービスを`GRANT_TYPE=client_credentials`で動作させる専用インスタンス（`ext-authz-service-cc`。呼び出し元固定・scope固定）として実装した。パターン④（`direct_response`、`allowed_client_headers_on_success`）・パターン③（素通し）は未検証のまま（[backlog.md](../backlog.md)参照）
+- ext_authzサービスと実際のEnvoy bootstrap設定（`hostAliases`、`virtual_hosts`、`ExtAuthzPerRoute`）は、パターン①（Token Exchange、fraud-mcp-server→account-service）に加え、パターン②（client_credentials、fraud-detection-engine→account-service）についても実機検証**済み**（`k8s/ext-authz/`・`k8s/account-service/`・`k8s/fraud-mcp-server/`・`k8s/fraud-detection-engine/`。scopeは§2・§3訂正の通りcontext_extensionsを使わずext_authz側で解決する）。パターン②は、subject_tokenを持たない呼び出し元向けに、ext_authzサービスを`GRANT_TYPE=client_credentials`で動作させる専用インスタンス（`ext-authz-service-cc`。呼び出し元固定・scope固定）として実装した。パターン④（`direct_response`、`allowed_client_headers_on_success`）・パターン③（素通し）は未検証のまま利用者がいなくなり、[ADR 0014](0014-fraud-agent-token-exchange.md)で廃止した
 - パターン②の検証で2つの運用上の落とし穴が判明した（詳細は[insights.md](../insights.md)）。1つ目：Keycloakの`--import-realm`はデータディレクトリが空の初回起動時のみ有効なため、ADR 0011のシナリオ変更でrealm-configmap.yamlに追加した`fraud-detection-engine`クライアント・`account:unfreeze`スコープが、既にPostgresへ永続化済みのrealmには反映されていなかった（`gekko` realmを明示的に削除してKeycloakを再起動する必要があった。`make keycloak-reimport-realm`として整備した）。2つ目：Envoyサイドカーも同様にConfigMapの静的bootstrap設定を起動時に1度だけ読み込みホットリロードしないため、account-serviceのrbacポリシーが`unfreeze-proposals`への改名前の古いパスパターンのまま稼働し続けていた（`make deploy-verify-hop`が対象Deploymentを常に再起動するよう修正済み）

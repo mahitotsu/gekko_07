@@ -1,0 +1,72 @@
+# registration entry作成スクリプト(ADR 0012/0015)。account-service/fraud-mcp-server/
+# fraud-detection-engineいずれもEnvoyコンテナだけをselectorで指定する
+# (k8s:container-name:envoy。アプリコンテナは秘密鍵に一切触れない)。
+# spire-server entry createは重複IDに対して非冪等なため、entry showで存在確認してから作成する。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spire-entries-script
+  namespace: spire
+data:
+  create-entries.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    SERVER_POD="spire-server-0"
+    SERVER_NS="spire"
+    TRUST_DOMAIN="gekko.internal"
+    NODE_ALIAS_ID="spiffe://${TRUST_DOMAIN}/ns/spire/sa/spire-agent"
+
+    # 公式ghcr.io/spiffe/spire-serverイメージはシェルを含まない(distroless系)ため、
+    # kubectl execはバイナリを絶対パスで直接起動する必要がある(実機検証で判明。
+    # PATHに乗っていないため"which"等でも解決できない)。
+    kexec() {
+      kubectl exec -n "$SERVER_NS" "$SERVER_POD" -c spire-server -- /opt/spire/bin/spire-server "$@"
+    }
+
+    create_if_missing() {
+      local spiffe_id="$1"
+      shift
+      if kexec entry show -spiffeID "$spiffe_id" 2>/dev/null | grep -q "Entry ID"; then
+        echo "entry already exists: $spiffe_id"
+      else
+        kexec entry create "$@"
+      fi
+    }
+
+    echo "==> node alias entry"
+    create_if_missing "$NODE_ALIAS_ID" \
+      -node \
+      -spiffeID "$NODE_ALIAS_ID" \
+      -selector k8s_psat:cluster:gekko07 \
+      -selector k8s_psat:agent_ns:spire \
+      -selector k8s_psat:agent_sa:spire-agent
+
+    echo "==> account-service entry (envoy container only)"
+    create_if_missing "spiffe://${TRUST_DOMAIN}/ns/gekko/sa/default/account-service" \
+      -parentID "$NODE_ALIAS_ID" \
+      -spiffeID "spiffe://${TRUST_DOMAIN}/ns/gekko/sa/default/account-service" \
+      -selector k8s:ns:gekko \
+      -selector k8s:sa:default \
+      -selector k8s:pod-label:app:account-service \
+      -selector k8s:container-name:envoy
+
+    echo "==> fraud-mcp-server entry (envoy container only)"
+    create_if_missing "spiffe://${TRUST_DOMAIN}/ns/gekko/sa/default/fraud-mcp-server" \
+      -parentID "$NODE_ALIAS_ID" \
+      -spiffeID "spiffe://${TRUST_DOMAIN}/ns/gekko/sa/default/fraud-mcp-server" \
+      -selector k8s:ns:gekko \
+      -selector k8s:sa:default \
+      -selector k8s:pod-label:app:fraud-mcp-server \
+      -selector k8s:container-name:envoy
+
+    echo "==> fraud-detection-engine entry (envoy container only)"
+    create_if_missing "spiffe://${TRUST_DOMAIN}/ns/gekko/sa/default/fraud-detection-engine" \
+      -parentID "$NODE_ALIAS_ID" \
+      -spiffeID "spiffe://${TRUST_DOMAIN}/ns/gekko/sa/default/fraud-detection-engine" \
+      -selector k8s:ns:gekko \
+      -selector k8s:sa:default \
+      -selector k8s:pod-label:app:fraud-detection-engine \
+      -selector k8s:container-name:envoy
+
+    echo "==> registration entries done"

@@ -1,0 +1,10 @@
+# Notifier "k8sbundle"(spire-server)が信頼バンドルを書き込む先。空で事前作成しておく必要がある
+# (ADR 0012)。spire-agentはこれをtrust_bundle_pathとしてマウントし、初回ブートストラップ時の
+# サーバー検証に使う。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spire-bundle
+  namespace: spire
+data:
+  bundle.crt: ""

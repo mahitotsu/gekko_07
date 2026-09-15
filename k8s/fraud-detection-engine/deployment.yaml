@@ -41,6 +41,11 @@ spec:
             - name: envoy-config
               mountPath: /etc/envoy
               readOnly: true
+            # SPIRE Agent Workload API(UDS)ソケット(ADR 0012/0015)。appコンテナはマウントしない
+            # (秘密鍵に触れるのはEnvoyのみ)。
+            - name: spire-agent-socket
+              mountPath: /run/spire/sockets
+              readOnly: true
           resources:
             requests:
               cpu: "50m"
@@ -52,3 +57,7 @@ spec:
         - name: envoy-config
           configMap:
             name: fraud-detection-engine-envoy
+        - name: spire-agent-socket
+          hostPath:
+            path: /run/spire/sockets
+            type: Directory

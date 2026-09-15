@@ -7,6 +7,10 @@
 # fraud-detection-engineはaccount-serviceに対して常にaccount:freezeのみを持つ
 # (ADR 0010表:「パスに依存しないワイルドカードルート1本でscopeを固定」)ため、frontend/
 # fraud-mcp-server向けのようなパスパターンごとのルート分岐は不要。
+#
+# account_service_upstreamクラスタのみ、SPIRE発行のSVIDによるmTLS+ALPN h2を追加する
+# (ADR 0015。fraud-mcp-server→account-serviceと同じ構成をこのホップへ横展開し、account-service
+# 側のplaintext受け口を完全に撤廃した)。
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -17,6 +21,11 @@ data:
     admin:
       address:
         socket_address: { address: 127.0.0.1, port_value: 9901 }
+    # SDS(SPIRE Agent Workload API)はxDSプロトコルの一種であり、DiscoveryRequestにnode識別子が
+    # 要る(ADR 0012の実機検証で判明)。
+    node:
+      id: fraud-detection-engine-envoy
+      cluster: fraud-detection-engine
     static_resources:
       listeners:
         - name: egress
@@ -62,6 +71,43 @@ data:
         - name: account_service_upstream
           type: STRICT_DNS
           lb_policy: ROUND_ROBIN
+          typed_extension_protocol_options:
+            envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+              "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+              explicit_http_config:
+                http2_protocol_options: {}
+          transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+              common_tls_context:
+                alpn_protocols: ["h2"]
+                tls_certificate_sds_secret_configs:
+                  - name: "default"
+                    sds_config:
+                      resource_api_version: V3
+                      api_config_source:
+                        api_type: GRPC
+                        transport_api_version: V3
+                        grpc_services:
+                          - envoy_grpc:
+                              cluster_name: spire_agent
+                combined_validation_context:
+                  default_validation_context:
+                    match_typed_subject_alt_names:
+                      - san_type: URI
+                        matcher:
+                          exact: "spiffe://gekko.internal/ns/gekko/sa/default/account-service"
+                  validation_context_sds_secret_config:
+                    name: "ROOTCA"
+                    sds_config:
+                      resource_api_version: V3
+                      api_config_source:
+                        api_type: GRPC
+                        transport_api_version: V3
+                        grpc_services:
+                          - envoy_grpc:
+                              cluster_name: spire_agent
           load_assignment:
             cluster_name: account_service_upstream
             endpoints:
@@ -69,6 +115,17 @@ data:
                   - endpoint:
                       address:
                         socket_address: { address: account-service.gekko.svc.cluster.local, port_value: 8080 }
+        # SPIRE Agent Workload API(UDS)へのSDSチャネル(ADR 0012/0015)。
+        - name: spire_agent
+          connect_timeout: 0.25s
+          http2_protocol_options: {}
+          load_assignment:
+            cluster_name: spire_agent
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        pipe: { path: /run/spire/sockets/agent.sock }
         - name: ext_authz_cc_cluster
           type: STRICT_DNS
           lb_policy: ROUND_ROBIN

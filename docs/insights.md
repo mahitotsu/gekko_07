@@ -123,3 +123,101 @@
 **対応**：`%UserProfile%\.wslconfig`（`[wsl2]`セクション）に`memory=12GB`を追記し、Windows側で`wsl --shutdown`を実行後にWSL2を再起動する（この操作はWSL2内の全プロセス・Docker・k3dクラスタのコンテナを道連れに終了させるため、WSL2内から`wsl.exe --shutdown`を自分で呼び出すのではなく、Windows側のターミナルから実行すること）。再起動後は`free -h`のtotalが増えていることで反映を確認できる。k3dクラスタ・Podはdockerのボリュームにデータが残っているため`make status`で状態を見て、必要なら`make up`で復帰させる（実機で確認済み：Podは自動的に`RESTARTS: 1`で復帰し、Keycloakの永続化データ・管理者パスワードもPostgresへの永続化により無傷だった）。
 
 併せて、Keycloak Deployment（[k8s/keycloak/deployment.yaml](../k8s/keycloak/deployment.yaml)）のreadiness/livenessProbeに`timeoutSeconds`を明示していなかった点も是正した。既定の1秒だと、このような資源逼迫時にGC・CPU競合で応答が1秒を超えただけでlivenessProbeが誤検知し、正常なPodを強制再起動させかねない。
+
+## SPIFFE/SPIRE mTLS（fraud-mcp-server→account-serviceの1ホップ、ADR 0012）
+
+[k8s/spire/](../k8s/spire/)・[k8s/account-service/envoy-configmap.yaml](../k8s/account-service/envoy-configmap.yaml)・[k8s/fraud-mcp-server/envoy-configmap.yaml](../k8s/fraud-mcp-server/envoy-configmap.yaml)で実施。fraud-mcp-server→account-serviceのホップがmTLS+ALPN h2経由で200・期待した`x-auth-*`ヘッダーで到達することを確認し、既存のfraud-detection-engine→account-service（パターン②、plaintext）が壊れていないことも確認した。
+
+### Envoy `TlsParameters`に`alpn_protocols`フィールドは存在しない
+
+**症状**：`common_tls_context.tls_params.alpn_protocols`を設定してEnvoyを起動すると、`INVALID_ARGUMENT: ... message envoy.extensions.transport_sockets.tls.v3.TlsParameters ... no such field: 'alpn_protocols'`で起動時エラーになった。
+
+**原因**：`alpn_protocols`は`CommonTlsContext`直下のフィールドであり、`TlsParameters`（TLSバージョン・cipher suite等を持つ別メッセージ）には存在しない。設計時の参考資料の誤りをそのまま反映していた。
+
+**対応**：`common_tls_context.alpn_protocols: ["h2"]`のように、`tls_params`と同じ階層（`common_tls_context`直下）に配置するよう訂正した。
+
+### SDS(xDS)を使う場合、bootstrap設定に`node.id`/`node.cluster`が必須
+
+**症状**：`tls_certificate_sds_secret_configs`でSPIRE AgentのSDSを参照する設定にした途端、`TlsCertificateSdsApi: node 'id' and 'cluster' are required. Set it either in 'node' config or via --service-node and --service-cluster options.`で起動時エラーになった。
+
+**原因**：SDSはxDSプロトコルの一種であり、DiscoveryRequestに`Node`識別子を含める必要があるが、これまでの素のHTTPフィルタチェーンだけの構成では`node:`セクションが一度も必要にならなかった。
+
+**対応**：両サービスのenvoy.yaml bootstrapに`node: { id: <service>-envoy, cluster: <service> }`を追加した。
+
+### SPIRE Agent SDSの検証コンテキストは`ROOTCA`という固定のマジック名でしか参照できない
+
+**症状**：`validation_context_sds_secret_config.name`に信頼ドメイン名（`gekko.internal`）を設定したところ、SPIRE Agentのログに`rpc error: code = InvalidArgument desc = workload is not authorized for the requested identities ["gekko.internal"]`が出続け、SDSのシークレット配信が失敗し続けた（`upstream connect error ... TLS error: Secret is not supplied by SDS`で全リクエストが503）。
+
+**原因**：SPIRE AgentのSDS実装は、リソース名として`"default"`（自分のSVID）・`"ROOTCA"`（自トラストドメインのバンドル）・`"ALL"`（全フェデレーションバンドル）の3つの固定マジック名だけを特別扱いする。それ以外の文字列は「そのSPIFFE IDへのSVIDリクエスト」と解釈されるため、信頼ドメイン名のような任意の文字列を渡すと、該当するworkload registration entryが存在せず拒否される。
+
+**対応**：`validation_context_sds_secret_config.name`を`"ROOTCA"`に固定した。
+
+### account-serviceの共有ingressリスナーにmTLSを必須化すると、SPIRE化していない既存ホップが壊れる
+
+**症状**：account-serviceのingressリスナー（単一）にmTLS必須の`transport_socket`を設定したところ、fraud-mcp-server→account-service（今回の対象）は通ったが、既に検証済みだったfraud-detection-engine→account-service（パターン②、client_credentials、SPIRE化はスコープ外）が`503 upstream connect error ... reset reason: connection termination`で壊れた。
+
+**原因**：account-serviceのingressリスナーは全呼び出し元が共有する単一のリスナーであり、SPIRE化した呼び出し元専用のmTLS要件を「そのリスナー全体」に課すと、SPIRE化していない他の呼び出し元も等しく拒否される。ADR 0012のスコープはfraud-mcp-server→account-serviceの1ホップのみで、fraud-detection-engineのSPIRE化は明示的にスコープ外としていたため、この副作用は避ける必要があった。
+
+**対応**：`filter_chain_match.transport_protocol`でTLS接続とplaintext接続を別の`filter_chains`エントリに振り分け、同じHTTPフィルタチェーン（jwt_authn/rbac/lua/router）を両方に適用する構成にした。ただしこれには重要な限界がある：**plaintextでの到達自体は依然として可能であり、mTLSは「TLSを選んだ場合にのみ強制される」任意の防御層にとどまる**。account-service側はL4（filter_chain選択）の時点ではHTTPパスを見られないため、「読み取り・提案系のパスだけmTLS必須、freezeパスだけplaintext許可」のようなパス単位の強制はできない。この構成でR2（相互認証）を額面通り満たすのは実質的にfraud-mcp-server経由の呼び出しのみであり、account-service全体としては「plaintextでの到達自体を遮断できていない」ことを既知の限界としてADR 0012・backlog.mdに明記した。
+
+### `filter_chain_match.transport_protocol`は`tls_inspector`リスナーフィルタなしでは機能しない
+
+**症状**：上記のfilter_chain分割を導入した直後、今度はfraud-mcp-server→account-serviceの方が`TLS_error:...WRONG_VERSION_NUMBER`で失敗するようになった（TLSで接続しているはずなのにplaintext側のfilter_chainに落ちていた）。
+
+**原因**：`filter_chain_match.transport_protocol: "tls"`は、接続がTLSかどうかを判定済みの実行時メタデータを参照するだけであり、その判定自体は`envoy.filters.listener.tls_inspector`リスナーフィルタがClientHelloを覗き見て行う。このリスナーフィルタを追加し忘れていたため、全接続が「未判定」＝`raw_buffer`扱いになり、TLS用のfilter_chainに一切到達していなかった。
+
+**対応**：リスナーに`listener_filters: [{ name: envoy.filters.listener.tls_inspector }]`を追加した。
+
+### `bitnami/kubectl`はバージョン固定タグを提供しなくなっていた（2025年のBitnami Secure Images移行）
+
+**症状**：`bitnami/kubectl:1.31`で`ImagePullBackOff`（`not found`）になった。
+
+**原因**：Bitnamiが2025年に実施したBitnami Secure Imagesへの移行で、無料で公開されるタグが`latest`のみになり、過去のようなバージョン固定タグ（`1.31.1`等）は有料サブスクリプション向けになった。このリポジトリの「イメージは全てバージョン固定する」慣習と両立しない。
+
+**対応**：`rancher/kubectl`（シェルを一切含まないscratch系イメージで、bashスクリプトの実行自体ができなかった）を経て、最終的に`alpine/k8s:1.35.5`（kubectl＋bash＋標準ユーティリティ同梱、タグをk8sサーバーバージョン`v1.35.5+k3s1`に一致させられる）に切り替えた。
+
+### 公式`ghcr.io/spiffe/spire-server`イメージにはシェルがなく、バイナリもPATH上にない
+
+**症状**：`kubectl exec spire-server-0 -- spire-server entry create ...`が`exec: "spire-server": executable file not found in $PATH`で失敗した。`sh -c`でラップして調査しようとしても`exec: "sh": executable file not found in $PATH`で同様に失敗した。
+
+**原因**：公式イメージはdistroless系で、シェルを含まない。`spire-server`バイナリ自体は`/opt/spire/bin/spire-server`に存在するが、`PATH`には含まれていない。
+
+**対応**：`kubectl exec`では常に`/opt/spire/bin/spire-server`を絶対パスで直接起動するようにした（`kexec()`ヘルパーに集約）。
+
+### `envoyproxy/envoy`イメージにはcurl/wgetが入っていない
+
+**症状**：Envoy管理API（`:9901/stats`）をPod内から叩いて統計を確認しようとしたところ、`curl`が`exec: "curl": executable file not found in $PATH`で失敗した。
+
+**原因**：Envoyの公式イメージはHTTPクライアントツールを同梱しない。ただし`bash`自体は含まれている。
+
+**対応**：`bash`の`/dev/tcp/<host>/<port>`疑似デバイスで生のTCPソケットを開き、素のHTTPリクエストを`printf`で組み立てて送る方式にした（[scripts/verify-hop.sh](../scripts/verify-hop.sh)）。
+
+## DPoP送信者拘束（fraud-mcp-server→account-serviceの1ホップ、ADR 0013。ADR 0015で撤去済み）
+
+**このセクションが指す実装（`k8s/dpop-verifier/`等）はADR 0015で撤去済み。** 以下は撤去前の実機検証で得た知見で、将来DPoPを再検討する際の参考として残す。
+
+[k8s/ext-authz/app-configmap.yaml](../k8s/ext-authz/app-configmap.yaml)・`k8s/dpop-verifier/`（削除済み）・[k8s/account-service/envoy-configmap.yaml](../k8s/account-service/envoy-configmap.yaml)で実施。正常系（proof検証成功、200）・異常系（鍵不一致・iat失効、いずれも401）を`dpop-verifier`への直接呼び出しで確認し、fraud-mcp-server→account-serviceの実際の経路（DPoP拘束されたトークン、`Authorization: DPoP <token>`スキーム）でも200が通ることを確認した。
+
+### Token ExchangeでのDPoP拘束は「引き継がれる」のではなく、要求者が自分の鍵で作り直す
+
+**症状**：ドキュメントの「同一クライアント・同一鍵でなければ自己再交換のDPoP拘束は成立しない」という記述から、fraud-mcp-serverがfrontend発行のsubject_token（azpがfrontendのまま）を別クライアント・別鍵で再exchangeすると失敗するのではと懸念した。
+
+**原因/実機確認**：実際には2パターンに分かれる。subject_tokenに**既存の拘束が無い**場合（今回採用した構成。frontendはDPoPを有効化していない）、fraud-mcp-serverが自分のクライアント（`dpop.bound.access.tokens=true`）で自分の鍵のproofを添えて再exchangeすると、`cnf.jkt`がfraud-mcp-server自身の鍵に新しく拘束されたトークンが**成功裏に**発行される（200）。一方、subject_tokenに**既存の拘束がある**場合（frontend自身もDPoPを有効化し、frontend自身の鍵で拘束済みのトークンをfraud-mcp-serverが別鍵で再exchangeしようとするケースを実機で再現）、Keycloakは`400 invalid_request: "Sender-constrained token exchange rejected as the token was not issued for the requesting client"`でexchange自体を拒否する（Keycloak issue #51205が指摘する状況）。
+
+**対応**：このプロジェクトの委任チェーン設計では、後続で再exchangeされることの無い「チェーンの最後のクライアント」だけがDPoP拘束を安全に有効化できる、という結論に至った。fraud-mcp-server→account-serviceはまさにこの位置に当たるため採用し、frontend→fraud-mcp-server向けのexchangeへのDPoP適用は（frontend実装時であっても）見送ることをADR 0013に明記した。
+
+### `ecdsa`パッケージの起動時pip installがreadinessProbe無しだとEnvoyのext_authzに403を出させる
+
+**症状**：`make deploy-verify-hop`直後に`scripts/verify-hop.sh`を実行すると、fraud-mcp-server→account-serviceの呼び出しが`403`（本文なし）で失敗することがあった。ext-authz-serviceのログを確認すると、該当リクエストの時間帯に`ALLOW`/`DENY`のログ行が一切無く、リクエスト自体がハンドラへ到達していなかった。
+
+**原因**：`command: pip install --quiet ecdsa && exec python3 /scripts/app.py`は、`pip install`の数秒間はポート8080でリッスンしていない。`kubectl rollout status`はコンテナプロセスが起動したことしか見ておらず（readinessProbe未設定だったため）、Podは実際にはまだ`ecdsa`をインストール中でもReady扱いになっていた。この間にEnvoyのext_authzがconnection refusedを受け、`failure_mode_allow: false`によりfail closeして403を返していた。
+
+**対応**：`ext-authz-service`・`dpop-verifier`双方のDeploymentに、ポート8080へのTCP `readinessProbe`（`initialDelaySeconds: 2`）を追加した。これにより`kubectl rollout status`が実際にリッスンを開始するまで待つようになり、`make deploy-verify-hop`直後に`scripts/verify-hop.sh`を実行しても再現しなくなったことを確認済み。
+
+### Envoyの`jwt_authn`は既定で`Authorization: Bearer <token>`しか見ない
+
+**症状**：ext-authz-serviceがDPoP拘束されたトークンを`Authorization: DPoP <token>`スキームで返すよう変更したところ（RFC 9449の仕様通り）、account-service側の`jwt_authn`がトークンを一切抽出できず認証エラーになった。
+
+**原因**：`jwt_authn`の`providers`は`from_headers`を明示しない場合、既定で`Authorization`ヘッダーの`Bearer `プレフィックスのみを見る。
+
+**対応**：account-serviceのTLS filter_chain（fraud-mcp-server専用）のjwt_authn providerに`from_headers: [{name: "Authorization", value_prefix: "DPoP "}]`を追加した。plaintext filter_chain（fraud-detection-engine用、DPoP非対象）は既定の`Bearer `のままにした（同じjwt_authn設定を全filter_chainで共有していないため、片方だけ変更できる。ADR 0012の実機検証で導入したfilter_chain分割の副産物）。

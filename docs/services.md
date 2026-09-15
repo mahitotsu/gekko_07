@@ -13,17 +13,17 @@
   - ログイン（Authorization Code + PKCE）。発行される直後のトークンは`aud=frontend`のみ（スコープなし。[ADR 0005](adr/0005-single-audience-tokens-only.md)）
   - 取引ダッシュボード：ログイントークンを`subject_token`にToken Exchange（audience=account-service, scope=account:read）を行い、そのトークンでaccount-serviceにアクセスする
   - 「凍結解除を確定」ボタン：同様にToken Exchange（audience=account-service, scope=account:unfreeze）を行い、そのトークンでaccount-serviceにアクセスする。決定論的操作の起点
-  - チャットUI：AIエージェント（fraud-agent）とのやり取り。開始時にログイントークンを`subject_token`に別のToken Exchange（audience=fraud-mcp-server, scope=account:read）を行い、ダウンスコープしたトークンをfraud-agentに渡す
+  - チャットUI：AIエージェント（fraud-agent）とのやり取り。開始時にログイントークンを`subject_token`に別のToken Exchange（audience=fraud-agent, scope=account:read）を行い、そのトークンでfraud-agentのチャット開始APIを呼ぶ（他の全ホップと同じ、実サービスへの透過的呼び出し。[ADR 0014](adr/0014-fraud-agent-token-exchange.md)）
 - **保有データ**：ログインセッション（アナリストのログイントークン）。サーバー側データストアは持たず、暗号化・署名付きCookieでステートレスに保持する（[ADR 0008](adr/0008-per-service-datastore-strategy.md)）
-- **連携相手**：Keycloak（認証、用途ごとのToken Exchangeの実行）、account-service（交換後のトークンで）、fraud-agent（委任トークンの受け渡し）
+- **連携相手**：Keycloak（認証、用途ごとのToken Exchangeの実行）、account-service（交換後のトークンで）、fraud-agent（Token Exchangeで得たトークンによる実呼び出し）
 - **技術スタック**：TypeScript / Nuxt.js（選定理由は[ADR 0007](adr/0007-per-service-language-selection.md)）
 
 ## fraud-agent（AIエージェント）
 
 - **存在意義**：凍結済み口座の凍結理由・取引履歴を分析し、誤検知の疑いがあれば凍結解除の提案を行う。**書き込み権限は「提案の記録」までで、凍結解除の実行権限は一切持たない**
 - **提供機能**：fraud-mcp-serverが公開するMCPツールを呼び出し、凍結中口座の凍結根拠・取引履歴を分析し、誤検知かどうかを判断する。結果を凍結解除提案としてfraud-mcp-server経由で記録する
-- **保有データ**：なし（フロントエンドから渡された委任トークンを保持するのみ。永続化しない）
-- **連携相手**：fraud-mcp-server（MCPクライアントとして）。Keycloakとは直接やり取りしない（frontendが交換済みのトークンを使い回すのみ）
+- **保有データ**：なし（frontendから渡された委任トークンを保持するのみ。永続化しない）
+- **連携相手**：frontend（Token Exchangeで得たトークンによる実呼び出しを受ける）、fraud-mcp-server（MCPクライアントとして）。Keycloakとは自身のEnvoyサイドカー経由でToken Exchangeを行う（受け取った`aud=fraud-agent`のトークンを`subject_token`に`audience=fraud-mcp-server, scope=account:read`で交換。アプリ本体はトークンを一切意識しない。[ADR 0002](adr/0002-token-exchange-in-envoy-sidecar.md)・[ADR 0014](adr/0014-fraud-agent-token-exchange.md)）
 - **技術スタック**：TypeScript / Claude Agent SDK（選定理由は[ADR 0007](adr/0007-per-service-language-selection.md)）
 
 ## fraud-mcp-server

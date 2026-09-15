@@ -1,0 +1,32 @@
+# registration entry作成Job(ADR 0012)。keycloak-db-init/keycloak-test-fixturesと同じ
+# 「ConfigMapマウントのスクリプトをJobで一度実行する」パターン。kubectlが要るためこのリポジトリで
+# 唯一alpine/k8sイメージを使う(Dockerfileは書かない方針は維持)。
+# 実機検証で判明:bitnami/kubectlは2025年のBitnami Secure Images移行でタグ付きイメージの無料公開を
+# 終了し"latest"のみ公開しており、このリポジトリの「イメージは全てバージョン固定する」慣習
+# (insights.md)と両立しない。代替のrancher/kubectlはシェルを一切含まないscratch系イメージで
+# bashスクリプトを実行できなかった。alpine/k8s(kubectl+bash+標準ユーティリティ同梱、バージョン
+# タグはk8sサーバーバージョンと合わせられる)に切り替えた。
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: spire-entries
+  namespace: spire
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      serviceAccountName: spire-entries
+      restartPolicy: Never
+      containers:
+        - name: create-entries
+          image: alpine/k8s:1.35.5
+          command: ["bash", "/scripts/create-entries.sh"]
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: script
+          configMap:
+            name: spire-entries-script
+            defaultMode: 0555

@@ -19,11 +19,11 @@ Token Exchangeで発行するトークンが複数のaudienceを同時に持つ�
 
 - ログイン直後のトークンは`aud=frontend`（frontend自身。単一）のみを持ち、それ以上の意味（特定のリソースサーバー向けスコープ）を持たせない
 - frontendがaccount-serviceにアクセスする経路（ダッシュボード表示・凍結解除確定）も、ログイントークンを直接使う特別扱いをやめ、frontend自身が明示的にToken Exchangeを実行して`aud=account-service`の単一audienceトークンを得る、という形に統一する
-- AIエージェントへの委任も同様に、frontendが別の明示的なToken Exchangeで`aud=fraud-mcp-server`の単一audienceトークンを得る
-- 以降のホップ（fraud-mcp-server→account-service、account-service→analyst-attribute-service）もすべて単一audienceの交換として一様に扱う
+- AIエージェントへの委任も同様に、frontendが別の明示的なToken Exchangeで`aud=fraud-agent`の単一audienceトークンを得る（〔[ADR 0014](0014-fraud-agent-token-exchange.md)で訂正〕当初は`aud=fraud-mcp-server`だった）
+- 以降のホップ（fraud-agent→fraud-mcp-server、fraud-mcp-server→account-service、account-service→analyst-attribute-service）もすべて単一audienceの交換として一様に扱う
 
 ## Consequences
 
 - 全ての「audienceの移動」が明示的なToken Exchangeとして一様に表現され、委任トポロジー表（[access-control-design.md](../access-control-design.md) 表1）を「元audience→先audience」という単純な行列として矛盾なく記述できる。frontendの直接アクセス経路も含めて全てが同じメカニズムを通るため、実装・監査の一貫性が増す
-- 1つの元トークン（`aud=frontend`）から、目的の異なる複数のToken Exchangeが並行して発生しうる（account-service向けとfraud-mcp-server向けをそれぞれ別に取得する）。これは単一audienceの制約に違反しない。「1トークンが複数audienceを持つ」ことと「1つの元トークンから複数の異なる単一audienceトークンを個別に発行できる」ことは別の話である
+- 1つの元トークン（`aud=frontend`）から、目的の異なる複数のToken Exchangeが並行して発生しうる（account-service向けとfraud-agent向けをそれぞれ別に取得する）。これは単一audienceの制約に違反しない。「1トークンが複数audienceを持つ」ことと「1つの元トークンから複数の異なる単一audienceトークンを個別に発行できる」ことは別の話である
 - frontendがaccount-serviceへの操作のたびに明示的なToken Exchangeを挟むことになり、レイテンシが増える。Token Exchange結果のキャッシュで緩和できる（[backlog.md](../backlog.md)参照）

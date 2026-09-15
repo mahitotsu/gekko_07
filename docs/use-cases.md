@@ -26,8 +26,8 @@
 ```
 1. yamada-analystがfrontendからログイン
 2. frontendでAIエージェント（fraud-agent）とのチャットを開始
-   → frontend: 自身のログイントークン（aud=frontend）を`subject_token`にToken Exchangeを実行（audience=fraud-mcp-server, scope=account:read）し、ダウンスコープしたトークンをfraud-agentに渡す
-3. fraud-agent → fraud-mcp-server: MCPツール get_frozen_accounts を呼ぶ
+   → frontend: 自身のログイントークン（aud=frontend）を`subject_token`にToken Exchangeを実行（audience=fraud-agent, scope=account:read）し、そのトークンでfraud-agentのチャット開始APIを呼ぶ（[ADR 0014](adr/0014-fraud-agent-token-exchange.md)）
+3. fraud-agent → fraud-mcp-server: 受け取ったトークン（aud=fraud-agent）を`subject_token`に自身のToken Exchangeを実行（audience=fraud-mcp-server, scope=account:read）した上で、MCPツール get_frozen_accounts を呼ぶ
 4. fraud-mcp-server: Token Exchange（audience=account-service, scope=account:read）
 5. account-service: Token Exchange（audience=analyst-attribute-service, scope=analyst:read）でyamada-analystの属性（東京, junior）を取得
 6. account-service: 東京の standard 口座のうち凍結中のものを、凍結根拠とともに返す（access-control-design.md 表5）
@@ -68,7 +68,7 @@ UC1と同じ流れだが、手順6で大阪のhigh-value口座も結果に含ま
 
 ```
 1. 仮にfraud-agent（またはfraud-mcp-server）が凍結解除APIを直接呼ぼうとしても、
-   手持ちのトークンはfrontendとのToken Exchangeで発行された scope=account:read のみのトークンであり、
+   手持ちのトークンは委任チェーン（frontend→fraud-agent→fraud-mcp-server、いずれもToken Exchangeで発行。[ADR 0014](adr/0014-fraud-agent-token-exchange.md)）上のどのトークンも scope=account:read のみであり、
    account:unfreezeスコープを含まない
 2. account-serviceのスコープチェック（access-control-design.md 表2）でDENY
 ```

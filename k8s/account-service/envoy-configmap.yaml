@@ -5,6 +5,21 @@
 # freezeポリシーはfraud-detection-engineのclient_credentialsトークン(委任チェーン外。表4参照)
 # のみを受け付ける。jwt_authnはsubクレームの有無を区別しないため、account:freezeスコープの
 # 保有だけがゲートになる(ADR 0010パターン②の実機検証で追加)。
+#
+# SPIRE発行のSVIDによるmTLS+ALPN h2(ADR 0012)をfraud-mcp-server→account-serviceに導入した際、
+# 呼び出し元を1つに限定するとSPIRE化していないfraud-detection-engineが壊れるため、TLS/plaintext
+# の2つのfilter_chainに分けていた。ADR 0015でfraud-detection-engineもSPIRE化し、account-service
+# の呼び出し元は全てmTLS必須になったため、単一のfilter_chainに戻した(plaintext受け口の完全撤廃。
+# ADR 0012が残していた既知の限界を解消)。transport_socketはjwt_authn/rbac/luaのHTTPフィルタ
+# チェーンより手前(TLS層)で効くため、既存のフィルタ順序・スコープ検証ロジックには影響しない。
+# require_client_certificate: trueが相互(サーバー側のみでない)TLSを強制する。
+# combined_validation_contextのmatch_typed_subject_alt_namesで、mTLSレベルでも呼び出し元を
+# fraud-mcp-server・fraud-detection-engine自身のSPIFFE IDに限定する(認可層のscope検証とは
+# 独立な、通信路レベルの許可リスト)。
+#
+# DPoP(ADR 0013)による送信者拘束は一度導入したが、このホップは既にSPIRE mTLSで呼び出し元の身元を
+# 限定済みのため実利がmTLSと大きく重複する一方、Token Exchangeを跨いだ拘束はチェーンの終端ホップに
+# しか置けないという制約だけが残るという判断でADR 0013をSupersededとし、撤去した(ADR 0015参照)。
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -15,13 +30,60 @@ data:
     admin:
       address:
         socket_address: { address: 127.0.0.1, port_value: 9901 }
+    # SDS(SPIRE Agent Workload API)はxDSプロトコルの一種であり、DiscoveryRequestにnode識別子が
+    # 要る(実機検証で判明:未設定だと"TlsCertificateSdsApi: node 'id' and 'cluster' are required"で
+    # 起動時エラーになる。ADR 0012)。
+    node:
+      id: account-service-envoy
+      cluster: account-service
     static_resources:
       listeners:
         - name: ingress
           address:
             socket_address: { address: 0.0.0.0, port_value: 8080 }
           filter_chains:
-            - filters:
+            - transport_socket:
+                name: envoy.transport_sockets.tls
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+                  require_client_certificate: true
+                  common_tls_context:
+                    alpn_protocols: ["h2"]
+                    tls_certificate_sds_secret_configs:
+                      - name: "default"
+                        sds_config:
+                          resource_api_version: V3
+                          api_config_source:
+                            api_type: GRPC
+                            transport_api_version: V3
+                            grpc_services:
+                              - envoy_grpc:
+                                  cluster_name: spire_agent
+                    combined_validation_context:
+                      default_validation_context:
+                        match_typed_subject_alt_names:
+                          - san_type: URI
+                            matcher:
+                              exact: "spiffe://gekko.internal/ns/gekko/sa/default/fraud-mcp-server"
+                          - san_type: URI
+                            matcher:
+                              exact: "spiffe://gekko.internal/ns/gekko/sa/default/fraud-detection-engine"
+                      validation_context_sds_secret_config:
+                        # "ROOTCA"はSPIRE Agent SDSの既定マジック名(default_bundle_name)。
+                        # 信頼ドメイン名等の任意文字列を指定すると、SPIRE側はそれを特定の
+                        # SPIFFE ID(フェデレーション用)へのリクエストと解釈し、該当エントリが
+                        # 存在しないため"workload is not authorized for the requested identities"
+                        # で拒否される(実機検証で判明。ADR 0012)。
+                        name: "ROOTCA"
+                        sds_config:
+                          resource_api_version: V3
+                          api_config_source:
+                            api_type: GRPC
+                            transport_api_version: V3
+                            grpc_services:
+                              - envoy_grpc:
+                                  cluster_name: spire_agent
+              filters:
                 - name: envoy.filters.network.http_connection_manager
                   typed_config:
                     "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
@@ -136,3 +198,15 @@ data:
                   - endpoint:
                       address:
                         socket_address: { address: keycloak.gekko.svc.cluster.local, port_value: 8080 }
+        # SPIRE Agent Workload API(UDS)へのSDSチャネル(ADR 0012)。tls_certificate_sds_secret_configs/
+        # validation_context_sds_secret_configの双方から参照される。
+        - name: spire_agent
+          connect_timeout: 0.25s
+          http2_protocol_options: {}
+          load_assignment:
+            cluster_name: spire_agent
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        pipe: { path: /run/spire/sockets/agent.sock }

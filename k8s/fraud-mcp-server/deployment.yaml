@@ -70,6 +70,11 @@ spec:
             - name: handshake
               mountPath: /handshake
               readOnly: true
+            # SPIRE Agent Workload API(UDS)ソケット(ADR 0012)。appコンテナはマウントしない
+            # (秘密鍵に触れるのはEnvoyのみ)。
+            - name: spire-agent-socket
+              mountPath: /run/spire/sockets
+              readOnly: true
           resources:
             requests:
               cpu: "50m"
@@ -86,3 +91,7 @@ spec:
             name: fraud-mcp-server-envoy
         - name: handshake
           emptyDir: {}
+        - name: spire-agent-socket
+          hostPath:
+            path: /run/spire/sockets
+            type: Directory

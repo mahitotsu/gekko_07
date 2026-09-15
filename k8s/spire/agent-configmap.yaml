@@ -1,0 +1,39 @@
+# spire-agentのbootstrap設定(ADR 0012)。k3dのkubelet証明書はk3s内蔵CAによる自己署名で、
+# agentが検証に使える信頼ストアに含まれないため skip_kubelet_verification = true が必須
+# (公式quickstartのMinikube向け設定と同じ根本原因)。socket_pathはWorkload API UDSの実体で、
+# ワークロードPod側もhostPath経由で同じパスをマウントしてEnvoyのSDSクライアントから叩く。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spire-agent-config
+  namespace: spire
+data:
+  agent.conf: |
+    agent {
+      data_dir          = "/run/spire"
+      log_level         = "INFO"
+      server_address     = "spire-server"
+      server_port        = "8081"
+      socket_path        = "/run/spire/sockets/agent.sock"
+      trust_bundle_path  = "/run/spire/bundle/bundle.crt"
+      trust_domain       = "gekko.internal"
+    }
+
+    plugins {
+      NodeAttestor "k8s_psat" {
+        plugin_data {
+          cluster = "gekko07"
+        }
+      }
+
+      KeyManager "memory" {
+        plugin_data {}
+      }
+
+      WorkloadAttestor "k8s" {
+        plugin_data {
+          skip_kubelet_verification = true
+          node_name_env             = "MY_NODE_NAME"
+        }
+      }
+    }

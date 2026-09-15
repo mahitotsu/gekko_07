@@ -17,6 +17,11 @@
 # 別インスタンスとしてデプロイする(k8s/ext-authz/deployment.yaml=token-exchange固定、
 # k8s/ext-authz/deployment-client-credentials.yaml=client_credentials固定)。呼び出し元の
 # 動的な切り替えそのものは引き続き横展開時の課題(backlog.md参照)。
+#
+# DPoP(ADR 0013)による送信者拘束は一度実装・検証したが、このホップは既にSPIRE mTLS(ADR 0012)で
+# 呼び出し元の身元を限定済みのため実利がmTLSと大きく重複する一方、Token Exchangeを跨いだ拘束は
+# チェーンの終端ホップにしか置けないという制約だけが残る、という判断でADR 0013をSupersededとし、
+# 撤去した(ADR 0015参照)。
 apiVersion: v1
 kind: ConfigMap
 metadata:

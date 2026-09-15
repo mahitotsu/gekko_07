@@ -6,6 +6,12 @@
 # 伝わらないため。ADR 0010訂正箇所参照)。ext_authzサービス自身が、Envoyが自動転送する
 # Host/Path/Methodから表2の対応表でscopeを解決する。そのためこのroute_config自体は
 # 宛先の振り分け(パスパターンごとに同じクラスタへ)だけを担い、scope解決ロジックを持たない。
+#
+# account_service_upstreamクラスタのみ、SPIRE発行のSVIDによるmTLS+ALPN h2を追加する(ADR 0012)。
+# ext_authz_clusterは対象外(ext-authz-serviceはEnvoyサイドカーを持たないためスコープ外。
+# backlog.md参照)。ALPNは接続時のネゴシエーションにしか影響しないため、実際にh2を話すには
+# typed_extension_protocol_optionsで明示的にhttp2_protocol_optionsを設定する必要がある
+# (設定しないとALPNの結果に関わらずクラスタは既定のHTTP/1.1のまま)。
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -16,6 +22,12 @@ data:
     admin:
       address:
         socket_address: { address: 127.0.0.1, port_value: 9901 }
+    # SDS(SPIRE Agent Workload API)はxDSプロトコルの一種であり、DiscoveryRequestにnode識別子が
+    # 要る(実機検証で判明:未設定だと"TlsCertificateSdsApi: node 'id' and 'cluster' are required"で
+    # 起動時エラーになる。ADR 0012)。
+    node:
+      id: fraud-mcp-server-envoy
+      cluster: fraud-mcp-server
     static_resources:
       listeners:
         - name: egress
@@ -72,6 +84,48 @@ data:
         - name: account_service_upstream
           type: STRICT_DNS
           lb_policy: ROUND_ROBIN
+          typed_extension_protocol_options:
+            envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+              "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+              explicit_http_config:
+                http2_protocol_options: {}
+          transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+              common_tls_context:
+                alpn_protocols: ["h2"]
+                tls_certificate_sds_secret_configs:
+                  - name: "default"
+                    sds_config:
+                      resource_api_version: V3
+                      api_config_source:
+                        api_type: GRPC
+                        transport_api_version: V3
+                        grpc_services:
+                          - envoy_grpc:
+                              cluster_name: spire_agent
+                combined_validation_context:
+                  default_validation_context:
+                    match_typed_subject_alt_names:
+                      - san_type: URI
+                        matcher:
+                          exact: "spiffe://gekko.internal/ns/gekko/sa/default/account-service"
+                  validation_context_sds_secret_config:
+                    # "ROOTCA"はSPIRE Agent SDSの既定マジック名(default_bundle_name)。
+                    # 信頼ドメイン名等の任意文字列を指定すると、SPIRE側はそれを特定の
+                    # SPIFFE ID(フェデレーション用)へのリクエストと解釈し、該当エントリが
+                    # 存在しないため"workload is not authorized for the requested identities"
+                    # で拒否される(実機検証で判明。ADR 0012)。
+                    name: "ROOTCA"
+                    sds_config:
+                      resource_api_version: V3
+                      api_config_source:
+                        api_type: GRPC
+                        transport_api_version: V3
+                        grpc_services:
+                          - envoy_grpc:
+                              cluster_name: spire_agent
           load_assignment:
             cluster_name: account_service_upstream
             endpoints:
@@ -79,6 +133,17 @@ data:
                   - endpoint:
                       address:
                         socket_address: { address: account-service.gekko.svc.cluster.local, port_value: 8080 }
+        # SPIRE Agent Workload API(UDS)へのSDSチャネル(ADR 0012)。
+        - name: spire_agent
+          connect_timeout: 0.25s
+          http2_protocol_options: {}
+          load_assignment:
+            cluster_name: spire_agent
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        pipe: { path: /run/spire/sockets/agent.sock }
         - name: ext_authz_cluster
           type: STRICT_DNS
           lb_policy: ROUND_ROBIN

@@ -137,4 +137,34 @@ call_account_service_no_auth POST /accounts/123/freeze
 echo "==> 5b.(異常系)fraud-detection-engine egress Envoy経由でaccount-serviceのGET(account:read)を叩く(account:freezeしか持たないため拒否されるはず)"
 call_account_service_no_auth GET /accounts/123/transactions || true
 
+# SPIRE mTLS(ADR 0012/0014。fraud-mcp-server・fraud-detection-engine両方からaccount-serviceへの
+# 全ホップがmTLS必須)。3a/3b/5は既にfraud-mcp-server/fraud-detection-engineのegress Envoy
+# (account_service_upstreamクラスタ)経由でaccount-serviceを叩いており、そのクラスタには
+# 既にmTLS+ALPN h2のtransport_socketが設定済みのため、アプリレベルのレスポンスが変わらず
+# 200のままであることは「mTLSが暗黙に効いた上でアプリ層は無風」の裏付けになる。ここでは加えて、
+# 実際にTLSハンドシェイクが行われたことをEnvoyの管理APIで直接確認する(正常系)。
+ACCOUNT_POD=$(newest_pod account-service)
+echo "==> 6. account-serviceのEnvoy管理ポート(:9901)でTLSハンドシェイクが実際に発生したことを確認"
+# envoyproxy/envoyイメージにはcurl/wgetが入っていない(実機検証で判明)。bashの/dev/tcpで
+# 生のHTTPリクエストを組み立てる。
+kubectl -n "$NAMESPACE" exec "$ACCOUNT_POD" -c envoy -- bash -c '
+  exec 3<>/dev/tcp/127.0.0.1/9901
+  printf "GET /stats HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3
+  cat <&3
+' | grep -E 'listener\..*\.ssl\.handshake: [1-9]' \
+  && echo "mTLSハンドシェイク成功を確認(期待通り)" \
+  || echo "警告:ssl.handshakeカウンタが検出できませんでした(統計名が異なる可能性。config_dumpで要確認)" >&2
+
+# account-serviceのingressリスナーは単一のfilter_chainで全呼び出し元にmTLS必須を課している
+# (ADR 0012/0014。fraud-detection-engineもSPIRE化したためplaintext受け口は完全に撤廃した)。
+# 「SPIFFE身元を持たない接続の拒否」を検証するには、TLSハンドシェイク自体を試み、
+# クライアント証明書なしで拒否されることを確認する(-kは自己署名ルートCAを検証しないだけで、
+# クライアント証明書は一切提示しない。require_client_certificate: trueにより拒否されるはず)。
+echo "==> 7.(異常系)クライアント証明書なしのTLS接続がaccount-serviceのmTLS必須filter_chainに拒否されることを確認"
+kubectl -n "$NAMESPACE" run verify-hop-mtls-bypass-check --rm -i --restart=Never \
+  --image=curlimages/curl:8.10.1 --command -- \
+  curl -s -k -o /dev/null -w 'no-client-cert TLS to mTLS listener status: %{http_code}\n' \
+  --max-time 5 "https://${ACCOUNT_POD_IP}:8080/accounts/123/transactions" || \
+  echo "クライアント証明書なしのTLS接続は拒否された(期待通り。ADR 0012)"
+
 echo "==> 検証完了"

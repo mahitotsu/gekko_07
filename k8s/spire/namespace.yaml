@@ -1,0 +1,6 @@
+# SPIREのnamespace。ADR 0012。gekko(アプリnamespace)とは分離し、TokenReview作成・
+# pods/exec等、IDコントロールプレーン特有のRBAC面をアプリ層から切り離す。
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: spire

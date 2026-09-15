@@ -26,7 +26,7 @@ FRAUD_MCP_SERVER_CLIENT_SECRET := $(call get_secret,fraud-mcp-server-client-secr
 FRAUD_DETECTION_ENGINE_CLIENT_SECRET := $(call get_secret,fraud-detection-engine-client-secret)
 YAMADA_ANALYST_PASSWORD := $(call get_secret,yamada-analyst-password)
 
-.PHONY: up down stop start status clean deploy undeploy keycloak-forward keycloak-reimport-realm deploy-verify-hop undeploy-verify-hop verify-hop
+.PHONY: up down stop start status clean deploy undeploy keycloak-forward keycloak-reimport-realm deploy-verify-hop undeploy-verify-hop verify-hop deploy-spire undeploy-spire
 
 # -------------------------
 # クラスタ操作
@@ -144,6 +144,10 @@ deploy-verify-hop:
 	kubectl -n $(NAMESPACE) wait --for=condition=complete job/keycloak-test-fixtures --timeout=60s
 	kubectl apply -f k8s/ext-authz/app-configmap.yaml -f k8s/ext-authz/deployment.yaml -f k8s/ext-authz/service.yaml
 	kubectl apply -f k8s/ext-authz/deployment-client-credentials.yaml -f k8s/ext-authz/service-client-credentials.yaml
+	@# SPIREはaccount-service/fraud-mcp-serverのEnvoyサイドカーがSVIDを取得できる前提
+	@# (fraud-mcp-server→account-serviceのmTLSホップ。ADR 0012)なので、スタブapply・
+	@# rollout restartより先にregistration entriesまで完了させる
+	$(MAKE) deploy-spire
 	kubectl apply -f k8s/account-service/app-configmap.yaml -f k8s/account-service/envoy-configmap.yaml -f k8s/account-service/deployment.yaml -f k8s/account-service/service.yaml
 	kubectl apply -f k8s/fraud-mcp-server/app-configmap.yaml -f k8s/fraud-mcp-server/envoy-configmap.yaml -f k8s/fraud-mcp-server/deployment.yaml
 	kubectl apply -f k8s/fraud-detection-engine/envoy-configmap.yaml -f k8s/fraud-detection-engine/deployment.yaml
@@ -171,6 +175,38 @@ undeploy-verify-hop:
 	kubectl delete -f k8s/ext-authz/service.yaml -f k8s/ext-authz/deployment.yaml -f k8s/ext-authz/app-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/keycloak/test-fixtures-job.yaml -f k8s/keycloak/test-fixtures-configmap.yaml --ignore-not-found
 	kubectl delete secret frontend-client fraud-mcp-server-client fraud-detection-engine-client yamada-analyst -n $(NAMESPACE) --ignore-not-found
+	$(MAKE) undeploy-spire
+
+# -------------------------
+# SPIFFE/SPIRE（ADR 0012、fraud-mcp-server→account-serviceの1ホップのみのmTLS）
+# -------------------------
+# server→agent→registration entriesの順に起動・疎通を待つ必要がある（agentはserverに疎通できて
+# 初めてk8s_psatでattestできる。entries Jobはspire-serverの管理APIをkubectl execで叩く）。
+
+# SPIRE server/agent/registration entriesをデプロイする（namespace gekkoとは別。make deploy実行済み・
+# クラスタ起動済み前提）
+deploy-spire:
+	kubectl apply -f k8s/spire/namespace.yaml
+	kubectl apply -f k8s/spire/server-account.yaml -f k8s/spire/spire-bundle-configmap.yaml \
+		-f k8s/spire/server-configmap.yaml -f k8s/spire/server-service.yaml -f k8s/spire/server-statefulset.yaml
+	kubectl -n spire rollout status statefulset/spire-server --timeout=120s
+	kubectl apply -f k8s/spire/agent-account.yaml -f k8s/spire/agent-configmap.yaml -f k8s/spire/agent-daemonset.yaml
+	kubectl -n spire rollout status daemonset/spire-agent --timeout=120s
+	kubectl apply -f k8s/spire/entries-account.yaml -f k8s/spire/entries-configmap.yaml
+	@# Jobのpod specは不変なので、再実行するにはいったん削除してから作り直す（create-entries.sh自体は
+	@# entry showで存在確認してから作成するため、冪等に再実行できる）
+	kubectl delete job spire-entries -n spire --ignore-not-found
+	kubectl apply -f k8s/spire/entries-job.yaml
+	kubectl -n spire wait --for=condition=complete job/spire-entries --timeout=60s
+
+# SPIRE server/agent/registration entries一式を削除する（spire namespaceごと削除）
+undeploy-spire:
+	kubectl delete -f k8s/spire/entries-job.yaml -f k8s/spire/entries-configmap.yaml -f k8s/spire/entries-account.yaml --ignore-not-found
+	kubectl delete -f k8s/spire/agent-daemonset.yaml -f k8s/spire/agent-configmap.yaml -f k8s/spire/agent-account.yaml --ignore-not-found
+	kubectl delete -f k8s/spire/server-statefulset.yaml -f k8s/spire/server-service.yaml -f k8s/spire/server-configmap.yaml \
+		-f k8s/spire/spire-bundle-configmap.yaml -f k8s/spire/server-account.yaml --ignore-not-found
+	kubectl delete pvc -n spire -l app=spire-server --ignore-not-found
+	kubectl delete -f k8s/spire/namespace.yaml --ignore-not-found
 
 # クラスタのコンテナを停止する（状態は保持したまま。再開はstartで）
 stop:
