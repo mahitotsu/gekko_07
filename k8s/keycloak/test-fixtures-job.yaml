@@ -31,6 +31,11 @@ spec:
                 secretKeyRef:
                   name: fraud-mcp-server-client
                   key: client-secret
+            - name: FRAUD_DETECTION_ENGINE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: fraud-detection-engine-client
+                  key: client-secret
             - name: YAMADA_ANALYST_PASSWORD
               valueFrom:
                 secretKeyRef:

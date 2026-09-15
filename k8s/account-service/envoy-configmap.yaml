@@ -1,6 +1,10 @@
 # account-service ingress側Envoy設定(ADR 0009)。jwt_authn(署名・iss・aud検証、クレームを
 # x-auth-*ヘッダーへ)→rbac(access-control-design.md 表2のscope要求)→lua(rbac通過後にのみ
 # 合言葉ヘッダーを付与。ADR 0009 §2③)→router、の順で通す。
+#
+# freezeポリシーはfraud-detection-engineのclient_credentialsトークン(委任チェーン外。表4参照)
+# のみを受け付ける。jwt_authnはsubクレームの有無を区別しないため、account:freezeスコープの
+# 保有だけがゲートになる(ADR 0010パターン②の実機検証で追加)。
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -82,6 +86,18 @@ data:
                                                 regex: "^/accounts/[^/]+/unfreeze-proposals$"
                                 principals:
                                   - header: { name: "x-auth-scope", string_match: { contains: "account:propose" } }
+                              freeze:
+                                permissions:
+                                  - and_rules:
+                                      rules:
+                                        - header: { name: ":method", string_match: { exact: "POST" } }
+                                        - url_path:
+                                            path:
+                                              safe_regex:
+                                                google_re2: {}
+                                                regex: "^/accounts/[^/]+/freeze$"
+                                principals:
+                                  - header: { name: "x-auth-scope", string_match: { contains: "account:freeze" } }
                       - name: envoy.filters.http.lua
                         typed_config:
                           "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua

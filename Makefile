@@ -23,9 +23,10 @@ KEYCLOAK_DB_PASSWORD := $(call get_secret,keycloak-db-password)
 # （deploy-verify-hop/verify-hop参照）。
 FRONTEND_CLIENT_SECRET := $(call get_secret,frontend-client-secret)
 FRAUD_MCP_SERVER_CLIENT_SECRET := $(call get_secret,fraud-mcp-server-client-secret)
+FRAUD_DETECTION_ENGINE_CLIENT_SECRET := $(call get_secret,fraud-detection-engine-client-secret)
 YAMADA_ANALYST_PASSWORD := $(call get_secret,yamada-analyst-password)
 
-.PHONY: up down stop start status clean deploy undeploy keycloak-forward deploy-verify-hop undeploy-verify-hop verify-hop
+.PHONY: up down stop start status clean deploy undeploy keycloak-forward keycloak-reimport-realm deploy-verify-hop undeploy-verify-hop verify-hop
 
 # -------------------------
 # クラスタ操作
@@ -100,12 +101,29 @@ undeploy:
 keycloak-forward:
 	kubectl -n $(NAMESPACE) port-forward svc/keycloak 3000:8080
 
+# realm-configmap.yaml変更後にKeycloakへ反映させる（insights.md参照）。--import-realmは
+# データディレクトリが空の初回起動時のみ有効なため、Postgresへ永続化した状態で
+# realm-configmap.yamlだけ書き換えても自動では反映されない。gekko realmを明示的に削除してから
+# Keycloakを再起動し、次回起動時の--import-realmに新しい内容を再インポートさせる。
+# テストデータ（ユーザー・クライアントシークレット）は消えるため、直後にmake deploy-verify-hopで
+# 再構築すること。realm-configmap.yaml変更のたびに手動で実行する必要がある（自動化しない理由：
+# make deploy自体が毎回realmを作り直す挙動になるとADR 0008が検証したい「Postgresへの永続化」の
+# 意味が薄れるため）。
+keycloak-reimport-realm:
+	kubectl apply -f k8s/keycloak/realm-configmap.yaml
+	kubectl -n $(NAMESPACE) exec deploy/keycloak -- /opt/keycloak/bin/kcadm.sh config credentials \
+		--server http://localhost:8080 --realm master --user admin --password $(KEYCLOAK_ADMIN_PASSWORD)
+	kubectl -n $(NAMESPACE) exec deploy/keycloak -- /opt/keycloak/bin/kcadm.sh delete realms/gekko
+	kubectl -n $(NAMESPACE) rollout restart deployment/keycloak
+	kubectl -n $(NAMESPACE) rollout status deployment/keycloak --timeout=180s
+
 # -------------------------
-# 1ホップ先行検証（ADR 0002/0009/0010、fraud-mcp-server→account-service）
+# 1ホップ先行検証（ADR 0002/0009/0010、fraud-mcp-server→account-service・
+# fraud-detection-engine→account-service）
 # -------------------------
-# ここでデプロイするaccount-service/fraud-mcp-server/ext-authz-serviceはいずれもスタブ実装であり、
-# 各サービスの本実装（未着手）とは別物。既存のdeploy/undeployとは独立させてあるため、
-# Keycloak・Postgresだけを触りたい場合はこのターゲット群を無視してよい。
+# ここでデプロイするaccount-service/fraud-mcp-server/fraud-detection-engine/ext-authz-service(-cc)は
+# いずれもスタブ実装であり、各サービスの本実装（未着手）とは別物。既存のdeploy/undeployとは
+# 独立させてあるため、Keycloak・Postgresだけを触りたい場合はこのターゲット群を無視してよい。
 
 # スタブ一式＋テスト用Keycloakフィクスチャをデプロイする（make deploy実行済み・クラスタ起動済み前提）
 deploy-verify-hop:
@@ -115,6 +133,9 @@ deploy-verify-hop:
 	@kubectl create secret generic fraud-mcp-server-client -n $(NAMESPACE) \
 		--from-literal=client-secret=$(FRAUD_MCP_SERVER_CLIENT_SECRET) \
 		--dry-run=client -o yaml | kubectl apply -f -
+	@kubectl create secret generic fraud-detection-engine-client -n $(NAMESPACE) \
+		--from-literal=client-secret=$(FRAUD_DETECTION_ENGINE_CLIENT_SECRET) \
+		--dry-run=client -o yaml | kubectl apply -f -
 	@kubectl create secret generic yamada-analyst -n $(NAMESPACE) \
 		--from-literal=password=$(YAMADA_ANALYST_PASSWORD) \
 		--dry-run=client -o yaml | kubectl apply -f -
@@ -122,11 +143,20 @@ deploy-verify-hop:
 	kubectl apply -f k8s/keycloak/test-fixtures-configmap.yaml -f k8s/keycloak/test-fixtures-job.yaml
 	kubectl -n $(NAMESPACE) wait --for=condition=complete job/keycloak-test-fixtures --timeout=60s
 	kubectl apply -f k8s/ext-authz/app-configmap.yaml -f k8s/ext-authz/deployment.yaml -f k8s/ext-authz/service.yaml
+	kubectl apply -f k8s/ext-authz/deployment-client-credentials.yaml -f k8s/ext-authz/service-client-credentials.yaml
 	kubectl apply -f k8s/account-service/app-configmap.yaml -f k8s/account-service/envoy-configmap.yaml -f k8s/account-service/deployment.yaml -f k8s/account-service/service.yaml
 	kubectl apply -f k8s/fraud-mcp-server/app-configmap.yaml -f k8s/fraud-mcp-server/envoy-configmap.yaml -f k8s/fraud-mcp-server/deployment.yaml
+	kubectl apply -f k8s/fraud-detection-engine/envoy-configmap.yaml -f k8s/fraud-detection-engine/deployment.yaml
+	@# EnvoyはConfigMapの静的bootstrap設定を起動時に1度だけ読み込み、変更をホットリロードしない
+	@# （Keycloak realmの--import-realmと同種の落とし穴。insights.md参照）。ConfigMap更新が
+	@# 既存Podへ確実に反映されるよう、スタブは常に再起動する（いずれも状態を持たないため無害）
+	kubectl -n $(NAMESPACE) rollout restart deployment/ext-authz-service deployment/ext-authz-service-cc \
+		deployment/account-service-stub deployment/fraud-mcp-server-stub deployment/fraud-detection-engine-stub
 	kubectl -n $(NAMESPACE) rollout status deployment/ext-authz-service --timeout=120s
+	kubectl -n $(NAMESPACE) rollout status deployment/ext-authz-service-cc --timeout=120s
 	kubectl -n $(NAMESPACE) rollout status deployment/account-service-stub --timeout=120s
 	kubectl -n $(NAMESPACE) rollout status deployment/fraud-mcp-server-stub --timeout=120s
+	kubectl -n $(NAMESPACE) rollout status deployment/fraud-detection-engine-stub --timeout=120s
 
 # scripts/verify-hop.shを実行する（deploy-verify-hop実行済み前提）
 verify-hop:
@@ -134,11 +164,13 @@ verify-hop:
 
 # 1ホップ先行検証用のスタブ一式・テストフィクスチャを削除する
 undeploy-verify-hop:
+	kubectl delete -f k8s/fraud-detection-engine/deployment.yaml -f k8s/fraud-detection-engine/envoy-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/fraud-mcp-server/deployment.yaml -f k8s/fraud-mcp-server/envoy-configmap.yaml -f k8s/fraud-mcp-server/app-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/account-service/service.yaml -f k8s/account-service/deployment.yaml -f k8s/account-service/envoy-configmap.yaml -f k8s/account-service/app-configmap.yaml --ignore-not-found
+	kubectl delete -f k8s/ext-authz/service-client-credentials.yaml -f k8s/ext-authz/deployment-client-credentials.yaml --ignore-not-found
 	kubectl delete -f k8s/ext-authz/service.yaml -f k8s/ext-authz/deployment.yaml -f k8s/ext-authz/app-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/keycloak/test-fixtures-job.yaml -f k8s/keycloak/test-fixtures-configmap.yaml --ignore-not-found
-	kubectl delete secret frontend-client fraud-mcp-server-client yamada-analyst -n $(NAMESPACE) --ignore-not-found
+	kubectl delete secret frontend-client fraud-mcp-server-client fraud-detection-engine-client yamada-analyst -n $(NAMESPACE) --ignore-not-found
 
 # クラスタのコンテナを停止する（状態は保持したまま。再開はstartで）
 stop:

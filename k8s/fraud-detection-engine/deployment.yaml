@@ -1,0 +1,54 @@
+# fraud-detection-engineの最小スタブDeployment(パターン②先行検証用。ADR 0002/0010)。
+# services.mdの通りfraud-detection-engineには着信(ingress)する経路が存在しない
+# (account-serviceへ機械間認証で直接アクセスするのみ)ため、fraud-mcp-server-stubと異なり
+# 合言葉initContainer・ingress用app.pyは持たない。appコンテナは検証コマンドを実行するための
+# 待機コンテナ(kubectl execの実行先)。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fraud-detection-engine-stub
+  namespace: gekko
+  labels:
+    app: fraud-detection-engine
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fraud-detection-engine
+  template:
+    metadata:
+      labels:
+        app: fraud-detection-engine
+    spec:
+      hostAliases:
+        - ip: "127.0.0.1"
+          hostnames: ["account-service"]
+      containers:
+        - name: app
+          image: python:3.12-alpine
+          command: ["sleep", "infinity"]
+          resources:
+            requests:
+              cpu: "20m"
+              memory: "32Mi"
+            limits:
+              cpu: "100m"
+              memory: "64Mi"
+        - name: envoy
+          image: envoyproxy/envoy:v1.31.5
+          command: ["envoy", "-c", "/etc/envoy/envoy.yaml"]
+          volumeMounts:
+            - name: envoy-config
+              mountPath: /etc/envoy
+              readOnly: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "300m"
+              memory: "128Mi"
+      volumes:
+        - name: envoy-config
+          configMap:
+            name: fraud-detection-engine-envoy

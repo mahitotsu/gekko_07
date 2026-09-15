@@ -52,6 +52,34 @@
 
 **対応**：[k8s/keycloak/realm-configmap.yaml](../k8s/keycloak/realm-configmap.yaml)の`frontend`クライアント定義に、`included.client.audience: frontend`の`oidc-audience-mapper`を**client直下の"dedicated"protocolMappers**として追加した（clientScope経由ではない。理由：ログイン時は`scope`パラメータで何かを明示的に要求するわけではないため、"defaultClientScopes"にscopeを追加する方式より、常にそのクライアント宛てのトークンに付与される"dedicated"mapperの方が素直）。実機で`aud: "frontend"`が単独で乗ることを確認済み。Token Exchangeで`audience=fraud-mcp-server`等を要求した場合の交換後トークンには`frontend`は混入せず、要求した1つのaudienceだけになることも確認済み（ADR 0005の単一audience原則は崩れない）。
 
+## Envoy / ext_authz / client_credentials（パターン②先行検証、fraud-detection-engine→account-service）
+
+[k8s/ext-authz/deployment-client-credentials.yaml](../k8s/ext-authz/deployment-client-credentials.yaml)・[k8s/fraud-detection-engine/](../k8s/fraud-detection-engine/)・[scripts/verify-hop.sh](../scripts/verify-hop.sh)で実施（[ADR 0010](adr/0010-egress-listener-granularity.md)パターン②）。呼び出し元がsubject_tokenを一切持たない（Authorizationヘッダーなしでリクエストを組み立てる）点が①と異なり、ext_authz側が自分の資格情報でclient_credentialsトークンを取得・キャッシュしてから転送する構成にした。`account:freeze`のみを持つトークンでfreezeエンドポイントは200、read系エンドポイントは403（RBAC）になることを確認し、fraud-detection-engineがそれ以外の権限を持たないことも実機で裏付けた。
+
+### Keycloakの`--import-realm`は初回起動時のみ有効:realm-configmap.yamlの変更が実機に反映されていなかった
+
+**症状**：ADR 0011（シナリオ変更）でrealm-configmap.yamlに追加した`fraud-detection-engine`クライアント・`account:unfreeze`スコープが、`kcadm.sh get clients`で実機に存在しないことが判明した。逆に、削除したはずの旧シナリオの`payment-service`クライアント・`account:transact`スコープが残っていた。test-fixtures Jobは`fraud-detection-engine`クライアントの`secret`を`kcadm update`しようとして対象が存在せず失敗し続けていた。
+
+**原因**：[k8s/keycloak/deployment.yaml](../k8s/keycloak/deployment.yaml)のコメントに元々明記されていた通り、`--import-realm`はデータディレクトリが空の初回起動時のみ実質的な効果を持つ。ADR 0008でPostgresへ永続化するようになって以降、Keycloakは一度ブートストラップされたら二度と起動時インポートを行わない。そのため、realm-configmap.yamlをgitで何度更新しても、Keycloakを（realmを消さずに）再起動するだけでは一切反映されない。今回はさらに、直前の`kubectl apply -f k8s/keycloak/realm-configmap.yaml`自体を忘れていたため、ConfigMapオブジェクトそのものも古いままという問題が重なっていた（`kubectl apply`し忘れ→realm削除→再起動、の順でようやく最新化できた）。
+
+**対応**：`gekko` realmを`kcadm.sh delete realms/gekko`で明示的に削除してからKeycloakをrolling restartし、次回起動時の`--import-realm`に最新のConfigMapを再インポートさせる手順を`make keycloak-reimport-realm`として整備した（Makefile参照）。realm内のテストデータ（`yamada-analyst`ユーザー・各クライアントの自動生成シークレット）は消えるが、`make deploy-verify-hop`のfixtures Jobが冪等に再構築するため実害はない。この手順は破壊的操作（realm削除）を伴うため`make deploy`には組み込まず、realm-configmap.yaml変更時に開発者が明示的に叩く手動ターゲットにした。`make deploy`自体を毎回realm再構築する挙動にしてしまうと、ADR 0008が検証したい「Postgresへの永続化」という前提が崩れてしまうため。
+
+### Envoyの静的bootstrap設定もConfigMap変更をホットリロードしない:古いRBACパスパターンで動き続けていた
+
+**症状**：`account-service`のRBAC設定にaccount:freeze用ポリシーを追加し、account:proposeの回帰テスト（`POST /accounts/{id}/unfreeze-proposals`）を実行したところ、Token Exchange自体は`scope=account:propose`で成功しているにもかかわらず、account-serviceのingress Envoyで「RBAC: access denied」となった。
+
+**原因**：`kubectl exec`でaccount-service-stub Podの管理ポート(`:9901/config_dump`)を確認したところ、稼働中のEnvoyが読み込んでいるRBACポリシーのURLパターンが`^/accounts/[^/]+/freeze-proposals$`という、`unfreeze-proposals`への改名前の古い文字列のままだった。EnvoyはConfigMapマウントの`envoy.yaml`を起動時に1度だけ読み込むstatic bootstrap設定として扱い、ファイルが（kubeletのConfigMap同期により）後から更新されてもプロセスは再読み込みしない。`kubectl apply`でConfigMapを更新しても、それを参照するDeploymentのPod自体が再起動されない限り、実際に動いている設定は古いまま変わらない（Keycloakのrealm importと同種の落とし穴）。これは今回に限らず、account-service/fraud-mcp-serverのenvoy-configmap.yamlを変更するたびに起こりうる一般的なリスクだった。
+
+**対応**：`make deploy-verify-hop`が`kubectl apply`の直後に、対象Deployment（`ext-authz-service`・`ext-authz-service-cc`・`account-service-stub`・`fraud-mcp-server-stub`・`fraud-detection-engine-stub`。いずれも状態を持たないスタブ）を常に`kubectl rollout restart`するよう修正した（Makefile参照）。ConfigMapに実質的な差分がない回でも毎回再起動するが、スタブなので無害。
+
+### rolling restart直後、`kubectl get pod -l`のリストが旧Pod（terminating中）を先頭で返すことがある
+
+**症状**：上記の対応でDeploymentを再起動するようにした直後に`scripts/verify-hop.sh`を実行すると、`ConnectionRefusedError`で失敗することがあった。
+
+**原因**：`kubectl get pod -l app=X -o jsonpath='{.items[0]...}'`で先頭のPodを掴んでいたが、Podが`Terminating`中でも`.status.phase`は`Running`のままであり、かつリストの並び順は保証されない。新Podが`Running`になっていても、削除中の旧Pod（Envoyプロセスは既にリスナーを閉じている）を掴んでしまうことがあった。
+
+**対応**：`--sort-by=.metadata.creationTimestamp`で最新のPodを選ぶ`newest_pod()`ヘルパーを`scripts/verify-hop.sh`に追加し、fraud-mcp-server・account-service・fraud-detection-engineいずれのPod選択もこれ経由に統一した。
+
 ## k3d / WSL2
 
 ### k3dクラスタが起動直後にAPIサーバーへ一切到達できない（cgroup v1非互換）

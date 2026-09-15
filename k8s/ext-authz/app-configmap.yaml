@@ -10,9 +10,13 @@
 # 本サービスは、この自動転送されるHost(=audience)とPath+Method(=access-control-design.md 表2の
 # 対応表で解決するscope)だけからToken Exchangeリクエストを組み立てる。
 #
-# 今回は1ホップの先行検証(fraud-mcp-server→account-service)のみが対象のため、Token Exchangeを
-# 実行するクライアント(client_id)はfraud-mcp-server固定にする。呼び出し元ごとに資格情報を
-# 切り替える一般化は横展開時の課題(backlog.md参照)。
+# 1ホップ先行検証はfraud-mcp-server→account-service(Token Exchange)に加え、
+# fraud-detection-engine→account-service(client_credentials、ADR 0010パターン②)も対象にする。
+# 呼び出し元ごとに資格情報を切り替える一般化(複数呼び出し元を1インスタンスで捌く)はまだ行わず、
+# 本ConfigMapのapp.pyをGRANT_TYPE環境変数で分岐させた上で、呼び出し元ごとに固定資格情報を持つ
+# 別インスタンスとしてデプロイする(k8s/ext-authz/deployment.yaml=token-exchange固定、
+# k8s/ext-authz/deployment-client-credentials.yaml=client_credentials固定)。呼び出し元の
+# 動的な切り替えそのものは引き続き横展開時の課題(backlog.md参照)。
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -26,6 +30,7 @@ data:
     import re
     import socketserver
     import sys
+    import time
     import urllib.error
     import urllib.parse
     import urllib.request
@@ -34,9 +39,13 @@ data:
         "KEYCLOAK_TOKEN_URL",
         "http://keycloak.gekko.svc.cluster.local:8080/realms/gekko/protocol/openid-connect/token",
     )
-    CLIENT_ID = os.environ.get("TOKEN_EXCHANGE_CLIENT_ID", "fraud-mcp-server")
-    CLIENT_SECRET_FILE = os.environ.get("TOKEN_EXCHANGE_CLIENT_SECRET_FILE", "/secrets/client-secret")
+    GRANT_TYPE = os.environ.get("GRANT_TYPE", "token-exchange")  # "token-exchange" | "client_credentials"
+    CLIENT_ID = os.environ.get("CLIENT_ID", "fraud-mcp-server")
+    CLIENT_SECRET_FILE = os.environ.get("CLIENT_SECRET_FILE", "/secrets/client-secret")
     LISTEN_PORT = int(os.environ.get("LISTEN_PORT", "8080"))
+    # client_credentialsモード専用:このインスタンスは呼び出し元1つに固定なので、scopeも
+    # (ホスト,パス,メソッド)対応表ではなく固定値でよい(ADR 0010パターン②:ワイルドカードルート1本)
+    FIXED_SCOPE = os.environ.get("FIXED_SCOPE")
 
     # access-control-design.md 表2をそのまま反映した(path, method) -> scope の対応表。
     # account-service自身のrbacポリシー(k8s/account-service/envoy-configmap.yaml)と同じ表2が
@@ -79,6 +88,33 @@ data:
             return body["access_token"]
 
 
+    _cc_token_cache = {"token": None, "expires_at": 0.0}
+
+
+    def get_client_credentials_token(scope):
+        # 取得したトークンのキャッシュ・更新が主な仕事になる(ADR 0010パターン②)。
+        # 期限ぎりぎりで使ってしまわないよう、expires_inより手前で切り上げて再取得する。
+        now = time.monotonic()
+        if _cc_token_cache["token"] and now < _cc_token_cache["expires_at"]:
+            return _cc_token_cache["token"]
+        data = urllib.parse.urlencode(
+            {
+                "grant_type": "client_credentials",
+                "client_id": CLIENT_ID,
+                "client_secret": read_client_secret(),
+                "scope": scope,
+            }
+        ).encode()
+        req = urllib.request.Request(
+            TOKEN_URL, data=data, headers={"Content-Type": "application/x-www-form-urlencoded"}
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            body = json.loads(resp.read())
+        _cc_token_cache["token"] = body["access_token"]
+        _cc_token_cache["expires_at"] = now + max(int(body.get("expires_in", 60)) - 10, 5)
+        return _cc_token_cache["token"]
+
+
     class Handler(http.server.BaseHTTPRequestHandler):
         def deny(self, code, msg):
             print(f"DENY {code}: {msg}", file=sys.stderr, flush=True)
@@ -93,8 +129,28 @@ data:
             host = self.headers.get("Host")
             method = self.headers.get("Method") or self.command
             path = self.headers.get("Path") or self.path
-            auth = self.headers.get("Authorization")
 
+            if GRANT_TYPE == "client_credentials":
+                # 呼び出し元(fraud-detection-engine)は委任チェーン外のためsubject_tokenを
+                # 持たず、Authorizationヘッダーはそもそも送られてこない(ADR 0010パターン②)。
+                if not host:
+                    self.deny(400, "missing host")
+                    return
+                try:
+                    token = get_client_credentials_token(FIXED_SCOPE)
+                except urllib.error.HTTPError as e:
+                    self.deny(403, f"client_credentials rejected: {e.code} {e.read()!r}")
+                    return
+                except Exception as e:  # noqa: BLE001 - スタブなので広く捕捉してfail closeする
+                    self.deny(403, f"client_credentials failed: {e!r}")
+                    return
+                print(f"ALLOW(client_credentials) {method} {path} aud={host} scope={FIXED_SCOPE}", flush=True)
+                self.send_response(200)
+                self.send_header("Authorization", f"Bearer {token}")
+                self.end_headers()
+                return
+
+            auth = self.headers.get("Authorization")
             if not host or not auth or not auth.startswith("Bearer "):
                 self.deny(400, "missing host/authorization")
                 return

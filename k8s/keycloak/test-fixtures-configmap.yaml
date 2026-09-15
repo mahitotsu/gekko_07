@@ -30,6 +30,10 @@ data:
     "$KCADM" update "clients/$FRAUD_MCP_ID" -r gekko \
       -s "secret=$FRAUD_MCP_SERVER_CLIENT_SECRET"
 
+    FRAUD_DETECTION_ENGINE_ID="$(client_id_of fraud-detection-engine)"
+    "$KCADM" update "clients/$FRAUD_DETECTION_ENGINE_ID" -r gekko \
+      -s "secret=$FRAUD_DETECTION_ENGINE_CLIENT_SECRET"
+
     # テストアナリスト(access-control-design.md 表6)。冪等: 既にいれば作り直さない。
     #
     # email/firstName/lastNameが未設定だと、ユーザーのrequiredActions配列が空でも
