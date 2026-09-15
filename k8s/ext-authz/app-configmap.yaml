@@ -42,7 +42,7 @@ data:
     # account-service自身のrbacポリシー(k8s/account-service/envoy-configmap.yaml)と同じ表2が
     # 単一の情報源であることに変わりはなく、ここはそれをコードに落としたコピーにすぎない。
     SCOPE_RULES = [
-        (re.compile(r"^/accounts/[^/]+/freeze-proposals$"), "POST", "account:propose"),
+        (re.compile(r"^/accounts/[^/]+/unfreeze-proposals$"), "POST", "account:propose"),
         (re.compile(r"^/accounts/[^/]+(/.*)?$"), "GET", "account:read"),
     ]
 

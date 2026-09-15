@@ -79,7 +79,7 @@ data:
                                             path:
                                               safe_regex:
                                                 google_re2: {}
-                                                regex: "^/accounts/[^/]+/freeze-proposals$"
+                                                regex: "^/accounts/[^/]+/unfreeze-proposals$"
                                 principals:
                                   - header: { name: "x-auth-scope", string_match: { contains: "account:propose" } }
                       - name: envoy.filters.http.lua

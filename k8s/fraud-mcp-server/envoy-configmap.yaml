@@ -33,11 +33,11 @@ data:
                         - name: account_service
                           domains: ["account-service"]
                           routes:
-                            # 表2:POST /accounts/{id}/freeze-proposals -> account:propose
+                            # 表2:POST /accounts/{id}/unfreeze-proposals -> account:propose
                             - match:
                                 safe_regex:
                                   google_re2: {}
-                                  regex: "^/accounts/[^/]+/freeze-proposals$"
+                                  regex: "^/accounts/[^/]+/unfreeze-proposals$"
                                 headers:
                                   - name: ":method"
                                     string_match: { exact: "POST" }

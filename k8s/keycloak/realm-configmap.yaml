@@ -19,7 +19,7 @@ data:
     {
       "realm": "gekko",
       "enabled": true,
-      "displayName": "gekko - 不正検知・口座凍結サンプル",
+      "displayName": "gekko - 不正検知・口座凍結解除サンプル",
       "clientScopes": [
         {
           "name": "account:read",
@@ -56,7 +56,7 @@ data:
         },
         {
           "name": "account:propose",
-          "description": "凍結案の記録（可逆・低リスク。対象audience: account-service）",
+          "description": "凍結解除案の記録（可逆・低リスク。対象audience: account-service）",
           "protocol": "openid-connect",
           "attributes": {
             "include.in.token.scope": "true",
@@ -78,7 +78,7 @@ data:
         },
         {
           "name": "account:freeze",
-          "description": "口座凍結の実行（不可逆・高リスク。対象audience: account-service。frontendのみに付与）",
+          "description": "口座凍結の自動実行（機械間認証。対象audience: account-service。fraud-detection-engineのみに付与）",
           "protocol": "openid-connect",
           "attributes": {
             "include.in.token.scope": "true",
@@ -99,8 +99,8 @@ data:
           ]
         },
         {
-          "name": "account:transact",
-          "description": "入出金・振込処理（機械間認証。対象audience: account-service。payment-serviceのみに付与）",
+          "name": "account:unfreeze",
+          "description": "口座凍結の解除の実行（不可逆・高リスク。対象audience: account-service。frontendのみに付与）",
           "protocol": "openid-connect",
           "attributes": {
             "include.in.token.scope": "true",
@@ -164,7 +164,7 @@ data:
             "pkce.code.challenge.method": "S256"
           },
           "defaultClientScopes": [],
-          "optionalClientScopes": ["account:read", "account:freeze"],
+          "optionalClientScopes": ["account:read", "account:unfreeze"],
           "protocolMappers": [
             {
               "name": "audience-self",
@@ -199,9 +199,9 @@ data:
           "optionalClientScopes": ["account:read", "account:propose"]
         },
         {
-          "clientId": "payment-service",
-          "name": "payment-service",
-          "description": "通常の入出金・振込処理。account-serviceへ機械間認証（client_credentials）でアクセスする",
+          "clientId": "fraud-detection-engine",
+          "name": "fraud-detection-engine",
+          "description": "取引パターンを監視し疑わしい口座を自動凍結する。account-serviceへ機械間認証（client_credentials）でアクセスする",
           "enabled": true,
           "protocol": "openid-connect",
           "publicClient": false,
@@ -213,7 +213,7 @@ data:
           "fullScopeAllowed": false,
           "attributes": {},
           "defaultClientScopes": [],
-          "optionalClientScopes": ["account:transact"]
+          "optionalClientScopes": ["account:freeze"]
         },
         {
           "clientId": "account-service",

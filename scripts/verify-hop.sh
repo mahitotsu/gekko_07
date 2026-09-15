@@ -83,7 +83,7 @@ echo "==> 3a. fraud-mcp-server egress Envoy経由でaccount-serviceのGET(accoun
 call_account_service GET /accounts/123/transactions "$DELEGATED_TOKEN"
 
 echo "==> 3b. fraud-mcp-server egress Envoy経由でaccount-serviceのPOST(account:propose)を叩く"
-call_account_service POST /accounts/123/freeze-proposals "$DELEGATED_TOKEN"
+call_account_service POST /accounts/123/unfreeze-proposals "$DELEGATED_TOKEN"
 
 echo "==> 3c.(異常系)aud=frontendのログイントークンでそのまま叩く(拒否されるはず)"
 call_account_service GET /accounts/123/transactions "$LOGIN_TOKEN" || true

@@ -5,7 +5,7 @@
 ## Token Exchange / Envoyサイドカー
 
 - **client_credentials発行・素通し・トークンを値として取得する3パターンの実機検証**：[ADR 0010](adr/0010-egress-listener-granularity.md)でEnvoy標準機能のみで実現できる設計（②`allowed_upstream_headers`は①と共通、③はext_authzを呼ばない単純プロキシ、④`direct_response`+`allowed_client_headers_on_success`）まで固めたが、実機での動作確認はこれから（特に④のext_authz+direct_responseの組み合わせは実機で挙動を要確認）。パターン①（Token Exchange、fraud-mcp-server→account-service）は実機検証済み（[insights.md](insights.md)参照）
-- **ext-authzサービスの呼び出し元汎用化（複数クライアント対応）**：[k8s/ext-authz/](../k8s/ext-authz/)は1ホップ先行検証のため`fraud-mcp-server`のToken Exchange資格情報のみを固定で持つ。残りのホップ（frontend→account-service/fraud-mcp-server、payment-service→account-service、account-service→analyst-attribute-service）へ横展開する際、呼び出し元ごとに資格情報を切り替える仕組みが要る
+- **ext-authzサービスの呼び出し元汎用化（複数クライアント対応）**：[k8s/ext-authz/](../k8s/ext-authz/)は1ホップ先行検証のため`fraud-mcp-server`のToken Exchange資格情報のみを固定で持つ。残りのホップ（frontend→account-service/fraud-mcp-server、fraud-detection-engine→account-service、account-service→analyst-attribute-service）へ横展開する際、呼び出し元ごとに資格情報を切り替える仕組みが要る
 - **frontendのdirectAccessGrantsEnabled一時許可の後始末**：[k8s/keycloak/test-fixtures-job.yaml](../k8s/keycloak/test-fixtures-job.yaml)は、フロントエンド未実装でもブラウザなしでログインし1ホップ先行検証を行うため、`frontend`クライアントの`directAccessGrantsEnabled`を一時的にtrueにしている。frontend実装時に、自動テストで使い続けるか、Authorization Code + PKCEのみに戻すかを判断する
 - **合言葉ヘッダー名・env var名の確定**：1ホップ先行検証でヘッダー名`x-gekko-handshake`・env var名`HANDSHAKE_TOKEN_FILE`を採用し、Python実装のスタブ間で統一した（[k8s/account-service/app-configmap.yaml](../k8s/account-service/app-configmap.yaml)等）。Java/TypeScript/Rust/Go等、他言語での本実装時にも同じ命名を踏襲する
 - **Unixドメインソケット化の再検討**：[ADR 0009](adr/0009-envoy-ingress-responsibility-and-bypass-prevention.md)でTCP loopback+合言葉方式を採用しUnixドメインソケット化は見送ったが、「同一Pod内でアプリが侵害された場合」まで守る要求が出てきたら再検討する
@@ -25,7 +25,7 @@
 
 ## データストア
 
-- **本番相当環境でのインスタンス分離**：現状はローカルのメモリ制約を理由にaccount-service/payment-service/analyst-attribute-service/KeycloakのPostgreSQLを共有インスタンスにしている（ADR 0008）。本番相当の構成を検証したくなった場合、サービスごとの専用インスタンスへの切り替えを検討する
+- **本番相当環境でのインスタンス分離**：現状はローカルのメモリ制約を理由にaccount-service/fraud-detection-engine/analyst-attribute-service/KeycloakのPostgreSQLを共有インスタンスにしている（ADR 0008）。本番相当の構成を検証したくなった場合、サービスごとの専用インスタンスへの切り替えを検討する
 - **既定メンテナンスDB（`postgres`）への接続が全ロールに残っている**：[k8s/keycloak/db-init-configmap.yaml](../k8s/keycloak/db-init-configmap.yaml)で`keycloak`データベースはPUBLICのCONNECT権限を剥奪したが、Postgresの既定メンテナンスデータベース自体は未対応。実データを持たないため実害はないが、完全な分離ではない
 
 ## Keycloak

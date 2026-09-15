@@ -8,7 +8,7 @@
 
 ## 2. シナリオとサービス構成
 
-金融の不正検知・口座凍結（[ADR 0001](adr/0001-scenario-fraud-detection-with-agent-assist.md)）。
+金融の不正検知・口座凍結解除（[ADR 0001](adr/0001-scenario-fraud-detection-with-agent-assist.md)・[ADR 0011](adr/0011-scenario-ai-assisted-unfreeze.md)）。
 
 ```
 [アナリスト] --ログイン--> [frontend]
@@ -16,7 +16,7 @@
               ┌───────────────┼────────────────────┐
               │ (提案生成パス)                        │ (確定パス)
               ▼                                     ▼
-      [fraud-agent] --MCP--> [fraud-mcp-server] --> [account-service] <-- [payment-service]
+      [fraud-agent] --MCP--> [fraud-mcp-server] --> [account-service] <-- [fraud-detection-engine]
                                                           │
                                                           ▼
                                               [analyst-attribute-service]
@@ -31,9 +31,9 @@
 - 各サービスのPodは**initContainer 1つ＋アプリコンテナ＋Envoyサイドカーの構成**（initContainerの役割は§3後半・[ADR 0009](adr/0009-envoy-ingress-responsibility-and-bypass-prevention.md)参照）
 - アプリは相手サービスの**実サービス名・実APIパスをそのまま**使ってリクエストを組み立てる（例：`http://account-service/accounts/123/transactions`）。人工的なURLプレフィックスやegress専用ポートは使わない。Podの`hostAliases`で相手サービス名を`127.0.0.1`へ静的にマッピングし、Envoyサイドカーが1つのリスナー上の複数`virtual_hosts`（`domains`でサービス名をマッチ）で受け、`ext_authz`（HTTPモード）フィルタが横取りしてToken Exchangeを実行してから実際のアップストリームへ転送する（[ADR 0010](adr/0010-egress-listener-granularity.md)）
 - **audienceはHostヘッダーから自動導出する**。Keycloakクライアントid＝Kubernetes Service名＝audience名を常に同一の文字列にする（MUST。[access-control-design.md](access-control-design.md)表1の既存の前提をKubernetes Service名にも拡張したもの）ため、ext_authzサービスはCheckRequestに**自動転送される**`Host`ヘッダー（後述）をそのまま`audience`として使え、リスナー・ルートごとの明示設定が不要になる
-- **scopeは常に「相手サービスの(パス, メソッド) → scope」という単一の仕組みで決める**（[access-control-design.md](access-control-design.md) 表2に拡張済みの対応表。account-service自身のingress側rbacポリシーと共有する単一の情報源）。特別扱いするケースはない——scopeがpathによらず1つだけのホップ（payment-service→account-service、account-service→analyst-attribute-service、frontend→fraud-mcp-server）は、この仕組みがワイルドカードルート1本に潰れているだけ。scopeがpathで変わるホップ（frontend→account-service、fraud-mcp-server→account-service。それぞれ`account:read`/`account:freeze`、`account:read`/`account:propose`）は複数ルートになる。パスパターンは表2に決まっているため、account-serviceの完全なAPI実装を待たずに全ホップのEnvoy route設計が今すぐ完成する。アプリのコードは常に実ホスト名・実パス・実メソッドで普通にAPIを呼ぶだけで、どちらのケースかを意識しない
+- **scopeは常に「相手サービスの(パス, メソッド) → scope」という単一の仕組みで決める**（[access-control-design.md](access-control-design.md) 表2に拡張済みの対応表。account-service自身のingress側rbacポリシーと共有する単一の情報源）。特別扱いするケースはない——scopeがpathによらず1つだけのホップ（fraud-detection-engine→account-service、account-service→analyst-attribute-service、frontend→fraud-mcp-server）は、この仕組みがワイルドカードルート1本に潰れているだけ。scopeがpathで変わるホップ（frontend→account-service、fraud-mcp-server→account-service。それぞれ`account:read`/`account:unfreeze`、`account:read`/`account:propose`）は複数ルートになる。パスパターンは表2に決まっているため、account-serviceの完全なAPI実装を待たずに全ホップのEnvoy route設計が今すぐ完成する。アプリのコードは常に実ホスト名・実パス・実メソッドで普通にAPIを呼ぶだけで、どちらのケースかを意識しない
   - この対応表は**ext_authzサービス自身がコードとして持つ**。HTTPモードのext_authzは`Host`・`Method`・`Path`・`Content-Length`・`Authorization`を常に自動転送するため（Envoyの標準動作。`ExtAuthzPerRoute`の`context_extensions`はgRPCモード限定で使わない。[ADR 0010](adr/0010-egress-listener-granularity.md)の訂正箇所参照）、Envoy側のroute設定はどのクラスタへ転送するかという宛先の振り分けだけを担う
-- egressで必要な処理は4種類ある（ADR 0010）：①Token Exchange（大半のホップ、透過的プロキシ）②client_credentials発行（payment-service→account-service、透過的プロキシ）③素通し（fraud-agent→fraud-mcp-server、ext_authzを呼ばない単純プロキシ）④トークンを値として取得（frontend→fraud-mcp-server。①と同じext_authz呼び出しだが実サービスは呼ばない合成的な呼び出しで、この1ケースのみ人工的な専用パス`http://fraud-mcp-server/_mint-token`を使う。ルートを`direct_response`にし交換後トークンを`allowed_client_headers_on_success`で呼び出し元自身への応答として返す）
+- egressで必要な処理は4種類ある（ADR 0010）：①Token Exchange（大半のホップ、透過的プロキシ）②client_credentials発行（fraud-detection-engine→account-service、透過的プロキシ）③素通し（fraud-agent→fraud-mcp-server、ext_authzを呼ばない単純プロキシ）④トークンを値として取得（frontend→fraud-mcp-server。①と同じext_authz呼び出しだが実サービスは呼ばない合成的な呼び出しで、この1ケースのみ人工的な専用パス`http://fraud-mcp-server/_mint-token`を使う。ルートを`direct_response`にし交換後トークンを`allowed_client_headers_on_success`で呼び出し元自身への応答として返す）
 - `ext_authz`の応答ヘッダー許可リスト（①②：`allowed_upstream_headers`に`Authorization`を含める。④：`allowed_client_headers_on_success`に交換後トークンを返すヘッダー名を含める）
 - 実装順序：まず1ホップ分＝fraud-mcp-server→account-serviceの`account:read`/`account:propose`（いずれもパターン①）で先行検証**済み**（`k8s/ext-authz/`・`k8s/account-service/`・`k8s/fraud-mcp-server/`、`scripts/verify-hop.sh`。詳細は[insights.md](insights.md)）。残りのホップ・他の3パターン（②③④）は未検証（[backlog.md](backlog.md)参照）
 - Keycloak側で見落としやすい前提：Token Exchangeの`audience`パラメータが実際に解決されるには、要求元クライアントに割り当てたclient scope（`account:read`等）が、対象audienceを指す`oidc-audience-mapper`（protocol mapper）を持っている必要がある（[k8s/keycloak/realm-configmap.yaml](../k8s/keycloak/realm-configmap.yaml)）。`account:read`のように同名scopeが複数audience（account-service・fraud-mcp-server）へ使われる場合は、そのscopeに両方のマッパーを持たせてよい——実際に発行されるトークンは、その時の`audience`パラメータで指定した1つだけに絞り込まれ、単一audience原則（[ADR 0005](adr/0005-single-audience-tokens-only.md)）は保たれる（実機で確認済み）
@@ -53,7 +53,7 @@
 |---|---|---|
 | `frontend` | confidential, standard token exchange有効 | アナリスト向けBFF |
 | `fraud-mcp-server` | confidential | AIエージェントの代理としてaccount-serviceを呼ぶ |
-| `payment-service` | confidential, client_credentials | 機械間認証。ユーザー委任なし |
+| `fraud-detection-engine` | confidential, client_credentials | 機械間認証。ユーザー委任なし |
 | `account-service` | confidential | analyst-attribute-serviceへの委任元 |
 
 全てのトークンは常に単一のaudienceのみを持つ（[ADR 0005](adr/0005-single-audience-tokens-only.md)）。ログイントークンは`aud=frontend`（単一。内容は[access-control-design.md](access-control-design.md)参照）のみで、`account:read`等のスコープは持たない。frontendがaccount-serviceにアクセスする際（直接・委任いずれも）は、都度明示的なToken Exchangeで単一audienceのトークンを取得する（§5参照）。
@@ -63,12 +63,12 @@
 | スコープ | 対象audience | 付与するクライアント | 意味 |
 |---|---|---|---|
 | `account:read` | account-service | frontend, fraud-mcp-server | 取引・口座の読み取り |
-| `account:propose` | account-service | fraud-mcp-server のみ | 凍結案の記録（可逆・低リスク） |
-| `account:freeze` | account-service | **frontend のみ** | 口座凍結の実行（不可逆・高リスク） |
-| `account:transact` | account-service | payment-service のみ | 通常の入出金・振込処理 |
+| `account:propose` | account-service | fraud-mcp-server のみ | 凍結解除案の記録（可逆・低リスク） |
+| `account:freeze` | account-service | **fraud-detection-engine のみ** | 口座凍結の自動実行（機械間認証。業務属性チェックなし） |
+| `account:unfreeze` | account-service | **frontend のみ** | 口座凍結の解除の実行（不可逆・高リスク） |
 | `analyst:read` | analyst-attribute-service | account-service のみ | アナリストの担当地域・権限レベル照会 |
 
-`account:freeze`は`fraud-mcp-server`にも`fraud-agent`にも一切付与しない。AIエージェントがどれだけ「凍結すべき」と提案しても、Keycloakのスコープ設計上そもそも凍結APIを呼べるトークンを取得できない、という形で認可レイヤーで強制する（[access-control-design.md](access-control-design.md) 表1・表2）。
+`account:unfreeze`は`fraud-mcp-server`にも`fraud-agent`にも一切付与しない。AIエージェントがどれだけ「解除すべき」と提案しても、Keycloakのスコープ設計上そもそも凍結解除APIを呼べるトークンを取得できない、という形で認可レイヤーで強制する（[access-control-design.md](access-control-design.md) 表1・表2）。
 
 ## 5. トークンチェーン
 
@@ -85,14 +85,14 @@ analystトークン(aud=frontend)
 **② 確定パス（人間起因、決定論的操作）**
 ```
 analystトークン(aud=frontend)
-  → Token Exchange (frontend実行, audience=account-service, scope=account:freeze)
+  → Token Exchange (frontend実行, audience=account-service, scope=account:unfreeze)
   → account-serviceが同じくanalyst-attribute-serviceへ照会（提案生成パスと同じ判定ロジック）
-  → 凍結実行。①で記録された提案IDと紐付けて記録
+  → 凍結解除を実行。①で記録された提案IDと紐付けて記録
 ```
 
-**③ 通常決済パス（機械間、業務属性チェック対象外）**
+**③ 自動凍結パス（機械間、業務属性チェック対象外）**
 ```
-payment-serviceの client_credentials トークン(scope=account:transact)
+fraud-detection-engineの client_credentials トークン(scope=account:freeze)
   → account-serviceが通常のスコープチェックのみで処理（analyst-attribute-serviceへの照会は発生しない）
 ```
 
@@ -114,7 +114,7 @@ payment-serviceの client_credentials トークン(scope=account:transact)
 | サービス | エンジン |
 |---|---|
 | account-service | PostgreSQL（専用データベース） |
-| payment-service | PostgreSQL（account-serviceと同一インスタンス内の別データベース） |
+| fraud-detection-engine | PostgreSQL（account-serviceと同一インスタンス内の別データベース） |
 | analyst-attribute-service | PostgreSQL（同一インスタンス内の別データベース） |
 | frontend | なし（ログインセッションは暗号化Cookieでステートレスに保持） |
 | Keycloak（6サービス外・プラットフォーム基盤） | PostgreSQL（同一インスタンス内の別データベース） |
@@ -124,7 +124,7 @@ payment-serviceの client_credentials トークン(scope=account:transact)
 [access-control-requirements.md](access-control-requirements.md) BR8（事後追跡可能性）を満たすため、トークンの`jti`（発行識別子）と`audience`の組を突合キーとする方式に加え、AIの提案と人間の確定を紐付けるための`proposal_id`を導入する。
 
 - account-serviceは提案の記録（propose）時に`proposal_id`を発行し、`sub`・`jti`・根拠データとともに記録する
-- 凍結実行（freeze）時は、確定に使われた`proposal_id`（存在する場合）と、その時の`sub`・`jti`を記録する
+- 凍結解除の実行（unfreeze）時は、確定に使われた`proposal_id`（存在する場合）と、その時の`sub`・`jti`を記録する
 - これにより「どの提案が、誰によって、どのトークンで確定されたか」を事後に再構成できる
 - OpenTelemetryトレース・Keycloakイベントログとの統合方式は実装時に決定（backlog.md参照）
 

@@ -5,7 +5,7 @@
 
 ## Context
 
-[services.md](../services.md)で「保有データ」を持つサービス（frontend / account-service / payment-service / analyst-attribute-service）について、データストアの方針が未定義だった。加えて、Keycloak（[k8s/keycloak/](../../k8s/keycloak/)）も現状はstart-devモードの埋め込みH2データベースのままで、永続化方針が未定だった（backlog.md「Keycloakの永続化」）。検討すべき軸は3つある。
+[services.md](../services.md)で「保有データ」を持つサービス（frontend / account-service / fraud-detection-engine / analyst-attribute-service）について、データストアの方針が未定義だった。加えて、Keycloak（[k8s/keycloak/](../../k8s/keycloak/)）も現状はstart-devモードの埋め込みH2データベースのままで、永続化方針が未定だった（backlog.md「Keycloakの永続化」）。検討すべき軸は3つある。
 
 1. **論理的なデータ所有権**：他サービスがテーブルを直接見られる構成にするか
 2. **物理的なインフラ共有**：サービスごとに専用インスタンスを持つか、インスタンスを共有し内部で分けるか
@@ -23,7 +23,7 @@
 
 ### 2. 物理インフラ：PostgreSQLインスタンスを1つ共有し、サービスごとに論理DB・認証情報を分離する
 
-1つのStatefulSet（1 pod）を共有インフラとして立て、account-service用・payment-service用・analyst-attribute-service用・**Keycloak用**にそれぞれ別のデータベース（`account_service`db、`payment_service`db、`analyst_attribute_service`db、`keycloak`db）と別のDBロールを作る。各ロールはGRANTで自分のデータベースにしかアクセスできない。
+1つのStatefulSet（1 pod）を共有インフラとして立て、account-service用・fraud-detection-engine用・analyst-attribute-service用・**Keycloak用**にそれぞれ別のデータベース（`account_service`db、`fraud_detection_engine`db、`analyst_attribute_service`db、`keycloak`db）と別のDBロールを作る。各ロールはGRANTで自分のデータベースにしかアクセスできない。
 
 サービスごとに専用インスタンスを別々に立てるのが原則的には筋が良いが、ローカル/WSL2環境は既にメモリ逼迫を実機で経験済みのため、ここではリソース効率を優先する。論理的な所有権（1）はDBエンジン側の権限で担保されるため、物理共有そのものはこの原則に反しない。本番相当の環境を検証したくなった場合は、障害の伝播を避けるためサービスごとの専用インスタンスへ切り替える（[backlog.md](../backlog.md)に記録）。
 
@@ -39,8 +39,8 @@ Keycloakを含めるかどうかは別途検討したが、このシステムで
 
 | サービス | エンジン | 理由 |
 |---|---|---|
-| account-service | PostgreSQL | 口座・取引履歴・凍結提案・凍結実行記録が相互に参照整合性を持つ（凍結実行は`proposal_id`で提案に紐づく。[architecture.md](../architecture.md) §8）。ACIDトランザクションと外部キー制約が意味を持つ、典型的な台帳データ |
-| payment-service | PostgreSQL（account-serviceと同じインスタンス内の別データベース） | 受付記録自体は単純だが、決済ドメインの監査証跡として耐久性・一貫性を優先する |
+| account-service | PostgreSQL | 口座・取引履歴・凍結記録・凍結解除提案・凍結解除実行記録が相互に参照整合性を持つ（凍結解除実行は`proposal_id`で提案に紐づく。[architecture.md](../architecture.md) §8）。ACIDトランザクションと外部キー制約が意味を持つ、典型的な台帳データ |
+| fraud-detection-engine | PostgreSQL（account-serviceと同じインスタンス内の別データベース） | 検知ルール・しきい値の設定自体は単純だが、どのルールがいつ発火し凍結に至ったかという監査証跡として耐久性・一貫性を優先する |
 | analyst-attribute-service | PostgreSQL（同じインスタンス内の別データベース） | アクセス制御の根拠になる正データであり、耐久性を優先。アクセスパターンは主キー検索のみで、RDBの単一テーブルで過不足なく表現できる |
 | frontend | なし（下記4参照） | |
 | Keycloak（6サービス外・プラットフォーム基盤） | PostgreSQL（同じインスタンス内の別データベース） | Keycloak公式が最も実績を持つ本番用DB。realm・クライアント・セッション等の永続化に使う。上記3サービスと同じ共有インスタンスに含める理由は上記2参照 |
@@ -58,7 +58,7 @@ Keycloakを含めるかどうかは別途検討したが、このシステムで
 ## Consequences
 
 - 新規に追加するステートフルなpodはPostgreSQL×1のみ。Keycloakもこのインスタンスに含めるため、k8s/keycloak/deployment.yamlをstart-dev + 埋め込みH2からPostgres接続に変更し、実機でPod再作成・WSL2再起動をまたいだ永続化を確認済み
-- account-service・payment-service・analyst-attribute-service・Keycloakが同じPostgresインスタンスを共有するため、いずれかの負荷や再起動が他に影響しうる。ローカル検証目的では許容する
-- 本ADRの結果、6サービス中データストアを持つのは3つ（account-service/payment-service/analyst-attribute-service）全てPostgreSQLとなり、RDB/NoSQLの使い分け自体は今回のサービス構成では発生しなかった。NoSQLが適所になるサービスが将来増えた場合はその時点で個別に判断する
+- account-service・fraud-detection-engine・analyst-attribute-service・Keycloakが同じPostgresインスタンスを共有するため、いずれかの負荷や再起動が他に影響しうる。ローカル検証目的では許容する
+- 本ADRの結果、6サービス中データストアを持つのは3つ（account-service/fraud-detection-engine/analyst-attribute-service）全てPostgreSQLとなり、RDB/NoSQLの使い分け自体は今回のサービス構成では発生しなかった。NoSQLが適所になるサービスが将来増えた場合はその時点で個別に判断する
 - サービスが増えるたびに、そのサービス自身のディレクトリに db-init-configmap.yaml / db-init-job.yaml 相当を追加する運用になる。共有Postgres（k8s/postgres/）は変更不要
 - frontendの暗号化Cookieセッションの実装詳細（暗号鍵の管理・ローテーション）は実装時に決定

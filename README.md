@@ -2,7 +2,7 @@
 
 OAuth 2.0 Token Exchange (RFC 8693) をEnvoyサイドカー（ext_authz）に実装し、マイクロサービス群とAIエージェントが連携するローカル実行可能なサンプル。**現在は設計段階**（k3dクラスタの土台のみ実装済み）。目的・背景・要求水準は[docs/requirements.md](docs/requirements.md)を参照。
 
-想定ユースケースは金融の不正検知・口座凍結（[ADR 0001](docs/adr/0001-scenario-fraud-detection-with-agent-assist.md)）。AIエージェントが取引パターンから凍結を提案し、アナリストが確認の上で決定論的な操作を行って初めて確定する。エージェントの権限はKeycloakのスコープ設計で読み取り・提案のみに制限し、実行権限（凍結）は一切持たせない。
+想定ユースケースは金融の不正検知・口座凍結解除（[ADR 0001](docs/adr/0001-scenario-fraud-detection-with-agent-assist.md)・[ADR 0011](docs/adr/0011-scenario-ai-assisted-unfreeze.md)）。取引パターンから自動検知エンジンが口座を自動的に凍結し、AIエージェントが凍結の妥当性を分析して解除を提案、アナリストが確認の上で決定論的な操作を行って初めて解除が確定する。エージェントの権限はKeycloakのスコープ設計で読み取り・提案のみに制限し、実行権限（凍結解除）は一切持たせない。
 
 ## 現在の進捗
 

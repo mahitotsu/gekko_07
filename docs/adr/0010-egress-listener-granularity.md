@@ -10,11 +10,11 @@ architecture.md §3は「次ホップごとに専用のegressリスナーを1つ
 | 呼び出し元 | 対象audience | scope | 目的 |
 |---|---|---|---|
 | frontend | account-service | `account:read` | 取引ダッシュボード |
-| frontend | account-service | `account:freeze` | 凍結確定ボタン |
+| frontend | account-service | `account:unfreeze` | 凍結解除確定ボタン |
 | frontend | fraud-mcp-server | `account:read` | チャットUI開始時 |
 | fraud-mcp-server | account-service | `account:read` | 取引照会系MCPツール |
-| fraud-mcp-server | account-service | `account:propose` | 凍結案記録MCPツール |
-| payment-service | account-service | `account:transact` | 入出金・振込（client_credentials、subject_tokenの交換ではない） |
+| fraud-mcp-server | account-service | `account:propose` | 凍結解除案記録MCPツール |
+| fraud-detection-engine | account-service | `account:freeze` | 自動凍結（client_credentials、subject_tokenの交換ではない） |
 | account-service | analyst-attribute-service | `analyst:read` | アナリスト属性照会 |
 
 当初この複数目的問題への対処として、egressの呼び出し先を`localhost:<ポート>`や`/_egress/<サービス名>/<目的>`のような**実APIとは無関係な人工的なURL**で区別する案を検討したが、いずれも撤回する。相手先サービスのAPIパスはそのサービスのAPI定義で決まる値であり、それをコード内で書き換えて別のURL体系にすると、コードから「実際に何を呼んでいるか」が読み取れなくなる。
@@ -47,11 +47,11 @@ scopeは最終的に相手サービスの**実際のAPIパス・メソッド**�
 
 | 呼び出し元 → 対象audience | scope | Envoyルートの形 |
 |---|---|---|
-| payment-service → account-service | `account:transact`のみ | パスに依存しないワイルドカードルート1本（`prefix: "/"`）でscopeを固定 |
+| fraud-detection-engine → account-service | `account:freeze`のみ | パスに依存しないワイルドカードルート1本（`prefix: "/"`）でscopeを固定 |
 | account-service → analyst-attribute-service | `analyst:read`のみ | 同上 |
 | frontend → fraud-mcp-server | `account:read`のみ | 同上 |
-| frontend → account-service | `account:read` または `account:freeze` | `GET /accounts/{id}/**` → `account:read`、`POST /accounts/{id}/freeze` → `account:freeze` |
-| fraud-mcp-server → account-service | `account:read` または `account:propose` | `GET /accounts/{id}/**` → `account:read`、`POST /accounts/{id}/freeze-proposals` → `account:propose` |
+| frontend → account-service | `account:read` または `account:unfreeze` | `GET /accounts/{id}/**` → `account:read`、`POST /accounts/{id}/unfreeze` → `account:unfreeze` |
+| fraud-mcp-server → account-service | `account:read` または `account:propose` | `GET /accounts/{id}/**` → `account:read`、`POST /accounts/{id}/unfreeze-proposals` → `account:propose` |
 
 「scopeがpathによらず1つだけ」なホスト（前者3つ）は、たまたまルートが1本（ワイルドカード）に潰れているだけであり、「scopeがpathで変わる」ホスト（後者2つ）はルートが複数本になる。**両者は設計上の別カテゴリではなく、同じ仕組みが生成する結果の違いにすぎない**。
 
@@ -63,7 +63,7 @@ egressで必要な処理は4種類ある。①②③は透過的なプロキシ�
 
 **① Token Exchange**：frontend→account-service/fraud-mcp-server、fraud-mcp-server→account-service、account-service→analyst-attribute-service。ext_authzは`authorization_response.allowed_upstream_headers`で交換後トークンを`Authorization`ヘッダーとして実アップストリームへの転送リクエストに乗せる。
 
-**② client_credentials発行**：payment-service→account-service。①と同じ`allowed_upstream_headers`の仕組みを使うが、Token Exchangeではなくclient_credentials grantを使う（取得したトークンのキャッシュ・更新が主な仕事になる）。
+**② client_credentials発行**：fraud-detection-engine→account-service。①と同じ`allowed_upstream_headers`の仕組みを使うが、Token Exchangeではなくclient_credentials grantを使う（取得したトークンのキャッシュ・更新が主な仕事になる）。
 
 **③ 素通し**：fraud-agent→fraud-mcp-server（frontendが交換済みのトークンをそのまま使い回す。services.md参照）。ext_authz自体を呼ぶ必要がなく、単純なプロキシとして構成する（Authorizationヘッダーを一切書き換えない）。
 
@@ -73,10 +73,10 @@ egressで必要な処理は4種類ある。①②③は透過的なプロキシ�
 
 ### 5. 「アプリがscopeを指定する」方式は採用しない（変更なし）
 
-検討した代替案：アプリが要求ヘッダー（例：`x-desired-scope: account:freeze`）でscopeを指定し、ext_authzがそれを読んでToken Exchangeする方式。採用しない。
+検討した代替案：アプリが要求ヘッダー（例：`x-desired-scope: account:unfreeze`）でscopeを指定し、ext_authzがそれを読んでToken Exchangeする方式。採用しない。
 
 - [ADR 0009](0009-envoy-ingress-responsibility-and-bypass-prevention.md)で「アプリの意図はトポロジーで構造的に強制し、自己申告のフラグや値に頼らない」という考え方を一貫して採用しており、scope選択だけをアプリの自己申告に委ねるのは一貫性を欠く
-- ヘッダー方式では、アプリのバグ・実装ミス（例：本来`account:read`のはずの経路で誤って`account:freeze`をヘッダーにセットしてしまう）が、そのままより強い権限の要求につながりうる。frontendのように`account:read`と`account:freeze`の両方を許可されたクライアントでは、Keycloak側のクライアントスコープ制限だけではこの種の取り違えを防げない。実際に呼んだ実パス・実メソッドから対応表でscopeを機械的に決めるほうが、アプリの自己申告に頼るより堅い
+- ヘッダー方式では、アプリのバグ・実装ミス（例：本来`account:read`のはずの経路で誤って`account:unfreeze`をヘッダーにセットしてしまう）が、そのままより強い権限の要求につながりうる。frontendのように`account:read`と`account:unfreeze`の両方を許可されたクライアントでは、Keycloak側のクライアントスコープ制限だけではこの種の取り違えを防げない。実際に呼んだ実パス・実メソッドから対応表でscopeを機械的に決めるほうが、アプリの自己申告に頼るより堅い
 
 ## Consequences
 

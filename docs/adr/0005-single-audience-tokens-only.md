@@ -18,7 +18,7 @@ Token Exchangeで発行するトークンが複数のaudienceを同時に持つ�
 **全てのトークンは常に単一のaudienceのみを持つ**。これに伴い、以下を統一する。
 
 - ログイン直後のトークンは`aud=frontend`（frontend自身。単一）のみを持ち、それ以上の意味（特定のリソースサーバー向けスコープ）を持たせない
-- frontendがaccount-serviceにアクセスする経路（ダッシュボード表示・凍結確定）も、ログイントークンを直接使う特別扱いをやめ、frontend自身が明示的にToken Exchangeを実行して`aud=account-service`の単一audienceトークンを得る、という形に統一する
+- frontendがaccount-serviceにアクセスする経路（ダッシュボード表示・凍結解除確定）も、ログイントークンを直接使う特別扱いをやめ、frontend自身が明示的にToken Exchangeを実行して`aud=account-service`の単一audienceトークンを得る、という形に統一する
 - AIエージェントへの委任も同様に、frontendが別の明示的なToken Exchangeで`aud=fraud-mcp-server`の単一audienceトークンを得る
 - 以降のホップ（fraud-mcp-server→account-service、account-service→analyst-attribute-service）もすべて単一audienceの交換として一様に扱う
 

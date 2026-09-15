@@ -1,6 +1,6 @@
 # ADR 0001: シナリオにAIエージェント支援付き金融不正検知・口座凍結を採用
 
-- **Status**: Accepted
+- **Status**: Superseded by [0011](0011-scenario-ai-assisted-unfreeze.md)
 - **Date**: 2026-09-13
 
 ## Context
