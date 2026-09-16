@@ -1,0 +1,52 @@
+# edge-proxy(ADR 0017)。ADR 0004が最初から想定していた「edge-proxy相当のService」の
+# 先行実装。業務ロジックを持たないEnvoy単体のPodで、非mTLSの外部接続(port-forward経由の
+# ブラウザ・kcadm.sh管理操作・verify-hop.shのROPCシミュレーション)を一元的に引き受け、
+# Keycloakへは常にmTLSで転送する。frontend実装時は同じedge-proxyを使い回し、
+# envoy-configmap.yamlのroute_configにvirtual_host/routeを追加して振り分ける想定。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: edge-proxy
+  namespace: gekko
+  labels:
+    app: edge-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: edge-proxy
+  template:
+    metadata:
+      labels:
+        app: edge-proxy
+    spec:
+      containers:
+        - name: envoy
+          image: envoyproxy/envoy:v1.31.5
+          command: ["envoy", "-c", "/etc/envoy/envoy.yaml"]
+          ports:
+            - name: http
+              containerPort: 80
+          volumeMounts:
+            - name: envoy-config
+              mountPath: /etc/envoy
+              readOnly: true
+            # SPIRE Agent Workload API(UDS)ソケット(ADR 0012/0016/0017)。
+            - name: spire-agent-socket
+              mountPath: /run/spire/sockets
+              readOnly: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "300m"
+              memory: "128Mi"
+      volumes:
+        - name: envoy-config
+          configMap:
+            name: edge-proxy-envoy
+        - name: spire-agent-socket
+          hostPath:
+            path: /run/spire/sockets
+            type: Directory

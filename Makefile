@@ -64,8 +64,13 @@ clean: down
 # コンポーネント」へ格上げした。deploy-spireはspire-agent DaemonSetのrollout完了まで待つため、
 # Keycloakのデプロイより前に呼べば、KeycloakのEnvoyコンテナがspire-agentソケット
 # （hostPath /run/spire/sockets）を確実にマウントできる。
+#
+# edge-proxy（k8s/edge-proxy/）はADR 0017で追加。Keycloakの8080撤廃に伴い、ブラウザ/kcadm.sh/
+# verify-hop.sh向けの非mTLS経路を代理する。Keycloakのrollout後に適用する（keycloak_upstream
+# クラスタがKeycloakのService DNSを参照するため、順序はどちらでも動くが、依存関係が分かりやすい
+# 順に揃えている）。
 
-# PostgreSQL・SPIRE・Keycloakをデプロイ（クラスタが起動済みであること）
+# PostgreSQL・SPIRE・Keycloak・edge-proxyをデプロイ（クラスタが起動済みであること）
 deploy:
 	kubectl apply -f k8s/keycloak/namespace.yaml
 	@kubectl create secret generic keycloak-admin -n $(NAMESPACE) \
@@ -88,6 +93,8 @@ deploy:
 	$(MAKE) deploy-spire
 	kubectl apply -f k8s/keycloak/realm-configmap.yaml -f k8s/keycloak/envoy-configmap.yaml -f k8s/keycloak/deployment.yaml -f k8s/keycloak/service.yaml
 	kubectl -n $(NAMESPACE) rollout status deployment/keycloak --timeout=180s
+	kubectl apply -f k8s/edge-proxy/envoy-configmap.yaml -f k8s/edge-proxy/deployment.yaml -f k8s/edge-proxy/service.yaml
+	kubectl -n $(NAMESPACE) rollout status deployment/edge-proxy --timeout=120s
 	@echo "---"
 	@echo "Keycloak admin username: admin"
 	@echo "Keycloak admin password: $(KEYCLOAK_ADMIN_PASSWORD)"
@@ -97,6 +104,7 @@ deploy:
 
 # アプリ層を削除する（クラスタ自体は残す。PVCも削除するためPostgresのデータも消える）
 undeploy:
+	kubectl delete -f k8s/edge-proxy/service.yaml -f k8s/edge-proxy/deployment.yaml -f k8s/edge-proxy/envoy-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/keycloak/service.yaml -f k8s/keycloak/deployment.yaml -f k8s/keycloak/envoy-configmap.yaml -f k8s/keycloak/realm-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/keycloak/db-init-job.yaml -f k8s/keycloak/db-init-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/postgres/service.yaml -f k8s/postgres/statefulset.yaml --ignore-not-found
@@ -105,9 +113,10 @@ undeploy:
 	kubectl delete -f k8s/keycloak/namespace.yaml --ignore-not-found
 	$(MAKE) undeploy-spire
 
-# ホストのlocalhost:3000をKeycloakへport-forwardする（ADR 0004。フォアグラウンドで動き続けるプロセス）
+# ホストのlocalhost:3000をKeycloakへport-forwardする（ADR 0004・0017。edge-proxy経由。
+# フォアグラウンドで動き続けるプロセス）
 keycloak-forward:
-	kubectl -n $(NAMESPACE) port-forward svc/keycloak 3000:8080
+	kubectl -n $(NAMESPACE) port-forward svc/edge-proxy 3000:80
 
 # realm-configmap.yaml変更後にKeycloakへ反映させる（insights.md参照）。--import-realmは
 # データディレクトリが空の初回起動時のみ有効なため、Postgresへ永続化した状態で

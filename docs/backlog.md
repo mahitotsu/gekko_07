@@ -23,11 +23,10 @@
 
 ## mTLS / SPIFFE / SPIRE
 
-[ADR 0012](adr/0012-spiffe-spire-mtls-single-hop.md)でfraud-mcp-server→account-service、[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)でfraud-detection-engine→account-service、[ADR 0016](adr/0016-ext-authz-and-keycloak-mtls.md)でext-authz-service(-cc)↔呼び出し元Envoy・ext-authz-service(-cc)↔Keycloakに導入済み。以下は明示的にスコープ外とした。
+[ADR 0012](adr/0012-spiffe-spire-mtls-single-hop.md)でfraud-mcp-server→account-service、[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)でfraud-detection-engine→account-service、[ADR 0016](adr/0016-ext-authz-and-keycloak-mtls.md)でext-authz-service(-cc)↔呼び出し元Envoy・ext-authz-service(-cc)↔Keycloak、[ADR 0017](adr/0017-edge-proxy-full-keycloak-mtls.md)でedge-proxy導入によるKeycloakの完全mTLS化(8080撤廃、account-serviceのJWKS取得もmTLS化)に導入済み。以下は明示的にスコープ外とした。
 
-- **他ホップへの横展開**：frontend→account-service/fraud-mcp-server、account-service→analyst-attribute-service等、残りの委任関係へのmTLS適用は未着手（frontend/analyst-attribute-service自体が未実装）
-- **account-serviceのjwt_authnによるKeycloak JWKS取得（`keycloak_jwks`クラスタ）**：ADR 0016でext-authz-service(-cc)↔KeycloakはmTLS化したが、account-service自身がJWKS検証のために直接叩く`http://keycloak.gekko.svc.cluster.local:8080/realms/gekko/protocol/openid-connect/certs`は対象外のまま平文。account-serviceのEnvoyにKeycloakの8443(mTLS)向けクラスタを追加すれば同じパターンで塞げる
-- **Keycloakの8080/9000平文ポート**：ADR 0016で意図的に残した恒久設計（TODOではない）。ブラウザ経由のログイン・`kcadm.sh`による管理操作はSPIFFE身元を持ちえないため、account-serviceのような単一filter_chainへの統合・plaintext撤廃はできない。将来browserベースの認証にmTLSを課す手段が採用されない限り解消しない
+- **他ホップへの横展開**：frontend→account-service/fraud-mcp-server、account-service→analyst-attribute-service等、残りの委任関係へのmTLS適用は未着手（frontend/analyst-attribute-service自体が未実装）。frontend実装時はedge-proxy(ADR 0017)を経由させ、同じPodを使い回す想定
+- **NetworkPolicyによるL3/4の多層防御**：[ADR 0012](adr/0012-spiffe-spire-mtls-single-hop.md) R7で「mTLS/業務認可とは独立な別トラック」と位置づけ、[ADR 0017](adr/0017-edge-proxy-full-keycloak-mtls.md)でも見送った。このクラスタでkube-router netpolが実際に有効なことは実機確認済み（`iptables-save`で`KUBE-ROUTER-INPUT/FORWARD/OUTPUT`・Pod単位の`KUBE-POD-FW-*`チェーンを確認）で技術的な導入障壁は無い。増分価値が大きいのは、mTLSの対象外である共有Postgresインスタンス（ADR 0008）とKeycloakの`http-mgmt:9000`。導入する場合はkubeletのreadiness/liveness/startupProbeがノードIPから到達する点との相性検証（default-denyにすると素朴にはプローブが壊れる）が別途必要
 - **ADR 0002見直し（RFC 8705を実現するためのWASMフィルタ化）**：RFC 8705を成立させるにはToken ExchangeをWASMフィルタとして各サービス自身のEnvoy内で完結させる必要があるが、ADR 0002が明示的に退けたWASMビルドトールチェーン導入コストを再度負うことになるため見送った。本気で目指すなら別途評価する
 - **ワークロードPod（account-service-stub/fraud-mcp-server-stub等）自体への`hostPID`/`hostNetwork`付与**：SPIRE agentには必要だが、ワークロードPod側はカーネルのPID名前空間の性質上不要なはずという推測のもとで見送った。属性解決が実機で失敗した場合（SDS呼び出しがタイムアウトする、spire-serverのログに"no selectors found after max poll attempts"が出る等）のみ再検討する
 - **`spiffe-csi`ドライバ・`spire-controller-manager`**：新規可動部を増やさないため、hostPathでのソケット共有・`spire-server entry create` CLIでの手動登録を選んだ。本番相当の運用を検証したくなった場合に再評価する

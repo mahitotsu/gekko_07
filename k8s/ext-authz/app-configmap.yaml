@@ -40,9 +40,12 @@ data:
     import urllib.parse
     import urllib.request
 
+    # 既定値は各Deploymentのenvで上書きされる(ADR 0016の"http://keycloak/..."。hostAliasesで
+    # "keycloak"を127.0.0.1へマッピングし、同一Pod内のEnvoy egressリスナーへ横取りさせる)。
+    # ここでのデフォルトはADR 0017でKeycloakの8080が撤廃されたため、もはや直接到達できない。
     TOKEN_URL = os.environ.get(
         "KEYCLOAK_TOKEN_URL",
-        "http://keycloak.gekko.svc.cluster.local:8080/realms/gekko/protocol/openid-connect/token",
+        "http://keycloak/realms/gekko/protocol/openid-connect/token",
     )
     GRANT_TYPE = os.environ.get("GRANT_TYPE", "token-exchange")  # "token-exchange" | "client_credentials"
     CLIENT_ID = os.environ.get("CLIENT_ID", "fraud-mcp-server")

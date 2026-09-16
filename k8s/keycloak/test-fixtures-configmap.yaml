@@ -13,7 +13,8 @@ data:
     set -euo pipefail
 
     KCADM=/opt/keycloak/bin/kcadm.sh
-    SERVER="http://keycloak.gekko.svc.cluster.local:8080"
+    # ADR 0017: Keycloakの8080は撤廃済みのため、edge-proxy経由でアクセスする。
+    SERVER="http://edge-proxy.gekko.svc.cluster.local:80"
 
     "$KCADM" config credentials --server "$SERVER" --realm master --user admin --password "$KEYCLOAK_ADMIN_PASSWORD"
 

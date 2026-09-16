@@ -6,10 +6,12 @@
 # PostgresのkeycloakデータベースをリセットしてPodを再作成する。詳細はdocs/insights.md）。
 #
 # ADR 0016でEnvoyサイドカーを追加し、ext-authz-service(-cc)からの接続専用にmTLS必須のポート
-# (https-mtls:8443)を新設した。keycloakコンテナ自体の8080/9000は無変更のまま残す
-# ——ブラウザ経由のログイン・kcadm.shによる管理操作・verify-hop.shのROPCシミュレーションは
-# SPIFFE身元を持ちえないため、account-service(ADR 0015)のような単一filter_chainへの統合は
-# できない。ポートを分離し、mTLSは「メッシュ内の呼び出し元専用の追加経路」として共存させる。
+# (https-mtls:8443)を新設した。ADR 0017でさらにedge-proxy(非mTLS外部接続を代理する
+# リバースプロキシ)を導入し、keycloakコンテナ自体の8080はKC_HTTP_HOST=127.0.0.1で
+# Pod外から直接到達不能にした(ADR 0009と同じ考え方。account-service/ext-authz-serviceの
+# appコンテナと同様)。KC_HTTP_MANAGEMENT_HOSTは明示的に0.0.0.0のまま残す——
+# `--http-management-host`は既定で`--http-host`を継承するため、これが無いとhealth/mgmt(9000)
+# まで道連れでloopback化し、kubeletのreadiness/liveness/startupProbeが壊れることを実機で確認した。
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -43,13 +45,21 @@ spec:
                   name: keycloak-admin
                   key: password
             # ADR 0004: 外部公開はkubectl port-forwardで行い、KC_HOSTNAMEは
-            # ホストから到達する固定URLに固定する（`kubectl port-forward svc/keycloak 3000:8080`）。
+            # ホストから到達する固定URLに固定する（ADR 0017で`kubectl port-forward svc/edge-proxy
+            # 3000:80`へ変更。edge-proxyはKeycloakへ透過的に転送するためURL自体は変わらない）。
             - name: KC_HOSTNAME
               value: "http://localhost:3000"
             - name: KC_HTTP_ENABLED
               value: "true"
             - name: KC_HEALTH_ENABLED
               value: "true"
+            # ADR 0017: appをPod外から直接到達不能にする(ADR 0009と同じ考え方)。
+            # KC_HTTP_MANAGEMENT_HOSTが無いと--http-hostを継承してmgmt(9000)まで
+            # loopback化され、kubeletのプローブが壊れる(実機確認済み)。
+            - name: KC_HTTP_HOST
+              value: "127.0.0.1"
+            - name: KC_HTTP_MANAGEMENT_HOST
+              value: "0.0.0.0"
             # ADR 0008: account-service等と同じ共有PostgreSQLインスタンス内の
             # 専用データベースに接続する（ロールもDB名も"keycloak"）。
             - name: KC_DB

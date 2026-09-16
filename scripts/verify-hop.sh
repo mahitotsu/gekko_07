@@ -32,8 +32,8 @@ newest_pod() {
 FRONTEND_CLIENT_SECRET=$(cat "$SECRETS_DIR/frontend-client-secret")
 YAMADA_ANALYST_PASSWORD=$(cat "$SECRETS_DIR/yamada-analyst-password")
 
-echo "==> Keycloakへport-forward中..."
-kubectl -n "$NAMESPACE" port-forward svc/keycloak "$LOCAL_KC_PORT":8080 >/tmp/verify-hop-portforward.log 2>&1 &
+echo "==> Keycloakへport-forward中(edge-proxy経由。ADR 0017でKeycloak自体の8080は撤廃済み)..."
+kubectl -n "$NAMESPACE" port-forward svc/edge-proxy "$LOCAL_KC_PORT":80 >/tmp/verify-hop-portforward.log 2>&1 &
 PF_PID=$!
 cleanup() {
   kill "$PF_PID" >/dev/null 2>&1 || true
@@ -187,10 +187,23 @@ ext_authz_ssl_handshake_check() {
 EXT_AUTHZ_POD=$(newest_pod ext-authz-service)
 EXT_AUTHZ_CC_POD=$(newest_pod ext-authz-service-cc)
 KEYCLOAK_POD=$(newest_pod keycloak)
+EDGE_PROXY_POD=$(newest_pod edge-proxy)
 
 ext_authz_ssl_handshake_check "$EXT_AUTHZ_POD" "ext-authz-service"
 ext_authz_ssl_handshake_check "$EXT_AUTHZ_CC_POD" "ext-authz-service-cc"
 ext_authz_ssl_handshake_check "$KEYCLOAK_POD" "keycloak"
+
+# edge-proxyはinbound(:80)が平文でoutbound(→keycloak_upstream)だけmTLSのため、
+# listener側ではなくcluster側のssl.handshake統計を見る(他3者はinboundがmTLS必須なので
+# listener側で検出できる。ADR 0017)。
+echo "==> 8. edge-proxyのEnvoy管理ポート(:9901)でTLSハンドシェイクが実際に発生したことを確認"
+kubectl -n "$NAMESPACE" exec "$EDGE_PROXY_POD" -c envoy -- bash -c '
+  exec 3<>/dev/tcp/127.0.0.1/9901
+  printf "GET /stats HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3
+  cat <&3
+' | grep -E 'cluster\.keycloak_upstream\.ssl\.handshake: [1-9]' \
+  && echo "mTLSハンドシェイク成功を確認(期待通り)" \
+  || echo "警告:ssl.handshakeカウンタが検出できませんでした(統計名が異なる可能性。config_dumpで要確認)" >&2
 
 echo "==> 9. ext-authz-serviceのappポート(9000)にPod外から直接到達できないことを確認(ADR 0016)"
 EXT_AUTHZ_POD_IP=$(kubectl -n "$NAMESPACE" get pod "$EXT_AUTHZ_POD" -o jsonpath='{.status.podIP}')
@@ -214,8 +227,15 @@ kubectl -n "$NAMESPACE" run verify-hop-keycloak-mtls-bypass-check --rm -i --rest
   --max-time 5 "https://keycloak.${NAMESPACE}.svc.cluster.local:8443/" || \
   echo "クライアント証明書なしのTLS接続は拒否された(期待通り。ADR 0016)"
 
-# Keycloakの8080は非メッシュ呼び出し元(ブラウザ/kcadm.sh)向けに意図して平文のまま残している
-# (ADR 0016。TODOではなく恒久設計)。ステップ1・2が引き続き成功していること自体が、この経路が
-# 回帰せず意図通り到達可能であることの裏付けになる。
+# ADR 0017:edge-proxy導入によりKeycloakの8080は完全に撤廃した(9000はkubelet用として維持)。
+# ステップ1・2がedge-proxy経由(port-forward svc/edge-proxy)で引き続き成功していること自体が、
+# 非mTLS呼び出し元向けの経路が回帰せず意図通り機能していることの裏付けになる。ここでは加えて、
+# Keycloak Service自体に8080ポートがもう存在しないことを直接確認する。
+echo "==> 12. KeycloakのServiceに8080(平文)ポートが存在しないことを確認(ADR 0017)"
+if kubectl -n "$NAMESPACE" get svc keycloak -o jsonpath='{.spec.ports[*].port}' | grep -qw 8080; then
+  echo "警告:Keycloak Serviceに8080ポートが残っています(ADR 0017の想定と異なる)" >&2
+else
+  echo "8080ポートは存在しない(期待通り)"
+fi
 
 echo "==> 検証完了"

@@ -106,7 +106,7 @@ data:
                               audiences: ["account-service"]
                               remote_jwks:
                                 http_uri:
-                                  uri: "http://keycloak.gekko.svc.cluster.local:8080/realms/gekko/protocol/openid-connect/certs"
+                                  uri: "https://keycloak.gekko.svc.cluster.local:8443/realms/gekko/protocol/openid-connect/certs"
                                   cluster: keycloak_jwks
                                   timeout: 5s
                                 cache_duration: 300s
@@ -188,16 +188,56 @@ data:
                   - endpoint:
                       address:
                         socket_address: { address: 127.0.0.1, port_value: 9000 }
+        # ADR 0017でmTLS化(edge-proxy導入に伴いKeycloakの8080が撤廃されたため)。
+        # account-serviceは既にSPIRE化済みのため、edge-proxyを経由せず直接Keycloakの
+        # mTLSポート(8443)へ接続する。
         - name: keycloak_jwks
           type: STRICT_DNS
           lb_policy: ROUND_ROBIN
+          typed_extension_protocol_options:
+            envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+              "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+              explicit_http_config:
+                http2_protocol_options: {}
+          transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+              common_tls_context:
+                alpn_protocols: ["h2"]
+                tls_certificate_sds_secret_configs:
+                  - name: "default"
+                    sds_config:
+                      resource_api_version: V3
+                      api_config_source:
+                        api_type: GRPC
+                        transport_api_version: V3
+                        grpc_services:
+                          - envoy_grpc:
+                              cluster_name: spire_agent
+                combined_validation_context:
+                  default_validation_context:
+                    match_typed_subject_alt_names:
+                      - san_type: URI
+                        matcher:
+                          exact: "spiffe://gekko.internal/ns/gekko/sa/default/keycloak"
+                  validation_context_sds_secret_config:
+                    name: "ROOTCA"
+                    sds_config:
+                      resource_api_version: V3
+                      api_config_source:
+                        api_type: GRPC
+                        transport_api_version: V3
+                        grpc_services:
+                          - envoy_grpc:
+                              cluster_name: spire_agent
           load_assignment:
             cluster_name: keycloak_jwks
             endpoints:
               - lb_endpoints:
                   - endpoint:
                       address:
-                        socket_address: { address: keycloak.gekko.svc.cluster.local, port_value: 8080 }
+                        socket_address: { address: keycloak.gekko.svc.cluster.local, port_value: 8443 }
         # SPIRE Agent Workload API(UDS)へのSDSチャネル(ADR 0012)。tls_certificate_sds_secret_configs/
         # validation_context_sds_secret_configの双方から参照される。
         - name: spire_agent
