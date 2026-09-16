@@ -1,0 +1,25 @@
+# 全Podに、サービス名解決(postgres・keycloak.gekko.svc.cluster.local等)に必要な
+# kube-system/kube-dnsへのegressを許可する(ADR 0018)。kube-systemの
+# `kubernetes.io/metadata.name`ラベルはKubernetes標準で自動付与される。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: gekko
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

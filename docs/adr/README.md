@@ -25,3 +25,4 @@
 | [0015](0015-dpop-removal-and-fraud-detection-engine-mtls.md) | DPoPを撤去し、SPIRE mTLSをfraud-detection-engine→account-serviceへ横展開する | Accepted |
 | [0016](0016-ext-authz-and-keycloak-mtls.md) | SPIRE mTLSをext-authz-service(-cc)・Keycloakへ拡張する | Accepted |
 | [0017](0017-edge-proxy-full-keycloak-mtls.md) | edge-proxyを導入し、Keycloakを完全mTLS化する | Accepted |
+| [0018](0018-network-policy-default-deny.md) | gekko namespaceにNetworkPolicyでL3/4のdefault-denyを導入する | Accepted |

@@ -1,0 +1,28 @@
+# ADR 0018。fraud-mcp-serverにはKubernetes Service自体が無くingressの受け口が
+# 無いため、Egressのみ制御する(ingressはdefault-denyのまま)。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: fraud-mcp-server
+  namespace: gekko
+spec:
+  podSelector:
+    matchLabels:
+      app: fraud-mcp-server
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: account-service
+      ports:
+        - protocol: TCP
+          port: 8080
+    - to:
+        - podSelector:
+            matchLabels:
+              app: ext-authz-service
+      ports:
+        - protocol: TCP
+          port: 8080

@@ -1,0 +1,14 @@
+# gekko namespace全Podに対するingress/egressのデフォルト拒否(ADR 0018)。
+# 他のNetworkPolicyが同じPodをselectorで指定して許可ルールを追加すると、
+# 方向(ingress/egress)ごとに論理和(OR)で合成される。このファイル自体はルールを
+# 持たないため、他のNetworkPolicyで明示的に許可されない通信は全て拒否される。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: gekko
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress

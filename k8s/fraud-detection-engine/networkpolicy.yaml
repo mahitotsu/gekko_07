@@ -1,0 +1,28 @@
+# ADR 0018。fraud-detection-engineにはKubernetes Service自体が無くingressの受け口が
+# 無いため、Egressのみ制御する(ingressはdefault-denyのまま)。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: fraud-detection-engine
+  namespace: gekko
+spec:
+  podSelector:
+    matchLabels:
+      app: fraud-detection-engine
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: account-service
+      ports:
+        - protocol: TCP
+          port: 8080
+    - to:
+        - podSelector:
+            matchLabels:
+              app: ext-authz-service-cc
+      ports:
+        - protocol: TCP
+          port: 8080

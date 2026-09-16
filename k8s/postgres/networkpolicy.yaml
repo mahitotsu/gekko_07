@@ -1,0 +1,24 @@
+# ADR 0018。現在の唯一の接続元であるkeycloak・keycloak-db-init(Job)からのみ
+# 許可する。postgres自身は外向き接続をしないためegressは制御不要。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres
+  namespace: gekko
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: keycloak
+        - podSelector:
+            matchLabels:
+              app: keycloak-db-init
+      ports:
+        - protocol: TCP
+          port: 5432

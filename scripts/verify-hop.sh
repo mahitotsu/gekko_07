@@ -238,4 +238,19 @@ else
   echo "8080ポートは存在しない(期待通り)"
 fi
 
+echo "==> 13.(異常系)NetworkPolicy適用後、素のPodからpostgres:5432に直接到達できないことを確認(ADR 0018)"
+kubectl -n "$NAMESPACE" run verify-hop-netpol-postgres-check --rm -i --restart=Never \
+  --image=curlimages/curl:8.10.1 --command -- \
+  curl -sv -o /dev/null --max-time 5 "http://postgres:5432/" 2>&1 | tail -3 || \
+  echo "postgres:5432への到達不可(期待通り。ADR 0018。NetworkPolicyでブロックされていれば" \
+       "connect timed outに、許可されていればpostgresプロトコルエラーで即座に失敗するはず)"
+
+echo "==> 14.(異常系)NetworkPolicy適用後、素のPodからkeycloakのhttp-mgmt(9000)に直接到達できないことを確認(ADR 0018)"
+KEYCLOAK_POD_IP=$(kubectl -n "$NAMESPACE" get pod "$KEYCLOAK_POD" -o jsonpath='{.status.podIP}')
+kubectl -n "$NAMESPACE" run verify-hop-netpol-keycloak-mgmt-check --rm -i --restart=Never \
+  --image=curlimages/curl:8.10.1 --command -- \
+  curl -s -o /dev/null -w 'direct keycloak mgmt reach: %{http_code}\n' \
+  --max-time 5 "http://${KEYCLOAK_POD_IP}:9000/health/ready" || \
+  echo "keycloakのhttp-mgmt(9000)への到達不可(期待通り。ADR 0018。許可されるのはkubeletのprobeのみ)"
+
 echo "==> 検証完了"

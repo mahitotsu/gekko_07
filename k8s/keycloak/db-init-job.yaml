@@ -10,6 +10,10 @@ spec:
   backoffLimit: 3
   ttlSecondsAfterFinished: 300
   template:
+    metadata:
+      labels:
+        # NetworkPolicyのpodSelectorで指定できるように付与(ADR 0018)
+        app: keycloak-db-init
     spec:
       restartPolicy: Never
       containers:

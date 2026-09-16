@@ -1,0 +1,60 @@
+# ADR 0018。呼び出し元ごとに固定資格情報を持つ別インスタンス構成(ext-authz-service=
+# fraud-mcp-server固定、ext-authz-service-cc=fraud-detection-engine固定)に合わせ、
+# それぞれ対応する呼び出し元からのingressのみを許可する。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ext-authz-service
+  namespace: gekko
+spec:
+  podSelector:
+    matchLabels:
+      app: ext-authz-service
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: fraud-mcp-server
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: keycloak
+      ports:
+        - protocol: TCP
+          port: 8443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ext-authz-service-cc
+  namespace: gekko
+spec:
+  podSelector:
+    matchLabels:
+      app: ext-authz-service-cc
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: fraud-detection-engine
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: keycloak
+      ports:
+        - protocol: TCP
+          port: 8443

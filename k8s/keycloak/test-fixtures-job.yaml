@@ -9,6 +9,10 @@ spec:
   backoffLimit: 3
   ttlSecondsAfterFinished: 300
   template:
+    metadata:
+      labels:
+        # NetworkPolicyのpodSelectorで指定できるように付与(ADR 0018)
+        app: keycloak-test-fixtures
     spec:
       restartPolicy: Never
       containers:

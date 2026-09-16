@@ -192,6 +192,20 @@
 
 **対応**：`bash`の`/dev/tcp/<host>/<port>`疑似デバイスで生のTCPソケットを開き、素のHTTPリクエストを`printf`で組み立てて送る方式にした（[scripts/verify-hop.sh](../scripts/verify-hop.sh)）。
 
+## NetworkPolicy（gekko namespace全体のL3/4 default-deny、ADR 0018）
+
+### kube-router netpolはDROPではなくREJECT(即時RST)でブロックする
+
+**確認内容**：default-deny適用後、ラベルの無いエフェメラルPodからpostgres:5432・keycloakのhttp-mgmt:9000へ`curl -v`で接続を試みたところ、いずれも`Connection refused`（`failed to connect ... after 0-1 ms`）で即座に失敗した。事前は「DROPによる`--max-time`一杯までのタイムアウト」を想定していたが、実際はREJECT相当（TCP RST即返却）だった。このクラスタのkube-router netpol実装の挙動として記録する。
+
+### kubeletのprobe・kubectl port-forwardは、ノードが属するdocker networkのサブネットからのingress許可で問題なく機能した
+
+**確認内容**：Keycloakのhttp-mgmt:9000（readiness/liveness/startupProbe）とedge-proxyの80番（`kubectl port-forward`経由の外部アクセス、ADR 0004）を、ノードIP単体ではなくk3dのdocker networkサブネット全体（`172.19.0.0/16`）からのingressとして許可した。`make deploy-network-policy`適用後、Keycloak Podに再起動・CrashLoopBackOffは発生せず（probe疎通は継続）、`make keycloak-forward`経由の`scripts/verify-hop.sh`（ROPCログイン等、port-forward前提のステップ含む）も全ステップ成功した。事前にbacklog.mdで「default-denyにすると素朴にはプローブが壊れる」と懸念していた点は、ノードIPを含むCIDR単位での許可で解消できることを確認した。
+
+### DNS解決は`kube-system`/`kube-dns`への53番egress許可のみで全Podに行き渡った
+
+**確認内容**：`podSelector: {}`で全Pod共通の1本のNetworkPolicy（`k8s/network-policy/allow-dns.yaml`）だけを追加し、個々のサービスのNetworkPolicyには一切DNS関連のegressルールを書いていない。この状態で`postgres`・`keycloak.gekko.svc.cluster.local`等、全てのService名前解決を伴う既存フローが問題なく成功した。namespaceラベル`kubernetes.io/metadata.name: kube-system`はKubernetes標準の自動付与ラベルで、k3d(v1.35系)でも別途手動付与する必要はなかった。
+
 ## DPoP送信者拘束（fraud-mcp-server→account-serviceの1ホップ、ADR 0013。ADR 0015で撤去済み）
 
 **このセクションが指す実装（`k8s/dpop-verifier/`等）はADR 0015で撤去済み。** 以下は撤去前の実機検証で得た知見で、将来DPoPを再検討する際の参考として残す。

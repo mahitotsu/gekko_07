@@ -95,6 +95,7 @@ deploy:
 	kubectl -n $(NAMESPACE) rollout status deployment/keycloak --timeout=180s
 	kubectl apply -f k8s/edge-proxy/envoy-configmap.yaml -f k8s/edge-proxy/deployment.yaml -f k8s/edge-proxy/service.yaml
 	kubectl -n $(NAMESPACE) rollout status deployment/edge-proxy --timeout=120s
+	$(MAKE) deploy-network-policy
 	@echo "---"
 	@echo "Keycloak admin username: admin"
 	@echo "Keycloak admin password: $(KEYCLOAK_ADMIN_PASSWORD)"
@@ -104,6 +105,7 @@ deploy:
 
 # アプリ層を削除する（クラスタ自体は残す。PVCも削除するためPostgresのデータも消える）
 undeploy:
+	$(MAKE) undeploy-network-policy
 	kubectl delete -f k8s/edge-proxy/service.yaml -f k8s/edge-proxy/deployment.yaml -f k8s/edge-proxy/envoy-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/keycloak/service.yaml -f k8s/keycloak/deployment.yaml -f k8s/keycloak/envoy-configmap.yaml -f k8s/keycloak/realm-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/keycloak/db-init-job.yaml -f k8s/keycloak/db-init-configmap.yaml --ignore-not-found
@@ -225,6 +227,28 @@ undeploy-spire:
 		-f k8s/spire/spire-bundle-configmap.yaml -f k8s/spire/server-account.yaml --ignore-not-found
 	kubectl delete pvc -n spire -l app=spire-server --ignore-not-found
 	kubectl delete -f k8s/spire/namespace.yaml --ignore-not-found
+
+# -------------------------
+# NetworkPolicy（ADR 0018。gekko namespace全体のL3/4 default-deny）
+# -------------------------
+# 全サービスのPod/Serviceが既に存在する状態で適用する前提（podSelectorが参照する
+# ラベルの存在確認はしないため、順序自体は必須ではないがdeploy末尾で呼ぶ）
+
+# gekko namespaceにdefault-deny＋各サービスの許可ルールを適用する
+deploy-network-policy:
+	kubectl apply -f k8s/network-policy/default-deny.yaml -f k8s/network-policy/allow-dns.yaml
+	kubectl apply -f k8s/postgres/networkpolicy.yaml -f k8s/keycloak/networkpolicy.yaml \
+		-f k8s/edge-proxy/networkpolicy.yaml -f k8s/ext-authz/networkpolicy.yaml \
+		-f k8s/account-service/networkpolicy.yaml -f k8s/fraud-mcp-server/networkpolicy.yaml \
+		-f k8s/fraud-detection-engine/networkpolicy.yaml
+
+# NetworkPolicy一式を削除する
+undeploy-network-policy:
+	kubectl delete -f k8s/postgres/networkpolicy.yaml -f k8s/keycloak/networkpolicy.yaml \
+		-f k8s/edge-proxy/networkpolicy.yaml -f k8s/ext-authz/networkpolicy.yaml \
+		-f k8s/account-service/networkpolicy.yaml -f k8s/fraud-mcp-server/networkpolicy.yaml \
+		-f k8s/fraud-detection-engine/networkpolicy.yaml --ignore-not-found
+	kubectl delete -f k8s/network-policy/default-deny.yaml -f k8s/network-policy/allow-dns.yaml --ignore-not-found
 
 # クラスタのコンテナを停止する（状態は保持したまま。再開はstartで）
 stop:
