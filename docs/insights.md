@@ -56,6 +56,14 @@
 
 [k8s/ext-authz/deployment-client-credentials.yaml](../k8s/ext-authz/deployment-client-credentials.yaml)・[k8s/fraud-detection-engine/](../k8s/fraud-detection-engine/)・[scripts/verify-hop.sh](../scripts/verify-hop.sh)で実施（[ADR 0010](adr/0010-egress-listener-granularity.md)パターン②）。呼び出し元がsubject_tokenを一切持たない（Authorizationヘッダーなしでリクエストを組み立てる）点が①と異なり、ext_authz側が自分の資格情報でclient_credentialsトークンを取得・キャッシュしてから転送する構成にした。`account:freeze`のみを持つトークンでfreezeエンドポイントは200、read系エンドポイントは403（RBAC）になることを確認し、fraud-detection-engineがそれ以外の権限を持たないことも実機で裏付けた。
 
+### clientScope/clientのdescriptionが255文字を超えると`--import-realm`自体が失敗する（`make up`が新規クラスタで必ず失敗する状態だった）
+
+**症状**：`make up`（新規クラスタ作成→`make deploy`）を実行すると、Keycloakのrollout statusが必ずタイムアウトする。Podのログを見ると`ERROR: Database operation failed` / `ERROR: value too long for type character varying(255)`で起動に失敗し、`kubectl rollout restart`しても再現し続ける。フルスタックトレースを取ると`RepresentationToModel.createClientScope`→`MigrationUtils.updateProtocolMappers`→`ClientScopeAdapter.updateProtocolMapper`のflush中に発生していた。
+
+**原因**：Keycloakのclient/clientScopeの`description`はDB上VARCHAR(255)相当の列に格納される。[k8s/keycloak/realm-configmap.yaml](../k8s/keycloak/realm-configmap.yaml)の`account:read`clientScopeの`description`が303文字あり、これが`--import-realm`実行時のバッチflushでオーバーフローしていた（例外自体は無関係に見える`updateProtocolMappers`のflush呼び出しで発生するが、Hibernateが同一トランザクション内の複数INSERTをバッチ化しているため、実際の原因行とスタックトレースの発生箇所が一致しない）。既存の長期稼働クラスタで再現した際は「何度も再インポートを繰り返した環境固有の劣化」と誤診断しかけたが、新規クラスタ（`make up`直後、初回`--import-realm`）でも100%再現することを確認し、realm-configmap.yamlの内容そのものに起因する決定的なバグだと判明した。
+
+**対応**：`account:read`のdescriptionを255文字以内（215文字）に短縮した。他のclientScope/clientのdescriptionも確認し、いずれも255文字以内であることを確認済み。realm-configmap.yaml冒頭のコメントに「descriptionは255文字以内に収める」という制約を明記した。この制約は今後descriptionを書き足す際に再発しうるため、変更のたびに文字数を意識する必要がある。
+
 ### Keycloakの`--import-realm`は初回起動時のみ有効:realm-configmap.yamlの変更が実機に反映されていなかった
 
 **症状**：ADR 0011（シナリオ変更）でrealm-configmap.yamlに追加した`fraud-detection-engine`クライアント・`account:unfreeze`スコープが、`kcadm.sh get clients`で実機に存在しないことが判明した。逆に、削除したはずの旧シナリオの`payment-service`クライアント・`account:transact`スコープが残っていた。test-fixtures Jobは`fraud-detection-engine`クライアントの`secret`を`kcadm update`しようとして対象が存在せず失敗し続けていた。

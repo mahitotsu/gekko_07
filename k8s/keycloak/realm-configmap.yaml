@@ -9,6 +9,11 @@
 # なるだけで実害はないが、実機確認済みの事実として記録する）。そのためログイントークンには
 # 現状sub等のコアclaimのみが載る。プロフィール表示等でpreferred_username等が必要になったら、
 # その時点でclientScopesに明示的に定義を追加する。
+#
+# clientScope/clientのdescriptionはKeycloakのDB上VARCHAR(255)相当の列に格納されるため、
+# 255文字を超えると--import-realm自体が"ERROR: value too long for type character
+# varying(255)"で失敗する（実機確認済み。account:readのdescriptionが303文字あり再現した）。
+# 詳しい背景はコード側のコメントに書き、description自体は255文字以内に収めること。
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -23,7 +28,7 @@ data:
       "clientScopes": [
         {
           "name": "account:read",
-          "description": "取引履歴・不審取引・口座情報の読み取り（対象audience: account-service。frontend→fraud-agent、fraud-agent→fraud-mcp-server間のToken Exchangeでも同名で使うため、audienceマッパーをaccount-service・fraud-agent・fraud-mcp-serverの3つ持つ。実際にどのaudienceになるかはToken Exchangeリクエストのaudienceパラメータで1つに絞り込まれる。ADR 0005の単一audience原則は保たれる。ADR 0014でfraud-agentマッパーを追加）",
+          "description": "取引履歴・不審取引・口座情報の読み取り（対象audience: account-service。frontend→fraud-agent、fraud-agent→fraud-mcp-server間のToken Exchangeでも同名で使うため、audienceマッパーを3つ持つ。実際のaudienceはToken Exchangeリクエストのパラメータで1つに絞り込まれ、ADR 0005の単一audience原則は保たれる）",
           "protocol": "openid-connect",
           "attributes": {
             "include.in.token.scope": "true",
