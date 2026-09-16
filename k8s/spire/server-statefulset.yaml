@@ -27,12 +27,18 @@ spec:
           ports:
             - name: grpc
               containerPort: 8081
+            - name: bundle-ep
+              containerPort: 8443
           volumeMounts:
             - name: spire-config
               mountPath: /run/spire/config
               readOnly: true
             - name: spire-data
               mountPath: /run/spire/data
+            # bundle endpoint(ADR 0019)自身のTLS終端用証明書。SPIRE発行のSVIDとは無関係
+            - name: bundle-endpoint-tls
+              mountPath: /run/spire/bundle-endpoint-tls
+              readOnly: true
           readinessProbe:
             tcpSocket:
               port: 8081
@@ -56,6 +62,9 @@ spec:
         - name: spire-config
           configMap:
             name: spire-server-config
+        - name: bundle-endpoint-tls
+          secret:
+            secretName: spire-bundle-endpoint-tls
   volumeClaimTemplates:
     - metadata:
         name: spire-data

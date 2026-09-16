@@ -1,5 +1,8 @@
 # StatefulSetのgoverning service(headless)。spire-agentはserver_address="spire-server"
 # (spire namespace内なので同namespace短縮名で解決)でこのServiceへ接続する(ADR 0012)。
+# bundle-ep(8443)はKeycloakがbundle endpoint(ADR 0019)をHTTPS越しに取得するためのポートで、
+# spire namespace外(gekko namespace)からアクセスするため完全修飾名
+# spire-server.spire.svc.cluster.localで到達する。
 apiVersion: v1
 kind: Service
 metadata:
@@ -13,3 +16,6 @@ spec:
     - name: grpc
       port: 8081
       targetPort: 8081
+    - name: bundle-ep
+      port: 8443
+      targetPort: 8443

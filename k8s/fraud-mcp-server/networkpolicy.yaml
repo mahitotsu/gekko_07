@@ -1,5 +1,8 @@
 # ADR 0018。fraud-mcp-serverにはKubernetes Service自体が無くingressの受け口が
 # 無いため、Egressのみ制御する(ingressはdefault-denyのまま)。
+# ADR 0019：ext-authz-serviceへのegressを、Keycloakへの直接egress(mTLS、bundle endpoint
+# ではなくトークンエンドポイント)に置き換えた。Token Exchange実行主体が同一Pod内の
+# token-exchangeサイドカーへ移ったため(k8s/fraud-mcp-server/envoy-configmap.yaml参照)。
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -22,7 +25,7 @@ spec:
     - to:
         - podSelector:
             matchLabels:
-              app: ext-authz-service
+              app: keycloak
       ports:
         - protocol: TCP
-          port: 8080
+          port: 8443

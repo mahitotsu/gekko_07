@@ -7,12 +7,19 @@
 # Host/Path/Methodから表2の対応表でscopeを解決する。そのためこのroute_config自体は
 # 宛先の振り分け(パスパターンごとに同じクラスタへ)だけを担い、scope解決ロジックを持たない。
 #
-# account_service_upstream・ext_authz_clusterの両方に、SPIRE発行のSVIDによるmTLS+ALPN h2を
-# 追加する(account_service_upstreamはADR 0012、ext_authz_clusterはADR 0016でext-authz-service
-# 自体にEnvoyサイドカーを追加したことに伴い追加)。ALPNは接続時のネゴシエーションにしか
-# 影響しないため、実際にh2を話すにはtyped_extension_protocol_optionsで明示的に
-# http2_protocol_optionsを設定する必要がある(設定しないとALPNの結果に関わらずクラスタは
-# 既定のHTTP/1.1のまま)。
+# ADR 0019：ext_authzの呼び出し先を、共有の`ext-authz-service`(別Pod、mTLS要)から
+# 同一Pod内のtoken-exchangeサイドカー(127.0.0.1:9002、plaintext loopback。app_upstreamと
+# 同じ信頼境界)へ変更した。token-exchangeサイドカー自身がKeycloakへ発信する際は
+# hostAliasesで"keycloak"を127.0.0.1へ横取りさせ、このEnvoyのegressリスナーで
+# mTLS化する(keycloak_upstreamクラスタ。ext-authz-serviceが持っていたのと同じ構成を
+# このEnvoyへ統合した)。
+#
+# account_service_upstream・keycloak_upstreamの両方に、SPIRE発行のSVIDによるmTLS+ALPN h2を
+# 追加する(account_service_upstreamはADR 0012、keycloak_upstreamはADR 0019でfraud-mcp-server
+# 自身がKeycloakのmTLSポートへ直接接続するようになったことに伴い追加)。ALPNは接続時の
+# ネゴシエーションにしか影響しないため、実際にh2を話すにはtyped_extension_protocol_optionsで
+# 明示的にhttp2_protocol_optionsを設定する必要がある(設定しないとALPNの結果に関わらず
+# クラスタは既定のHTTP/1.1のまま)。
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -59,14 +66,30 @@ data:
                             - match:
                                 prefix: "/accounts/"
                               route: { cluster: account_service_upstream }
+                        # ADR 0019: token-exchangeサイドカー自身がKeycloakのトークン
+                        # エンドポイントを叩く際の宛先(hostAliasesで"keycloak"を127.0.0.1へ
+                        # 横取りしているため、ここへ着弾する)。http_filtersはリスナー全体に
+                        # 適用されるため、このルートだけext_authzを無効化しないと、
+                        # サイドカー自身のKeycloak宛て通信が自己参照的にext_authzへ回されて
+                        # しまう(実機確認済み:Authorizationヘッダーを持たないKeycloak宛て
+                        # リクエストがDENY 400になっていた)。
+                        - name: keycloak
+                          domains: ["keycloak"]
+                          routes:
+                            - match: { prefix: "/" }
+                              route: { cluster: keycloak_upstream }
+                              typed_per_filter_config:
+                                envoy.filters.http.ext_authz:
+                                  "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
+                                  disabled: true
                     http_filters:
                       - name: envoy.filters.http.ext_authz
                         typed_config:
                           "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
                           http_service:
                             server_uri:
-                              uri: "http://ext-authz-service.gekko.svc.cluster.local:8080"
-                              cluster: ext_authz_cluster
+                              uri: "http://127.0.0.1:9002"
+                              cluster: token_exchange_cluster
                               timeout: 5s
                             authorization_request:
                               allowed_headers:
@@ -145,7 +168,21 @@ data:
                   - endpoint:
                       address:
                         pipe: { path: /run/spire/sockets/agent.sock }
-        - name: ext_authz_cluster
+        # ADR 0019: token-exchangeサイドカー(同一Pod、loopback)。app_upstreamと同じ信頼境界の
+        # ためplaintextでよい(mTLS不要)。
+        - name: token_exchange_cluster
+          type: STATIC
+          lb_policy: ROUND_ROBIN
+          load_assignment:
+            cluster_name: token_exchange_cluster
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address: { address: 127.0.0.1, port_value: 9002 }
+        # ADR 0019: token-exchangeサイドカーがKeycloakのトークンエンドポイントへmTLSで
+        # 直接接続する(旧ext-authz-serviceが持っていたkeycloak_upstreamクラスタと同じ構成)。
+        - name: keycloak_upstream
           type: STRICT_DNS
           lb_policy: ROUND_ROBIN
           typed_extension_protocol_options:
@@ -174,7 +211,7 @@ data:
                     match_typed_subject_alt_names:
                       - san_type: URI
                         matcher:
-                          exact: "spiffe://gekko.internal/ns/gekko/sa/default/ext-authz-service"
+                          exact: "spiffe://gekko.internal/ns/gekko/sa/default/keycloak"
                   validation_context_sds_secret_config:
                     name: "ROOTCA"
                     sds_config:
@@ -186,9 +223,9 @@ data:
                           - envoy_grpc:
                               cluster_name: spire_agent
           load_assignment:
-            cluster_name: ext_authz_cluster
+            cluster_name: keycloak_upstream
             endpoints:
               - lb_endpoints:
                   - endpoint:
                       address:
-                        socket_address: { address: ext-authz-service.gekko.svc.cluster.local, port_value: 8080 }
+                        socket_address: { address: keycloak.gekko.svc.cluster.local, port_value: 8443 }

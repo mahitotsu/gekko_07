@@ -50,9 +50,11 @@ data:
                     combined_validation_context:
                       default_validation_context:
                         match_typed_subject_alt_names:
+                          # ADR 0019: fraud-mcp-server自身が(旧ext-authz-serviceに代わって)
+                          # Keycloakへ直接mTLS接続するようになった。
                           - san_type: URI
                             matcher:
-                              exact: "spiffe://gekko.internal/ns/gekko/sa/default/ext-authz-service"
+                              exact: "spiffe://gekko.internal/ns/gekko/sa/default/fraud-mcp-server"
                           - san_type: URI
                             matcher:
                               exact: "spiffe://gekko.internal/ns/gekko/sa/default/ext-authz-service-cc"

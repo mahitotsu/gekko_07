@@ -1,7 +1,8 @@
 # ADR 0018。https-mtls(8443)は許可されたSPIFFE IDを持つ呼び出し元
-# (ext-authz-service(-cc)・account-service・edge-proxy。ADR 0017 Consequences参照)
-# からのみ、http-mgmt(9000)はkubeletのprobeが到達するノードIP(このk3d環境では
-# docker network 172.19.0.0/16)からのみ許可する。
+# (fraud-mcp-server(ADR 0019で旧ext-authz-serviceから変更)・ext-authz-service-cc・
+# account-service・edge-proxy。ADR 0017 Consequences参照)からのみ、http-mgmt(9000)は
+# kubeletのprobeが到達するノードIP(このk3d環境ではdocker network 172.19.0.0/16)からのみ
+# 許可する。egressにSPIRE Serverのbundle endpoint(ADR 0019、spire namespace)向けを追加。
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -18,7 +19,7 @@ spec:
     - from:
         - podSelector:
             matchLabels:
-              app: ext-authz-service
+              app: fraud-mcp-server
         - podSelector:
             matchLabels:
               app: ext-authz-service-cc
@@ -45,6 +46,16 @@ spec:
       ports:
         - protocol: TCP
           port: 5432
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: spire
+          podSelector:
+            matchLabels:
+              app: spire-server
+      ports:
+        - protocol: TCP
+          port: 8443
 ---
 # ADR 0018の実装漏れの修正:default-denyはPod単位でingress/egress双方に適用されるため、
 # 接続元(この場合keycloak-db-init Job)側にも自分自身のegress許可ポリシーが要る

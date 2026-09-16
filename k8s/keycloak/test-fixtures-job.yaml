@@ -30,11 +30,6 @@ spec:
                 secretKeyRef:
                   name: frontend-client
                   key: client-secret
-            - name: FRAUD_MCP_SERVER_CLIENT_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: fraud-mcp-server-client
-                  key: client-secret
             - name: FRAUD_DETECTION_ENGINE_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:

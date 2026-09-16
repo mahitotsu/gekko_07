@@ -167,11 +167,16 @@ kubectl -n "$NAMESPACE" run verify-hop-mtls-bypass-check --rm -i --restart=Never
   --max-time 5 "https://${ACCOUNT_POD_IP}:8080/accounts/123/transactions" || \
   echo "クライアント証明書なしのTLS接続は拒否された(期待通り。ADR 0012)"
 
-# ext-authz-service(-cc)・KeycloakへのSPIRE mTLS拡張(ADR 0016)。
-# 3a/3b/5が既にfraud-mcp-server/fraud-detection-engineのegress Envoy→ext-authz-service(-cc)の
+# ext-authz-service-cc・KeycloakへのSPIRE mTLS拡張(ADR 0016)。
+# 3a/3b/5が既にfraud-mcp-server/fraud-detection-engineのegress Envoy→ext-authz-service-ccの
 # ext_authzチェック呼び出し(=mTLS化された新ホップ)を経由して200/403を返しており、そのレスポンスが
 # 変わらないことは「mTLSが暗黙に効いた上でアプリ層は無風」の裏付けになる。ここでは加えて、
 # account-serviceと同じ手法でTLSハンドシェイクの実発生・直接到達不可・証明書なし接続の拒否を確認する。
+#
+# ADR 0019でfraud-mcp-server→Keycloakは、fraud-mcp-server自身のEnvoy(egress、
+# keycloak_upstreamクラスタ)がmTLSを担うようになった(旧ext-authz-serviceは廃止)。
+# fraud-mcp-serverはmTLS必須のingressリスナーを持たない(account-serviceのような
+# 着信専用サービスではないため)ので、edge-proxyと同じくcluster側のssl.handshake統計で確認する。
 ext_authz_ssl_handshake_check() {
   local pod="$1" label="$2"
   echo "==> 8. ${label}のEnvoy管理ポート(:9901)でTLSハンドシェイクが実際に発生したことを確認"
@@ -184,36 +189,41 @@ ext_authz_ssl_handshake_check() {
     || echo "警告:ssl.handshakeカウンタが検出できませんでした(統計名が異なる可能性。config_dumpで要確認)" >&2
 }
 
-EXT_AUTHZ_POD=$(newest_pod ext-authz-service)
+ext_authz_ssl_handshake_check_cluster() {
+  local pod="$1" label="$2"
+  echo "==> 8. ${label}のEnvoy管理ポート(:9901)でTLSハンドシェイクが実際に発生したことを確認"
+  kubectl -n "$NAMESPACE" exec "$pod" -c envoy -- bash -c '
+    exec 3<>/dev/tcp/127.0.0.1/9901
+    printf "GET /stats HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3
+    cat <&3
+  ' | grep -E 'cluster\.keycloak_upstream\.ssl\.handshake: [1-9]' \
+    && echo "mTLSハンドシェイク成功を確認(期待通り)" \
+    || echo "警告:ssl.handshakeカウンタが検出できませんでした(統計名が異なる可能性。config_dumpで要確認)" >&2
+}
+
 EXT_AUTHZ_CC_POD=$(newest_pod ext-authz-service-cc)
 KEYCLOAK_POD=$(newest_pod keycloak)
 EDGE_PROXY_POD=$(newest_pod edge-proxy)
 
-ext_authz_ssl_handshake_check "$EXT_AUTHZ_POD" "ext-authz-service"
 ext_authz_ssl_handshake_check "$EXT_AUTHZ_CC_POD" "ext-authz-service-cc"
 ext_authz_ssl_handshake_check "$KEYCLOAK_POD" "keycloak"
+ext_authz_ssl_handshake_check_cluster "$FRAUD_MCP_POD" "fraud-mcp-server(token-exchangeサイドカー、ADR 0019)"
 
 # edge-proxyはinbound(:80)が平文でoutbound(→keycloak_upstream)だけmTLSのため、
 # listener側ではなくcluster側のssl.handshake統計を見る(他3者はinboundがmTLS必須なので
 # listener側で検出できる。ADR 0017)。
-echo "==> 8. edge-proxyのEnvoy管理ポート(:9901)でTLSハンドシェイクが実際に発生したことを確認"
-kubectl -n "$NAMESPACE" exec "$EDGE_PROXY_POD" -c envoy -- bash -c '
-  exec 3<>/dev/tcp/127.0.0.1/9901
-  printf "GET /stats HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3
-  cat <&3
-' | grep -E 'cluster\.keycloak_upstream\.ssl\.handshake: [1-9]' \
-  && echo "mTLSハンドシェイク成功を確認(期待通り)" \
-  || echo "警告:ssl.handshakeカウンタが検出できませんでした(統計名が異なる可能性。config_dumpで要確認)" >&2
+ext_authz_ssl_handshake_check_cluster "$EDGE_PROXY_POD" "edge-proxy"
 
-echo "==> 9. ext-authz-serviceのappポート(9000)にPod外から直接到達できないことを確認(ADR 0016)"
-EXT_AUTHZ_POD_IP=$(kubectl -n "$NAMESPACE" get pod "$EXT_AUTHZ_POD" -o jsonpath='{.status.podIP}')
-kubectl -n "$NAMESPACE" run verify-hop-ext-authz-bypass-check --rm -i --restart=Never \
+echo "==> 9. fraud-mcp-serverのtoken-exchangeサイドカーのポート(9002)にPod外から直接到達できないことを確認(ADR 0009主対策①と同じ考え方。ADR 0019)"
+FRAUD_MCP_POD_IP=$(kubectl -n "$NAMESPACE" get pod "$FRAUD_MCP_POD" -o jsonpath='{.status.podIP}')
+kubectl -n "$NAMESPACE" run verify-hop-token-exchange-bypass-check --rm -i --restart=Never \
   --image=curlimages/curl:8.10.1 --command -- \
   curl -s -o /dev/null -w 'direct app port HTTP status: %{http_code}\n' \
-  --max-time 5 "http://${EXT_AUTHZ_POD_IP}:9000/" || \
+  --max-time 5 "http://${FRAUD_MCP_POD_IP}:9002/" || \
   echo "direct app port unreachable(期待通り。ADR 0009主対策①と同じ考え方)"
 
-echo "==> 10.(異常系)クライアント証明書なしのTLS接続がext-authz-serviceのmTLS必須filter_chainに拒否されることを確認"
+echo "==> 10.(異常系)クライアント証明書なしのTLS接続がext-authz-service-ccのmTLS必須filter_chainに拒否されることを確認"
+EXT_AUTHZ_POD_IP=$(kubectl -n "$NAMESPACE" get pod "$EXT_AUTHZ_CC_POD" -o jsonpath='{.status.podIP}')
 kubectl -n "$NAMESPACE" run verify-hop-ext-authz-mtls-bypass-check --rm -i --restart=Never \
   --image=curlimages/curl:8.10.1 --command -- \
   curl -s -k -o /dev/null -w 'no-client-cert TLS to mTLS listener status: %{http_code}\n' \

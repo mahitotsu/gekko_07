@@ -21,6 +21,11 @@ define upsert_secret
 @kubectl create secret generic $(1) -n $(NAMESPACE) $(2) --dry-run=client -o yaml | kubectl apply -f -
 endef
 
+# TLS Secretを冪等に作成/更新する（$(2)=namespace, $(3)=証明書ファイル, $(4)=秘密鍵ファイル）
+define upsert_tls_secret
+@kubectl create secret tls $(1) -n $(2) --cert=$(3) --key=$(4) --dry-run=client -o yaml | kubectl apply -f -
+endef
+
 KEYCLOAK_ADMIN_PASSWORD := $(call get_secret,keycloak-admin-password)
 POSTGRES_SUPERUSER_PASSWORD := $(call get_secret,postgres-superuser-password)
 KEYCLOAK_DB_PASSWORD := $(call get_secret,keycloak-db-password)
@@ -28,9 +33,24 @@ KEYCLOAK_DB_PASSWORD := $(call get_secret,keycloak-db-password)
 # 1ホップ先行検証（ADR 0002/0009/0010）専用のテスト用シークレット。本番の認可設計には使わない
 # （deploy-verify-hop/verify-hop参照）。
 FRONTEND_CLIENT_SECRET := $(call get_secret,frontend-client-secret)
-FRAUD_MCP_SERVER_CLIENT_SECRET := $(call get_secret,fraud-mcp-server-client-secret)
+# fraud-mcp-serverはADR 0019でclientAuthenticatorType: federated-jwtへ移行したため
+# client_secretは不要(SPIRE発行JWT-SVIDで認証する)。
 FRAUD_DETECTION_ENGINE_CLIENT_SECRET := $(call get_secret,fraud-detection-engine-client-secret)
 YAMADA_ANALYST_PASSWORD := $(call get_secret,yamada-analyst-password)
+
+# SPIRE Serverのbundle endpoint（ADR 0019）自身のTLS終端用証明書。SPIRE発行のSVIDではなく
+# （bundle endpointが公開するtrust bundleの中身とは無関係な、この1エンドポイントだけのための
+# 使い捨てのTLS証明書）、ここだけ例外的に自己署名証明書をopensslで生成して使い回す
+# （postgres-superuser-password等と同じ「一度だけ生成し$(SECRETS_DIR)に保存」パターン）。
+# KeycloakがこれをKC_TRUSTSTORE_PATHSで信頼することでbundle endpointをHTTPS越しに検証できる。
+SPIRE_BUNDLE_ENDPOINT_CERT_DUMMY := $(shell mkdir -p $(SECRETS_DIR) && \
+	( [ -f $(SECRETS_DIR)/spire-bundle-endpoint.crt ] || \
+	  openssl req -x509 -newkey rsa:2048 -nodes \
+	    -keyout $(SECRETS_DIR)/spire-bundle-endpoint.key \
+	    -out $(SECRETS_DIR)/spire-bundle-endpoint.crt \
+	    -days 3650 -subj "/CN=spire-server.spire.svc.cluster.local" \
+	    -addext "subjectAltName=DNS:spire-server.spire.svc.cluster.local,DNS:spire-server" \
+	    >/dev/null 2>&1 ) )
 
 .PHONY: up down stop start status clean deploy undeploy keycloak-forward keycloak-reimport-realm deploy-verify-hop undeploy-verify-hop verify-hop deploy-spire undeploy-spire deploy-network-policy undeploy-network-policy
 
@@ -89,6 +109,10 @@ deploy:
 	kubectl apply -f k8s/keycloak/db-init-configmap.yaml -f k8s/keycloak/db-init-job.yaml
 	kubectl -n $(NAMESPACE) wait --for=condition=complete job/keycloak-db-init --timeout=60s
 	$(MAKE) deploy-spire
+	@# KeycloakがSPIRE Serverのbundle endpoint(ADR 0019)をHTTPSで検証するためのtruststore。
+	@# spire-bundle-endpoint.crtの秘密鍵は含めない(検証側は証明書のみで足りる)
+	kubectl create secret generic spire-bundle-endpoint-ca -n $(NAMESPACE) \
+		--from-file=ca.crt=$(SECRETS_DIR)/spire-bundle-endpoint.crt --dry-run=client -o yaml | kubectl apply -f -
 	kubectl apply -f k8s/keycloak/realm-configmap.yaml -f k8s/keycloak/envoy-configmap.yaml -f k8s/keycloak/deployment.yaml -f k8s/keycloak/service.yaml
 	kubectl -n $(NAMESPACE) rollout status deployment/keycloak --timeout=180s
 	kubectl apply -f k8s/edge-proxy/envoy-configmap.yaml -f k8s/edge-proxy/deployment.yaml -f k8s/edge-proxy/service.yaml
@@ -145,26 +169,26 @@ keycloak-reimport-realm:
 # スタブ一式＋テスト用Keycloakフィクスチャをデプロイする（make deploy実行済み・クラスタ起動済み前提）
 deploy-verify-hop:
 	$(call upsert_secret,frontend-client,--from-literal=client-secret=$(FRONTEND_CLIENT_SECRET))
-	$(call upsert_secret,fraud-mcp-server-client,--from-literal=client-secret=$(FRAUD_MCP_SERVER_CLIENT_SECRET))
 	$(call upsert_secret,fraud-detection-engine-client,--from-literal=client-secret=$(FRAUD_DETECTION_ENGINE_CLIENT_SECRET))
 	$(call upsert_secret,yamada-analyst,--from-literal=password=$(YAMADA_ANALYST_PASSWORD))
 	kubectl delete job keycloak-test-fixtures -n $(NAMESPACE) --ignore-not-found
 	kubectl apply -f k8s/keycloak/test-fixtures-configmap.yaml -f k8s/keycloak/test-fixtures-job.yaml
 	kubectl -n $(NAMESPACE) wait --for=condition=complete job/keycloak-test-fixtures --timeout=60s
 	@# SPIRE(server/agent/registration entries)はmake deploy側で既にデプロイ済み(ADR 0016で
-	@# base trackへ格上げ)なので、ここでは呼ばない。ext-authz-service(-cc)向けのentryも
+	@# base trackへ格上げ)なので、ここでは呼ばない。ext-authz-service-cc向けのentryも
 	@# 含めて既に揃っている前提(deploy-verify-hopの前提「make deploy実行済み」に含まれる)。
-	kubectl apply -f k8s/ext-authz/app-configmap.yaml -f k8s/ext-authz/envoy-configmap.yaml -f k8s/ext-authz/deployment.yaml -f k8s/ext-authz/service.yaml
+	@# fraud-mcp-server向けのext-authz-service(共有インスタンス)はADR 0019で廃止し、
+	@# fraud-mcp-server自身のPod内サイドカー(token-exchange)へ置き換えた。
+	kubectl apply -f k8s/ext-authz/app-configmap.yaml
 	kubectl apply -f k8s/ext-authz/envoy-configmap-client-credentials.yaml -f k8s/ext-authz/deployment-client-credentials.yaml -f k8s/ext-authz/service-client-credentials.yaml
 	kubectl apply -f k8s/account-service/app-configmap.yaml -f k8s/account-service/envoy-configmap.yaml -f k8s/account-service/deployment.yaml -f k8s/account-service/service.yaml
-	kubectl apply -f k8s/fraud-mcp-server/app-configmap.yaml -f k8s/fraud-mcp-server/envoy-configmap.yaml -f k8s/fraud-mcp-server/deployment.yaml
+	kubectl apply -f k8s/fraud-mcp-server/app-configmap.yaml -f k8s/fraud-mcp-server/token-exchange-app-configmap.yaml -f k8s/fraud-mcp-server/envoy-configmap.yaml -f k8s/fraud-mcp-server/deployment.yaml
 	kubectl apply -f k8s/fraud-detection-engine/envoy-configmap.yaml -f k8s/fraud-detection-engine/deployment.yaml
 	@# EnvoyはConfigMapの静的bootstrap設定を起動時に1度だけ読み込み、変更をホットリロードしない
 	@# （Keycloak realmの--import-realmと同種の落とし穴。insights.md参照）。ConfigMap更新が
 	@# 既存Podへ確実に反映されるよう、スタブは常に再起動する（いずれも状態を持たないため無害）
-	kubectl -n $(NAMESPACE) rollout restart deployment/ext-authz-service deployment/ext-authz-service-cc \
+	kubectl -n $(NAMESPACE) rollout restart deployment/ext-authz-service-cc \
 		deployment/account-service-stub deployment/fraud-mcp-server-stub deployment/fraud-detection-engine-stub
-	kubectl -n $(NAMESPACE) rollout status deployment/ext-authz-service --timeout=120s
 	kubectl -n $(NAMESPACE) rollout status deployment/ext-authz-service-cc --timeout=120s
 	kubectl -n $(NAMESPACE) rollout status deployment/account-service-stub --timeout=120s
 	kubectl -n $(NAMESPACE) rollout status deployment/fraud-mcp-server-stub --timeout=120s
@@ -179,10 +203,10 @@ verify-hop:
 # スタブだけ入れ替えられるようにする)
 undeploy-verify-hop:
 	kubectl delete -f k8s/fraud-detection-engine/deployment.yaml -f k8s/fraud-detection-engine/envoy-configmap.yaml --ignore-not-found
-	kubectl delete -f k8s/fraud-mcp-server/deployment.yaml -f k8s/fraud-mcp-server/envoy-configmap.yaml -f k8s/fraud-mcp-server/app-configmap.yaml --ignore-not-found
+	kubectl delete -f k8s/fraud-mcp-server/deployment.yaml -f k8s/fraud-mcp-server/envoy-configmap.yaml -f k8s/fraud-mcp-server/token-exchange-app-configmap.yaml -f k8s/fraud-mcp-server/app-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/account-service/service.yaml -f k8s/account-service/deployment.yaml -f k8s/account-service/envoy-configmap.yaml -f k8s/account-service/app-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/ext-authz/service-client-credentials.yaml -f k8s/ext-authz/deployment-client-credentials.yaml -f k8s/ext-authz/envoy-configmap-client-credentials.yaml --ignore-not-found
-	kubectl delete -f k8s/ext-authz/service.yaml -f k8s/ext-authz/deployment.yaml -f k8s/ext-authz/envoy-configmap.yaml -f k8s/ext-authz/app-configmap.yaml --ignore-not-found
+	kubectl delete -f k8s/ext-authz/app-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/keycloak/test-fixtures-job.yaml -f k8s/keycloak/test-fixtures-configmap.yaml --ignore-not-found
 	kubectl delete secret frontend-client fraud-mcp-server-client fraud-detection-engine-client yamada-analyst -n $(NAMESPACE) --ignore-not-found
 
@@ -197,6 +221,7 @@ undeploy-verify-hop:
 # SPIRE server/agent/registration entriesをデプロイする（namespace gekkoとは別。クラスタ起動済み前提）
 deploy-spire:
 	kubectl apply -f k8s/spire/namespace.yaml
+	$(call upsert_tls_secret,spire-bundle-endpoint-tls,spire,$(SECRETS_DIR)/spire-bundle-endpoint.crt,$(SECRETS_DIR)/spire-bundle-endpoint.key)
 	kubectl apply -f k8s/spire/server-account.yaml -f k8s/spire/spire-bundle-configmap.yaml \
 		-f k8s/spire/server-configmap.yaml -f k8s/spire/server-service.yaml -f k8s/spire/server-statefulset.yaml
 	kubectl -n spire rollout status statefulset/spire-server --timeout=120s

@@ -2,6 +2,13 @@
 # 意図的に別の文字列にし、「trust domain」と「namespace」を混同しないようにする)。
 # UpstreamAuthorityブロックを持たない = SPIRE組み込みの自己署名ルートCAを使う(公式デフォルト動作)。
 # DataStoreはsqlite3(単一ノードデモ規模のため。永続化はStatefulSetのPVCが担う)。
+#
+# federation.bundle_endpoint(ADR 0019)はKeycloakがJWT-SVID検証鍵を含むtrust bundleを
+# HTTPSで取得するためのもの。profile "https_web"のserving_cert_fileはこのエンドポイント
+# 自体のTLS終端用証明書で、SPIRE発行のSVIDやtrust bundleの中身とは無関係(Makefileが
+# opensslで生成する使い捨ての自己署名証明書、k8s/spire/server-statefulset.yaml参照)。
+# file_sync_intervalを省略すると"time: invalid duration \"\""で起動時に即クラッシュする
+# (実機確認済み。エラーメッセージにどの設定キーが原因か手がかりが無く特定に時間を要した)。
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -21,6 +28,21 @@ data:
         country      = ["US"]
         organization = ["gekko"]
         common_name  = ""
+      }
+
+      federation {
+        bundle_endpoint {
+          address = "0.0.0.0"
+          port    = 8443
+          refresh_hint = "5m"
+          profile "https_web" {
+            serving_cert_file {
+              cert_file_path     = "/run/spire/bundle-endpoint-tls/tls.crt"
+              key_file_path      = "/run/spire/bundle-endpoint-tls/tls.key"
+              file_sync_interval = "1h"
+            }
+          }
+        }
       }
     }
 

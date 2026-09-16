@@ -12,6 +12,10 @@
 # appコンテナと同様)。KC_HTTP_MANAGEMENT_HOSTは明示的に0.0.0.0のまま残す——
 # `--http-management-host`は既定で`--http-host`を継承するため、これが無いとhealth/mgmt(9000)
 # まで道連れでloopback化し、kubeletのreadiness/liveness/startupProbeが壊れることを実機で確認した。
+#
+# ADR 0019：`--features=spiffe,client-auth-federated`でKeycloakネイティブのSPIFFE
+# JWT-SVIDクライアント認証(Preview機能)を有効化する。KC_TRUSTSTORE_PATHSはSPIRE Serverの
+# bundle endpoint(ADR 0019、`k8s/spire/`)のTLS証明書を検証するためのtruststore。
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -32,8 +36,10 @@ spec:
       containers:
         - name: keycloak
           image: quay.io/keycloak/keycloak:26.7.0
-          args: ["start-dev", "--import-realm"]
+          args: ["start-dev", "--import-realm", "--features=spiffe,client-auth-federated"]
           env:
+            - name: KC_TRUSTSTORE_PATHS
+              value: "/run/spire-bundle-ca/ca.crt"
             - name: KC_BOOTSTRAP_ADMIN_USERNAME
               valueFrom:
                 secretKeyRef:
@@ -81,6 +87,9 @@ spec:
           volumeMounts:
             - name: realm-import
               mountPath: /opt/keycloak/data/import
+              readOnly: true
+            - name: spire-bundle-ca
+              mountPath: /run/spire-bundle-ca
               readOnly: true
           resources:
             # WSL2側のメモリ逼迫が既知の問題のため（docs/insights.md）、requestsは控えめにする。
@@ -147,6 +156,9 @@ spec:
         - name: envoy-config
           configMap:
             name: keycloak-envoy
+        - name: spire-bundle-ca
+          secret:
+            secretName: spire-bundle-endpoint-ca
         - name: spire-agent-socket
           hostPath:
             path: /run/spire/sockets

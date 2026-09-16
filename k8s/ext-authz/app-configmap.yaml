@@ -10,13 +10,18 @@
 # 本サービスは、この自動転送されるHost(=audience)とPath+Method(=access-control-design.md 表2の
 # 対応表で解決するscope)だけからToken Exchangeリクエストを組み立てる。
 #
-# 1ホップ先行検証はfraud-mcp-server→account-service(Token Exchange)に加え、
-# fraud-detection-engine→account-service(client_credentials、ADR 0010パターン②)も対象にする。
+# fraud-detection-engine→account-service(client_credentials、ADR 0010パターン②)を対象にする。
 # 呼び出し元ごとに資格情報を切り替える一般化(複数呼び出し元を1インスタンスで捌く)はまだ行わず、
 # 本ConfigMapのapp.pyをGRANT_TYPE環境変数で分岐させた上で、呼び出し元ごとに固定資格情報を持つ
-# 別インスタンスとしてデプロイする(k8s/ext-authz/deployment.yaml=token-exchange固定、
-# k8s/ext-authz/deployment-client-credentials.yaml=client_credentials固定)。呼び出し元の
+# 別インスタンスとしてデプロイする(k8s/ext-authz/deployment-client-credentials.yaml=
+# client_credentials固定)。呼び出し元の
 # 動的な切り替えそのものは引き続き横展開時の課題(backlog.md参照)。
+#
+# fraud-mcp-server→account-service(パターン①)は元々このパターンの最初のインスタンス
+# だったが、ADR 0019でToken Exchange実行主体をfraud-mcp-server自身のPod内サイドカーへ
+# 移したため(身元検証ギャップの是正。docs/insights.md参照)、このインスタンスは廃止した
+# (k8s/fraud-mcp-server/token-exchange-app-configmap.yaml参照。ロジック自体はここから
+# 分岐・移植したもの)。
 #
 # DPoP(ADR 0013)による送信者拘束は一度実装・検証したが、このホップは既にSPIRE mTLS(ADR 0012)で
 # 呼び出し元の身元を限定済みのため実利がmTLSと大きく重複する一方、Token Exchangeを跨いだ拘束は

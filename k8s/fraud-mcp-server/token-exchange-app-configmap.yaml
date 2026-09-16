@@ -1,0 +1,171 @@
+# fraud-mcp-server自身のPod内でToken Exchangeを実行するサイドカー(ADR 0019)。
+# これまで共有のext-authz-service(k8s/ext-authz/)がclient_secretを保持して代理で行っていたが、
+# Keycloakが検証するmTLS接続の身元(ext-authz-service自身のSPIFFE ID)と、主張するclient_id
+# (fraud-mcp-serverのもの)が一致しないという身元検証上のギャップがあった(docs/insights.md参照)。
+# SPIRE Workload APIのworkload attestationは呼び出し元プロセス(Pod)に紐づくため、この解決には
+# Token Exchange実行主体を呼び出し元と同一Podへ移す以外の道がない。
+#
+# client_secretの代わりに、このPod自身のJWT-SVID(SPIRE発行)をclient_assertionとして使う
+# (KeycloakネイティブのSPIFFE対応、client_assertion_type=...jwt-spiffe。実機検証はStage 0/1a、
+# docs/insights.md参照)。JWT-SVIDの取得は、SPIRE Workload API(gRPC)をPythonから直接叩く
+# 代わりに、Kubernetes ImageVolume機能(k8s 1.33+ Beta)でghcr.io/spiffe/spire-agentイメージ
+# から`spire-agent`バイナリだけを読み取り専用でマウントし、サブプロセス実行する
+# (`spire-agent api fetch jwt`)。grpcio等の新規Python依存を増やさずに済む。
+#
+# scope解決ロジック(SCOPE_RULES)はk8s/ext-authz/app-configmap.yamlと同じ表2の対応表。
+# 単一の情報源はaccess-control-design.md 表2であり、ここはそれをコードに落としたコピー。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fraud-mcp-server-token-exchange-app
+  namespace: gekko
+data:
+  app.py: |
+    import base64
+    import http.server
+    import json
+    import os
+    import re
+    import socketserver
+    import subprocess
+    import sys
+    import time
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    TOKEN_URL = os.environ.get(
+        "KEYCLOAK_TOKEN_URL",
+        "http://keycloak/realms/gekko/protocol/openid-connect/token",
+    )
+    CLIENT_ID = os.environ.get("CLIENT_ID", "fraud-mcp-server")
+    # JWT-SVIDのaudクレームに求める値。KeycloakのSPIFFE federated-jwt認証はaud/iss検証ではなく
+    # sub(SPIFFE ID)とKeycloakクライアント属性jwt.credential.subの一致だけを見るが(実機確認済み)、
+    # 慣例としてKC_HOSTNAME+realmパスに合わせておく。
+    JWT_SVID_AUDIENCE = os.environ.get("JWT_SVID_AUDIENCE", "http://localhost:3000/realms/gekko")
+    SPIRE_AGENT_BIN = os.environ.get("SPIRE_AGENT_BIN", "/spire-bin/opt/spire/bin/spire-agent")
+    SPIRE_SOCKET_PATH = os.environ.get("SPIRE_SOCKET_PATH", "/run/spire/sockets/agent.sock")
+    LISTEN_HOST = os.environ.get("LISTEN_HOST", "127.0.0.1")
+    LISTEN_PORT = int(os.environ.get("LISTEN_PORT", "9002"))
+
+    # access-control-design.md 表2をそのまま反映した(path, method) -> scope の対応表。
+    SCOPE_RULES = [
+        (re.compile(r"^/accounts/[^/]+/unfreeze-proposals$"), "POST", "account:propose"),
+        (re.compile(r"^/accounts/[^/]+(/.*)?$"), "GET", "account:read"),
+    ]
+
+
+    def resolve_scope(path, method):
+        for pattern, expected_method, scope in SCOPE_RULES:
+            if method == expected_method and pattern.match(path):
+                return scope
+        return None
+
+
+    def _b64url_decode(s):
+        s += "=" * (-len(s) % 4)
+        return base64.urlsafe_b64decode(s)
+
+
+    _jwt_svid_cache = {"token": None, "expires_at": 0.0}
+
+
+    def fetch_jwt_svid():
+        # SPIRE発行JWT-SVIDの既定TTLは短い(実機で5分)ため、期限手前で切り上げて再取得する
+        # (ADR 0010パターン②のclient_credentialsトークンキャッシュと同じ考え方)。
+        now = time.monotonic()
+        if _jwt_svid_cache["token"] and now < _jwt_svid_cache["expires_at"]:
+            return _jwt_svid_cache["token"]
+        out = subprocess.run(
+            [
+                SPIRE_AGENT_BIN, "api", "fetch", "jwt",
+                "-audience", JWT_SVID_AUDIENCE,
+                "-output", "json",
+                "-socketPath", SPIRE_SOCKET_PATH,
+            ],
+            capture_output=True, timeout=5, check=True,
+        )
+        body = json.loads(out.stdout)
+        token = body[0]["svids"][0]["svid"]
+        payload = json.loads(_b64url_decode(token.split(".")[1]))
+        _jwt_svid_cache["token"] = token
+        _jwt_svid_cache["expires_at"] = now + max(payload["exp"] - payload["iat"] - 10, 5)
+        return token
+
+
+    def exchange_token(subject_token, audience, scope):
+        data = urllib.parse.urlencode(
+            {
+                "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+                "client_id": CLIENT_ID,
+                "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-spiffe",
+                "client_assertion": fetch_jwt_svid(),
+                "subject_token": subject_token,
+                "subject_token_type": "urn:ietf:params:oauth:token-type:access_token",
+                "audience": audience,
+                "scope": scope,
+            }
+        ).encode()
+        req = urllib.request.Request(
+            TOKEN_URL, data=data, headers={"Content-Type": "application/x-www-form-urlencoded"}
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read())["access_token"]
+
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def deny(self, code, msg):
+            print(f"DENY {code}: {msg}", file=sys.stderr, flush=True)
+            self.send_response(code)
+            self.end_headers()
+
+        def do_check(self):
+            # Envoyが自動転送するHost/Method/Path/Authorizationヘッダーを優先し、
+            # 無ければ実際のリクエストラインにフォールバックする(k8s/ext-authz/app-configmap.yaml
+            # と同じ考え方)。
+            host = self.headers.get("Host")
+            method = self.headers.get("Method") or self.command
+            path = self.headers.get("Path") or self.path
+
+            auth = self.headers.get("Authorization")
+            if not host or not auth or not auth.startswith("Bearer "):
+                self.deny(400, "missing host/authorization")
+                return
+
+            scope = resolve_scope(path, method)
+            if not scope:
+                self.deny(403, f"no scope mapping for {method} {path}")
+                return
+
+            subject_token = auth[len("Bearer ") :]
+            try:
+                new_token = exchange_token(subject_token, host, scope)
+            except urllib.error.HTTPError as e:
+                self.deny(403, f"token exchange rejected: {e.code} {e.read()!r}")
+                return
+            except Exception as e:  # noqa: BLE001 - スタブなので広く捕捉してfail closeする
+                self.deny(403, f"token exchange failed: {e!r}")
+                return
+
+            print(f"ALLOW {method} {path} aud={host} scope={scope}", flush=True)
+            self.send_response(200)
+            self.send_header("Authorization", f"Bearer {new_token}")
+            self.end_headers()
+
+        do_GET = do_check
+        do_POST = do_check
+        do_PUT = do_check
+        do_DELETE = do_check
+
+        def log_message(self, fmt, *args):
+            print("%s - %s" % (self.address_string(), fmt % args), flush=True)
+
+
+    class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
+        daemon_threads = True
+
+
+    if __name__ == "__main__":
+        srv = Server((LISTEN_HOST, LISTEN_PORT), Handler)
+        print(f"token-exchange sidecar listening on {LISTEN_HOST}:{LISTEN_PORT}", flush=True)
+        srv.serve_forever()

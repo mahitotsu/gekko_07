@@ -36,9 +36,9 @@ data:
       -s directAccessGrantsEnabled=true \
       -s "secret=$FRONTEND_CLIENT_SECRET"
 
-    FRAUD_MCP_ID="$(client_id_of fraud-mcp-server)"
-    "$KCADM" update "clients/$FRAUD_MCP_ID" -r gekko \
-      -s "secret=$FRAUD_MCP_SERVER_CLIENT_SECRET"
+    # fraud-mcp-serverはADR 0019でclientAuthenticatorType: federated-jwtへ移行したため、
+    # client_secretの設定は不要になった(realm-configmap.yamlのjwt.credential.*属性で
+    # 完結する)。
 
     FRAUD_DETECTION_ENGINE_ID="$(client_id_of fraud-detection-engine)"
     "$KCADM" update "clients/$FRAUD_DETECTION_ENGINE_ID" -r gekko \

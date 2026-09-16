@@ -227,8 +227,11 @@ data:
           "serviceAccountsEnabled": false,
           "authorizationServicesEnabled": false,
           "fullScopeAllowed": false,
+          "clientAuthenticatorType": "federated-jwt",
           "attributes": {
-            "standard.token.exchange.enabled": "true"
+            "standard.token.exchange.enabled": "true",
+            "jwt.credential.issuer": "spire-gekko",
+            "jwt.credential.sub": "spiffe://gekko.internal/ns/gekko/sa/default/fraud-mcp-server"
           },
           "defaultClientScopes": [],
           "optionalClientScopes": ["account:read", "account:propose"]
@@ -268,6 +271,17 @@ data:
           },
           "defaultClientScopes": [],
           "optionalClientScopes": ["analyst:read"]
+        }
+      ],
+      "identityProviders": [
+        {
+          "alias": "spire-gekko",
+          "providerId": "spiffe",
+          "enabled": true,
+          "config": {
+            "trustDomain": "spiffe://gekko.internal",
+            "bundleEndpoint": "https://spire-server.spire.svc.cluster.local:8443/"
+          }
         }
       ]
     }

@@ -1,6 +1,11 @@
 # fraud-mcp-serverの最小スタブDeployment(1ホップ先行検証用。ADR 0002/0009/0010)。
 # hostAliasesで"account-service"を127.0.0.1へ静的にマッピングし、アプリが実サービス名・実APIパスで
 # 普通にHTTPリクエストを組み立てるだけで、同一Pod内のEnvoy(egress)が横取りする(ADR 0010)。
+#
+# ADR 0019：Token Exchange実行主体を共有のext-authz-serviceからこのPod内の
+# token-exchangeサイドカーへ移した。"keycloak"も127.0.0.1へマッピングし、
+# token-exchangeサイドカー自身のKeycloak向けリクエストも同一Envoyのegressリスナーで
+# mTLS化される(k8s/ext-authz/deployment.yamlが持っていたのと同じhostAliasesパターン)。
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -20,7 +25,7 @@ spec:
     spec:
       hostAliases:
         - ip: "127.0.0.1"
-          hostnames: ["account-service"]
+          hostnames: ["account-service", "keycloak"]
       initContainers:
         - name: handshake-init
           image: busybox:1.36
@@ -82,10 +87,51 @@ spec:
             limits:
               cpu: "300m"
               memory: "128Mi"
+        # ADR 0019: Token Exchange実行主体。envoyコンテナと同じくWorkload API UDSソケットへ
+        # アクセスする(JWT-SVID取得のため)。SPIRE registration entryもenvoyコンテナと並んで
+        # このコンテナ名をselectorに持つ(k8s/spire/entries-configmap.yaml参照)。
+        - name: token-exchange
+          image: python:3.12-alpine
+          command: ["python3", "/scripts/app.py"]
+          env:
+            - name: CLIENT_ID
+              value: "fraud-mcp-server"
+            - name: JWT_SVID_AUDIENCE
+              value: "http://localhost:3000/realms/gekko"
+            - name: LISTEN_HOST
+              value: "127.0.0.1"
+            - name: LISTEN_PORT
+              value: "9002"
+            - name: KEYCLOAK_TOKEN_URL
+              value: "http://keycloak/realms/gekko/protocol/openid-connect/token"
+          volumeMounts:
+            - name: token-exchange-app-script
+              mountPath: /scripts
+              readOnly: true
+            - name: spire-agent-socket
+              mountPath: /run/spire/sockets
+              readOnly: true
+            # Kubernetes ImageVolume(1.33+ Beta)でspire-agentイメージから`spire-agent`
+            # CLIバイナリだけを読み取り専用マウントする。distroless系イメージでシェルが
+            # 無くコピーもできないため(実機確認済み)、grpcio等の新規Python依存を増やさずに
+            # 済むこの方式を採用した(ADR 0019)。
+            - name: spire-agent-bin
+              mountPath: /spire-bin
+              readOnly: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
       volumes:
         - name: app-script
           configMap:
             name: fraud-mcp-server-stub-app
+        - name: token-exchange-app-script
+          configMap:
+            name: fraud-mcp-server-token-exchange-app
         - name: envoy-config
           configMap:
             name: fraud-mcp-server-envoy
@@ -95,3 +141,6 @@ spec:
           hostPath:
             path: /run/spire/sockets
             type: Directory
+        - name: spire-agent-bin
+          image:
+            reference: ghcr.io/spiffe/spire-agent:1.15.3
