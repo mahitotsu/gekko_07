@@ -279,4 +279,6 @@ status:
 	@echo "---"
 	@kubectl get nodes 2>/dev/null || echo "(cluster not reachable)"
 	@echo "---"
-	@kubectl -n $(NAMESPACE) get pods 2>/dev/null || echo "(namespace '$(NAMESPACE)' not reachable)"
+	@kubectl -n $(NAMESPACE) get deployments,services,pods 2>/dev/null || echo "(namespace '$(NAMESPACE)' not reachable)"
+	@echo "---"
+	@kubectl -n spire get statefulsets,daemonsets,services,pods 2>/dev/null || echo "(namespace 'spire' not reachable)"
