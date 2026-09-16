@@ -3,6 +3,11 @@
 # (account-serviceへ機械間認証で直接アクセスするのみ)ため、fraud-mcp-server-stubと異なり
 # 合言葉initContainer・ingress用app.pyは持たない。appコンテナは検証コマンドを実行するための
 # 待機コンテナ(kubectl execの実行先)。
+#
+# ADR 0020：client_credentialsトークン取得の実行主体を共有のext-authz-service-ccからこのPod内の
+# client-credentialsサイドカーへ移した(ADR 0019のfraud-mcp-serverと同じ是正パターン)。
+# "keycloak"も127.0.0.1へマッピングし、client-credentialsサイドカー自身のKeycloak向け
+# リクエストも同一EnvoyのegressリスナーでmTLS化される。
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -22,7 +27,7 @@ spec:
     spec:
       hostAliases:
         - ip: "127.0.0.1"
-          hostnames: ["account-service"]
+          hostnames: ["account-service", "keycloak"]
       containers:
         - name: app
           image: python:3.12-alpine
@@ -53,11 +58,56 @@ spec:
             limits:
               cpu: "300m"
               memory: "128Mi"
+        # ADR 0020: client_credentialsトークン取得実行主体。envoyコンテナと同じくWorkload API
+        # UDSソケットへアクセスする(JWT-SVID取得のため)。SPIRE registration entryもenvoy
+        # コンテナと並んでこのコンテナ名をselectorに持つ(k8s/spire/entries-configmap.yaml参照)。
+        - name: client-credentials
+          image: python:3.12-alpine
+          command: ["python3", "/scripts/app.py"]
+          env:
+            - name: CLIENT_ID
+              value: "fraud-detection-engine"
+            - name: FIXED_SCOPE
+              value: "account:freeze"
+            - name: JWT_SVID_AUDIENCE
+              value: "http://localhost:3000/realms/gekko"
+            - name: LISTEN_HOST
+              value: "127.0.0.1"
+            - name: LISTEN_PORT
+              value: "9002"
+            - name: KEYCLOAK_TOKEN_URL
+              value: "http://keycloak/realms/gekko/protocol/openid-connect/token"
+          volumeMounts:
+            - name: client-credentials-app-script
+              mountPath: /scripts
+              readOnly: true
+            - name: spire-agent-socket
+              mountPath: /run/spire/sockets
+              readOnly: true
+            # Kubernetes ImageVolume(1.33+ Beta)でspire-agentイメージから`spire-agent`
+            # CLIバイナリだけを読み取り専用マウントする(ADR 0019と同じ理由。distroless系
+            # イメージでシェルが無くコピーもできないため)。
+            - name: spire-agent-bin
+              mountPath: /spire-bin
+              readOnly: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
       volumes:
         - name: envoy-config
           configMap:
             name: fraud-detection-engine-envoy
+        - name: client-credentials-app-script
+          configMap:
+            name: fraud-detection-engine-client-credentials-app
         - name: spire-agent-socket
           hostPath:
             path: /run/spire/sockets
             type: Directory
+        - name: spire-agent-bin
+          image:
+            reference: ghcr.io/spiffe/spire-agent:1.15.3

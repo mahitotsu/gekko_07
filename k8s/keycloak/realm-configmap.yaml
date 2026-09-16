@@ -249,7 +249,11 @@ data:
           "serviceAccountsEnabled": true,
           "authorizationServicesEnabled": false,
           "fullScopeAllowed": false,
-          "attributes": {},
+          "clientAuthenticatorType": "federated-jwt",
+          "attributes": {
+            "jwt.credential.issuer": "spire-gekko",
+            "jwt.credential.sub": "spiffe://gekko.internal/ns/gekko/sa/default/fraud-detection-engine"
+          },
           "defaultClientScopes": [],
           "optionalClientScopes": ["account:freeze"]
         },

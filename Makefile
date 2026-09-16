@@ -33,9 +33,9 @@ KEYCLOAK_DB_PASSWORD := $(call get_secret,keycloak-db-password)
 # 1ホップ先行検証（ADR 0002/0009/0010）専用のテスト用シークレット。本番の認可設計には使わない
 # （deploy-verify-hop/verify-hop参照）。
 FRONTEND_CLIENT_SECRET := $(call get_secret,frontend-client-secret)
-# fraud-mcp-serverはADR 0019でclientAuthenticatorType: federated-jwtへ移行したため
-# client_secretは不要(SPIRE発行JWT-SVIDで認証する)。
-FRAUD_DETECTION_ENGINE_CLIENT_SECRET := $(call get_secret,fraud-detection-engine-client-secret)
+# fraud-mcp-server(ADR 0019)・fraud-detection-engine(ADR 0020)はいずれも
+# clientAuthenticatorType: federated-jwtへ移行したためclient_secretは不要
+# (SPIRE発行JWT-SVIDで認証する)。
 YAMADA_ANALYST_PASSWORD := $(call get_secret,yamada-analyst-password)
 
 # SPIRE Serverのbundle endpoint（ADR 0019）自身のTLS終端用証明書。SPIRE発行のSVIDではなく
@@ -85,8 +85,9 @@ clean: down
 # db-init-job.yaml相当を追加する形で横展開する（ADR 0008）。Postgresを先にreadyにし、
 # 各サービスのDB初期化Jobを完了させてからそのサービス本体を適用する順序に意味がある。
 #
-# SPIRE（k8s/spire/）はADR 0016でKeycloakのEnvoyサイドカー（ext-authz-service(-cc)専用の
-# mTLSポート8443）の前提になったため、「1ホップ検証スタブ専用」から「base trackの前提
+# SPIRE（k8s/spire/）はADR 0016でKeycloakのEnvoyサイドカー（当時のext-authz-service(-cc)専用の
+# mTLSポート8443、現在はfraud-mcp-server/fraud-detection-engine自身のPod内サイドカーがADR 0019/0020で
+# 同じポートへ接続する）の前提になったため、「1ホップ検証スタブ専用」から「base trackの前提
 # コンポーネント」へ格上げした。deploy-spireはspire-agent DaemonSetのrollout完了まで待つため、
 # Keycloakのデプロイより前に呼べば、KeycloakのEnvoyコンテナがspire-agentソケット
 # （hostPath /run/spire/sockets）を確実にマウントできる。
@@ -162,34 +163,28 @@ keycloak-reimport-realm:
 # 1ホップ先行検証（ADR 0002/0009/0010、fraud-mcp-server→account-service・
 # fraud-detection-engine→account-service）
 # -------------------------
-# ここでデプロイするaccount-service/fraud-mcp-server/fraud-detection-engine/ext-authz-service(-cc)は
+# ここでデプロイするaccount-service/fraud-mcp-server/fraud-detection-engineは
 # いずれもスタブ実装であり、各サービスの本実装（未着手）とは別物。既存のdeploy/undeployとは
 # 独立させてあるため、Keycloak・Postgresだけを触りたい場合はこのターゲット群を無視してよい。
 
 # スタブ一式＋テスト用Keycloakフィクスチャをデプロイする（make deploy実行済み・クラスタ起動済み前提）
 deploy-verify-hop:
 	$(call upsert_secret,frontend-client,--from-literal=client-secret=$(FRONTEND_CLIENT_SECRET))
-	$(call upsert_secret,fraud-detection-engine-client,--from-literal=client-secret=$(FRAUD_DETECTION_ENGINE_CLIENT_SECRET))
 	$(call upsert_secret,yamada-analyst,--from-literal=password=$(YAMADA_ANALYST_PASSWORD))
 	kubectl delete job keycloak-test-fixtures -n $(NAMESPACE) --ignore-not-found
 	kubectl apply -f k8s/keycloak/test-fixtures-configmap.yaml -f k8s/keycloak/test-fixtures-job.yaml
 	kubectl -n $(NAMESPACE) wait --for=condition=complete job/keycloak-test-fixtures --timeout=60s
 	@# SPIRE(server/agent/registration entries)はmake deploy側で既にデプロイ済み(ADR 0016で
-	@# base trackへ格上げ)なので、ここでは呼ばない。ext-authz-service-cc向けのentryも
-	@# 含めて既に揃っている前提(deploy-verify-hopの前提「make deploy実行済み」に含まれる)。
-	@# fraud-mcp-server向けのext-authz-service(共有インスタンス)はADR 0019で廃止し、
-	@# fraud-mcp-server自身のPod内サイドカー(token-exchange)へ置き換えた。
-	kubectl apply -f k8s/ext-authz/app-configmap.yaml
-	kubectl apply -f k8s/ext-authz/envoy-configmap-client-credentials.yaml -f k8s/ext-authz/deployment-client-credentials.yaml -f k8s/ext-authz/service-client-credentials.yaml
+	@# base trackへ格上げ)なので、ここでは呼ばない。
+	@# fraud-mcp-server向け(ADR 0019)・fraud-detection-engine向け(ADR 0020)のext-authz-service
+	@# 共有インスタンスはいずれも廃止し、呼び出し元自身のPod内サイドカーへ置き換えた。
 	kubectl apply -f k8s/account-service/app-configmap.yaml -f k8s/account-service/envoy-configmap.yaml -f k8s/account-service/deployment.yaml -f k8s/account-service/service.yaml
 	kubectl apply -f k8s/fraud-mcp-server/app-configmap.yaml -f k8s/fraud-mcp-server/token-exchange-app-configmap.yaml -f k8s/fraud-mcp-server/envoy-configmap.yaml -f k8s/fraud-mcp-server/deployment.yaml
-	kubectl apply -f k8s/fraud-detection-engine/envoy-configmap.yaml -f k8s/fraud-detection-engine/deployment.yaml
+	kubectl apply -f k8s/fraud-detection-engine/client-credentials-app-configmap.yaml -f k8s/fraud-detection-engine/envoy-configmap.yaml -f k8s/fraud-detection-engine/deployment.yaml
 	@# EnvoyはConfigMapの静的bootstrap設定を起動時に1度だけ読み込み、変更をホットリロードしない
 	@# （Keycloak realmの--import-realmと同種の落とし穴。insights.md参照）。ConfigMap更新が
 	@# 既存Podへ確実に反映されるよう、スタブは常に再起動する（いずれも状態を持たないため無害）
-	kubectl -n $(NAMESPACE) rollout restart deployment/ext-authz-service-cc \
-		deployment/account-service-stub deployment/fraud-mcp-server-stub deployment/fraud-detection-engine-stub
-	kubectl -n $(NAMESPACE) rollout status deployment/ext-authz-service-cc --timeout=120s
+	kubectl -n $(NAMESPACE) rollout restart deployment/account-service-stub deployment/fraud-mcp-server-stub deployment/fraud-detection-engine-stub
 	kubectl -n $(NAMESPACE) rollout status deployment/account-service-stub --timeout=120s
 	kubectl -n $(NAMESPACE) rollout status deployment/fraud-mcp-server-stub --timeout=120s
 	kubectl -n $(NAMESPACE) rollout status deployment/fraud-detection-engine-stub --timeout=120s
@@ -202,16 +197,15 @@ verify-hop:
 # 前提コンポーネントになった(ADR 0016)ため、ここでは削除しない。Keycloak+SPIREを残したまま
 # スタブだけ入れ替えられるようにする)
 undeploy-verify-hop:
-	kubectl delete -f k8s/fraud-detection-engine/deployment.yaml -f k8s/fraud-detection-engine/envoy-configmap.yaml --ignore-not-found
+	kubectl delete -f k8s/fraud-detection-engine/deployment.yaml -f k8s/fraud-detection-engine/envoy-configmap.yaml -f k8s/fraud-detection-engine/client-credentials-app-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/fraud-mcp-server/deployment.yaml -f k8s/fraud-mcp-server/envoy-configmap.yaml -f k8s/fraud-mcp-server/token-exchange-app-configmap.yaml -f k8s/fraud-mcp-server/app-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/account-service/service.yaml -f k8s/account-service/deployment.yaml -f k8s/account-service/envoy-configmap.yaml -f k8s/account-service/app-configmap.yaml --ignore-not-found
-	kubectl delete -f k8s/ext-authz/service-client-credentials.yaml -f k8s/ext-authz/deployment-client-credentials.yaml -f k8s/ext-authz/envoy-configmap-client-credentials.yaml --ignore-not-found
-	kubectl delete -f k8s/ext-authz/app-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/keycloak/test-fixtures-job.yaml -f k8s/keycloak/test-fixtures-configmap.yaml --ignore-not-found
 	kubectl delete secret frontend-client fraud-mcp-server-client fraud-detection-engine-client yamada-analyst -n $(NAMESPACE) --ignore-not-found
 
 # -------------------------
-# SPIFFE/SPIRE（ADR 0012/0015/0016。account-service・ext-authz-service(-cc)・keycloakへのmTLS）
+# SPIFFE/SPIRE（ADR 0012/0015/0016/0019/0020。account-service・fraud-mcp-server・
+# fraud-detection-engine・keycloakへのmTLS）
 # -------------------------
 # server→agent→registration entriesの順に起動・疎通を待つ必要がある（agentはserverに疎通できて
 # 初めてk8s_psatでattestできる。entries Jobはspire-serverの管理APIをkubectl execで叩く）。
@@ -253,14 +247,14 @@ undeploy-spire:
 deploy-network-policy:
 	kubectl apply -f k8s/network-policy/default-deny.yaml -f k8s/network-policy/allow-dns.yaml
 	kubectl apply -f k8s/postgres/networkpolicy.yaml -f k8s/keycloak/networkpolicy.yaml \
-		-f k8s/edge-proxy/networkpolicy.yaml -f k8s/ext-authz/networkpolicy.yaml \
+		-f k8s/edge-proxy/networkpolicy.yaml \
 		-f k8s/account-service/networkpolicy.yaml -f k8s/fraud-mcp-server/networkpolicy.yaml \
 		-f k8s/fraud-detection-engine/networkpolicy.yaml
 
 # NetworkPolicy一式を削除する
 undeploy-network-policy:
 	kubectl delete -f k8s/postgres/networkpolicy.yaml -f k8s/keycloak/networkpolicy.yaml \
-		-f k8s/edge-proxy/networkpolicy.yaml -f k8s/ext-authz/networkpolicy.yaml \
+		-f k8s/edge-proxy/networkpolicy.yaml \
 		-f k8s/account-service/networkpolicy.yaml -f k8s/fraud-mcp-server/networkpolicy.yaml \
 		-f k8s/fraud-detection-engine/networkpolicy.yaml --ignore-not-found
 	kubectl delete -f k8s/network-policy/default-deny.yaml -f k8s/network-policy/allow-dns.yaml --ignore-not-found

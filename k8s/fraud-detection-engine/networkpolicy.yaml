@@ -1,5 +1,7 @@
 # ADR 0018。fraud-detection-engineにはKubernetes Service自体が無くingressの受け口が
-# 無いため、Egressのみ制御する(ingressはdefault-denyのまま)。
+# 無いため、Egressのみ制御する(ingressはdefault-denyのまま)。ADR 0020でclient_credentials
+# トークン取得実行主体を自身のPod内サイドカーへ移したため、ext-authz-service-ccへの
+# egressをKeycloakへのegressに置き換えた(ADR 0019のfraud-mcp-serverと同じ変更)。
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -22,7 +24,7 @@ spec:
     - to:
         - podSelector:
             matchLabels:
-              app: ext-authz-service-cc
+              app: keycloak
       ports:
         - protocol: TCP
-          port: 8080
+          port: 8443

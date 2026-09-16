@@ -27,3 +27,4 @@
 | [0017](0017-edge-proxy-full-keycloak-mtls.md) | edge-proxyを導入し、Keycloakを完全mTLS化する | Accepted |
 | [0018](0018-network-policy-default-deny.md) | gekko namespaceにNetworkPolicyでL3/4のdefault-denyを導入する | Accepted |
 | [0019](0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md) | ext-authz-serviceの身元検証ギャップを解消し、fraud-mcp-server→account-serviceをSPIFFE JWT-SVIDクライアント認証へ移行する | Accepted |
+| [0020](0020-fraud-detection-engine-identity-gap-and-client-credentials-federated-jwt.md) | fraud-detection-engineの身元検証ギャップを解消し、client_credentialsグラントもSPIFFE JWT-SVIDクライアント認証へ移行する | Accepted |

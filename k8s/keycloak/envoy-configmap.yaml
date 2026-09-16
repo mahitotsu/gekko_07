@@ -4,7 +4,8 @@
 # 拒否するだけの単純なroutrer転送。
 #
 # 8443(このリスナー)は以下4者専用のmTLS必須経路:
-# - ext-authz-service/-cc(Token Exchange/client_credentials。ADR 0016)
+# - fraud-mcp-server(Token Exchange。ADR 0019で旧ext-authz-serviceから変更)
+# - fraud-detection-engine(client_credentials。ADR 0020で旧ext-authz-service-ccから変更)
 # - account-service(jwt_authnのJWKS取得。ADR 0017でmTLS化)
 # - edge-proxy(ブラウザ・kcadm.sh・verify-hop.shなどSPIFFE身元を持ちえない呼び出し元の
 #   代理。ADR 0017)
@@ -50,14 +51,15 @@ data:
                     combined_validation_context:
                       default_validation_context:
                         match_typed_subject_alt_names:
-                          # ADR 0019: fraud-mcp-server自身が(旧ext-authz-serviceに代わって)
-                          # Keycloakへ直接mTLS接続するようになった。
+                          # ADR 0019/0020: fraud-mcp-server・fraud-detection-engineがそれぞれ
+                          # 自身で(旧ext-authz-service(-cc)に代わって)Keycloakへ直接mTLS
+                          # 接続するようになった。
                           - san_type: URI
                             matcher:
                               exact: "spiffe://gekko.internal/ns/gekko/sa/default/fraud-mcp-server"
                           - san_type: URI
                             matcher:
-                              exact: "spiffe://gekko.internal/ns/gekko/sa/default/ext-authz-service-cc"
+                              exact: "spiffe://gekko.internal/ns/gekko/sa/default/fraud-detection-engine"
                           - san_type: URI
                             matcher:
                               exact: "spiffe://gekko.internal/ns/gekko/sa/default/account-service"
