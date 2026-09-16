@@ -267,3 +267,34 @@
 **原因**：`FederatedJWTClientAuthenticator.authenticateClient()`をバイトコードレベルで確認したところ、`client_assertion_type`の値で`findStrategy()`が担当ストラテジーを検索し、一致するストラテジーが無ければ（あるいは`lookup()`が呼び出し元クライアントを特定できなければ）**例外もfailure()も呼ばず黙ってreturnする**。汎用の`urn:ietf:params:oauth:client-assertion-type:jwt-bearer`は、SPIFFE用ではなく「`sub`＝`client_id`」を前提とする旧来のデフォルトストラテジーにマッチしてしまい、`sub`にSPIFFE IDそのものを入れている今回のJWTでは当然クライアントが見つからず、素通りしていた。`SpiffeConstants.class`を直接読んだところ、SPIFFE用ストラテジーに対応する正しい値は`urn:ietf:params:oauth:client-assertion-type:jwt-spiffe`だった。
 
 **対応**：`client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-spiffe`に修正したところ、Keycloakが実際にバンドルエンドポイントへHTTPリクエストを送り、署名検証に成功し、client_secret無しで`"azp": "fraud-mcp-server"`のアクセストークンが発行されることを確認した（HTTP 200）。第三者製SPI（`christian-posta/spiffe-svid-client-authenticator`）を使わずとも、Keycloak本体のPreview機能だけでJWT-SVIDベースのクライアント認証が成立することを実証した。ただし`spiffe`はKeycloakの成熟度区分で"Preview"（`token-exchange-delegation`等の"Experimental"より一段階上だが安定版ではない）であり、関連するAdmin UI側には既知の未解決バグ（Issue #42634・#42044・#51682）がある点は留意する。gekko_07本体（実際のSPIRE JWT-SVID発行・Envoy/ext-authz-serviceの置き換え）への統合はまだ行っていない。
+
+### Stage 1a：gekko_07の実クラスタ上で、SPIRE発行の本物のJWT-SVID＋SPIRE Serverのbundle endpointでToken Exchangeが成立することを確認した（gekko_07本体は未コミット）
+
+前項の使い捨てDockerコンテナでの検証を、gekko_07の実k3dクラスタ（本物のSPIRE Server/Agent、本物のKeycloak）で再現した。以下は全て実機で確認済みだが、まだ`k8s/`配下のファイルには反映していない（`kubectl`で一時的に生きているクラスタへ直接適用しただけ）。
+
+**SPIRE Server側**：`server.conf`に以下の`federation.bundle_endpoint`ブロックを追加すると、SPIRE ServerがHTTPSでtrust bundle（JWKS形式、X.509-SVID用CAと`"use": "jwt-svid"`のJWT署名鍵の両方を含む）を公開する。
+
+```hcl
+federation {
+  bundle_endpoint {
+    address = "0.0.0.0"
+    port    = 8443
+    refresh_hint = "5m"
+    profile "https_web" {
+      serving_cert_file {
+        cert_file_path = "..."
+        key_file_path  = "..."
+        file_sync_interval = "1h"
+      }
+    }
+  }
+}
+```
+
+`serving_cert_file`ブロックの`file_sync_interval`を省略すると`time: invalid duration ""`で起動時に即クラッシュする（エラーメッセージにどの設定キーが原因かの手がかりが一切無い。`refresh_hint`が原因ではないかとまず疑ったが無関係だった）。証明書はこのbundle endpoint自体のTLS終端用（trust bundleの中身とは無関係）で、SPIRE発行のSVIDではなく別途用意した自己署名証明書で問題ない。Keycloak側にはこの証明書（またはその発行者）を`KC_TRUSTSTORE_PATHS`で信頼させる必要がある。
+
+**JWT-SVIDの取得**：SPIRE Workload API（gRPC）をPythonから直接叩く代わりに、`ghcr.io/spiffe/spire-agent`イメージに同梱の`/opt/spire/bin/spire-agent api fetch jwt -audience <aud> -socketPath /run/spire/sockets/agent.sock`をサブプロセス実行するだけで取得できた（standalone実行、シェル不要）。取得したJWT-SVIDは`sub`にSPIFFE IDを持つがKeycloakが要求する`iss`クレームは持たない（実機確認済み。`SpiffeClientAssertionStrategy`は`iss`ではなく`sub`のtrust domain部分とクライアント属性`jwt.credential.sub`の一致だけを見ている）。attestationは実行するPod自身のラベル/サービスアカウントに紐づくため、呼び出し元(fraud-mcp-server)と同じselector（`k8s:pod-label:app:fraud-mcp-server`等）を満たすPodからでないと`rpc error: code = PermissionDenied desc = no identity issued`になる——共有Podでは呼び出し元自身のJWT-SVIDを取得できないという制約を実機でも再確認した。
+
+**Keycloak側**：`identity-provider`(`providerId: spiffe`、`trustDomain`は`spiffe://`スキーム付きで指定しないと"Invalid trust domain name"で弾かれる)を追加し、`fraud-mcp-server`クライアントを`clientAuthenticatorType: federated-jwt`＋`jwt.credential.issuer`(IdPエイリアス)/`jwt.credential.sub`(SPIFFE ID)に変更。
+
+**実際に通った検証**：`client_credentials`グラントでは`{"error":"unauthorized_client","error_description":"Client not enabled to retrieve service account"}`（=クライアント認証自体は成功、fraud-mcp-serverの`serviceAccountsEnabled: false`が理由でグラント自体が拒否されただけ）。既存のverify-hop.sh同様の2段階委任（frontendでログイン→frontendがfraud-mcp-server宛てにToken Exchange→そのDELEGATED_TOKENをsubject_tokenにfraud-mcp-server自身がaccount-service宛てにToken Exchange、ただし`client_secret`の代わりに`client_assertion_type=...jwt-spiffe`＋`client_assertion=<JWT-SVID>`を使用）を実行したところ、**HTTP 200でaccount-service向けアクセストークンが発行された**。RFC 8705が不成立と判明した際の懸念（Keycloakネイティブpreview機能が実際に機能するか）は、この実クラスタでの成功により解消したと判断できる。
