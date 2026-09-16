@@ -1,6 +1,6 @@
 # gekko_07
 
-OAuth 2.0 Token Exchange (RFC 8693) をEnvoyサイドカー（ext_authz）に実装し、マイクロサービス群とAIエージェントが連携するローカル実行可能なサンプル。**現在は設計段階**（k3dクラスタの土台のみ実装済み）。目的・背景・要求水準は[docs/requirements.md](docs/requirements.md)を参照。
+OAuth 2.0 Token Exchange (RFC 8693) をEnvoyサイドカー（ext_authz）に実装し、マイクロサービス群とAIエージェントが連携するローカル実行可能なサンプル。**現在はインフラ・セキュリティ層（Token Exchange・SPIFFE/SPIRE mTLS・NetworkPolicy）をスタブサービス相手に実機検証済みの段階**（各サービスの本実装・frontend・AIエージェントは未着手）。目的・背景・要求水準は[docs/requirements.md](docs/requirements.md)を参照。
 
 想定ユースケースは金融の不正検知・口座凍結解除（[ADR 0001](docs/adr/0001-scenario-fraud-detection-with-agent-assist.md)・[ADR 0011](docs/adr/0011-scenario-ai-assisted-unfreeze.md)）。取引パターンから自動検知エンジンが口座を自動的に凍結し、AIエージェントが凍結の妥当性を分析して解除を提案、アナリストが確認の上で決定論的な操作を行って初めて解除が確定する。エージェントの権限はKeycloakのスコープ設計で読み取り・提案のみに制限し、実行権限（凍結解除）は一切持たせない。
 
@@ -9,9 +9,11 @@ OAuth 2.0 Token Exchange (RFC 8693) をEnvoyサイドカー（ext_authz）に実
 - [x] k3dクラスタの土台（[k3d/cluster-config.yaml](k3d/cluster-config.yaml)、[Makefile](Makefile)）
 - [x] シナリオ・サービス構成・権限設計・各サービスの技術スタック（本READMEの「ドキュメントの読み方」参照）
 - [x] Keycloak realm・クライアント設定（[k8s/keycloak/](k8s/keycloak/)。PostgreSQLへ永続化（[k8s/postgres/](k8s/postgres/)、[ADR 0008](docs/adr/0008-per-service-datastore-strategy.md)）。実機検証内容・未検証事項は[docs/insights.md](docs/insights.md)・[docs/backlog.md](docs/backlog.md)参照）
-- [x] Envoyサイドカー・ext_authzサービスの1ホップ先行検証（fraud-mcp-server→account-service、`account:read`/`account:propose`。[k8s/ext-authz/](k8s/ext-authz/)・[k8s/account-service/](k8s/account-service/)・[k8s/fraud-mcp-server/](k8s/fraud-mcp-server/)、`make deploy-verify-hop && make verify-hop`。いずれもスタブ実装。残りのホップ・パターンは未検証。詳細は[docs/insights.md](docs/insights.md)・[docs/backlog.md](docs/backlog.md)参照）
+- [x] Envoy/ext_authzによるOAuth Token Exchange・client_credentialsの2パターン先行検証（パターン①fraud-mcp-server→account-service`account:read`/`account:propose`、パターン②fraud-detection-engine→account-service`account:freeze`。[k8s/ext-authz/](k8s/ext-authz/)・[k8s/account-service/](k8s/account-service/)、`make deploy-verify-hop && make verify-hop`。いずれもスタブ実装。詳細は[docs/insights.md](docs/insights.md)・[docs/backlog.md](docs/backlog.md)参照）
+- [x] SPIFFE/SPIRE mTLS（fraud-mcp-server・fraud-detection-engine→account-service、ext-authz-service(-cc)・account-service・edge-proxy↔Keycloak。[ADR 0012](docs/adr/0012-spiffe-spire-mtls-single-hop.md)・[0015](docs/adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)・[0016](docs/adr/0016-ext-authz-and-keycloak-mtls.md)・[0017](docs/adr/0017-edge-proxy-full-keycloak-mtls.md)。account-service・Keycloakのplaintext受け口は撤廃済み）
+- [x] NetworkPolicyによるgekko namespace全体のL3/4 default-deny（[ADR 0018](docs/adr/0018-network-policy-default-deny.md)）
 - [ ] 各サービスの実装（本実装。現状はスタブのみ）
-- [ ] MCPサーバー・AIエージェント
+- [ ] frontend・MCPサーバー・AIエージェント
 
 ## クイックスタート
 

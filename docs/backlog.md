@@ -27,7 +27,6 @@
 
 - **他ホップへの横展開**：frontend→account-service/fraud-mcp-server、account-service→analyst-attribute-service等、残りの委任関係へのmTLS適用は未着手（frontend/analyst-attribute-service自体が未実装）。frontend実装時はedge-proxy(ADR 0017)を経由させ、同じPodを使い回す想定
 - **NetworkPolicyのspire namespaceへの横展開**：[ADR 0018](adr/0018-network-policy-default-deny.md)で`gekko` namespaceにL3/4のdefault-denyを導入したが、`spire` namespace（spire-server/spire-agent）は対象外とした。spire-agentが`hostNetwork: true`で動作しており、kube-router netpolがhostNetwork Podに対してどう振る舞うかが未検証なため。加えて`spire-entries` Job（`kubectl exec`でspire-serverへ接続する）等、`gekko` namespaceとは異なる接続パターンを持つ点も要考慮
-- **`dpop-verifier`という稼働中だが現行マニフェストに存在しないPod**：ADR 0018でNetworkPolicyの接続グラフを洗い出す過程で発見。ADR 0015でDPoPは撤去済みのはずだが、`gekko` namespaceに`dpop-verifier`というラベルのPodが稼働していた。どのk8s/配下のマニフェストにも対応するDeployment/Job等が存在しない（手動で`kubectl run`等で作成され消し忘れた可能性が高い）。削除してよいか、何らかの検証用途で意図的に残しているのか確認が必要
 - **ADR 0002見直し（RFC 8705を実現するためのWASMフィルタ化）**：RFC 8705を成立させるにはToken ExchangeをWASMフィルタとして各サービス自身のEnvoy内で完結させる必要があるが、ADR 0002が明示的に退けたWASMビルドトールチェーン導入コストを再度負うことになるため見送った。本気で目指すなら別途評価する
 - **ワークロードPod（account-service-stub/fraud-mcp-server-stub等）自体への`hostPID`/`hostNetwork`付与**：SPIRE agentには必要だが、ワークロードPod側はカーネルのPID名前空間の性質上不要なはずという推測のもとで見送った。属性解決が実機で失敗した場合（SDS呼び出しがタイムアウトする、spire-serverのログに"no selectors found after max poll attempts"が出る等）のみ再検討する
 - **`spiffe-csi`ドライバ・`spire-controller-manager`**：新規可動部を増やさないため、hostPathでのソケット共有・`spire-server entry create` CLIでの手動登録を選んだ。本番相当の運用を検証したくなった場合に再評価する

@@ -210,6 +210,10 @@
 
 **このセクションが指す実装（`k8s/dpop-verifier/`等）はADR 0015で撤去済み。** 以下は撤去前の実機検証で得た知見で、将来DPoPを再検討する際の参考として残す。
 
+（追記）ADR 0015でマニフェストは削除されたが、クラスタ上の`Deployment/dpop-verifier`・`ConfigMap/dpop-verifier-app`自体は削除し忘れられ、対応するマニフェストが無いまま稼働し続けていた。ADR 0018のNetworkPolicy接続グラフ調査で発覚し、`kubectl delete`で削除済み（2026-09-16）。
+
+このPodにはNetworkPolicyの許可ルールが一つも存在しなかったため、ADR 0018のdefault-deny適用後は（削除前の時点でも）ingress/egressともに事実上封じ込められていた。マニフェストに存在しない野良Podは対応する許可ルールも持ち得ないため自動的に隔離される、という副次的な安全効果をNetworkPolicyのdefault-denyが持つことの実例として記録する。
+
 [k8s/ext-authz/app-configmap.yaml](../k8s/ext-authz/app-configmap.yaml)・`k8s/dpop-verifier/`（削除済み）・[k8s/account-service/envoy-configmap.yaml](../k8s/account-service/envoy-configmap.yaml)で実施。正常系（proof検証成功、200）・異常系（鍵不一致・iat失効、いずれも401）を`dpop-verifier`への直接呼び出しで確認し、fraud-mcp-server→account-serviceの実際の経路（DPoP拘束されたトークン、`Authorization: DPoP <token>`スキーム）でも200が通ることを確認した。
 
 ### Token ExchangeでのDPoP拘束は「引き継がれる」のではなく、要求者が自分の鍵で作り直す

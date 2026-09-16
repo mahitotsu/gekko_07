@@ -15,6 +15,12 @@ define get_secret
 $(shell mkdir -p $(SECRETS_DIR) && ( [ -f $(SECRETS_DIR)/$(1) ] || openssl rand -hex 16 > $(SECRETS_DIR)/$(1) ) && cat $(SECRETS_DIR)/$(1))
 endef
 
+# Secretを冪等に作成/更新する（`kubectl create ... --dry-run=client -o yaml | kubectl apply -f -`の定型を
+# 共通化。$(2)には`--from-literal=key=value`を1つ以上、スペース区切りで渡す）
+define upsert_secret
+@kubectl create secret generic $(1) -n $(NAMESPACE) $(2) --dry-run=client -o yaml | kubectl apply -f -
+endef
+
 KEYCLOAK_ADMIN_PASSWORD := $(call get_secret,keycloak-admin-password)
 POSTGRES_SUPERUSER_PASSWORD := $(call get_secret,postgres-superuser-password)
 KEYCLOAK_DB_PASSWORD := $(call get_secret,keycloak-db-password)
@@ -26,7 +32,7 @@ FRAUD_MCP_SERVER_CLIENT_SECRET := $(call get_secret,fraud-mcp-server-client-secr
 FRAUD_DETECTION_ENGINE_CLIENT_SECRET := $(call get_secret,fraud-detection-engine-client-secret)
 YAMADA_ANALYST_PASSWORD := $(call get_secret,yamada-analyst-password)
 
-.PHONY: up down stop start status clean deploy undeploy keycloak-forward keycloak-reimport-realm deploy-verify-hop undeploy-verify-hop verify-hop deploy-spire undeploy-spire
+.PHONY: up down stop start status clean deploy undeploy keycloak-forward keycloak-reimport-realm deploy-verify-hop undeploy-verify-hop verify-hop deploy-spire undeploy-spire deploy-network-policy undeploy-network-policy
 
 # -------------------------
 # クラスタ操作
@@ -73,17 +79,9 @@ clean: down
 # PostgreSQL・SPIRE・Keycloak・edge-proxyをデプロイ（クラスタが起動済みであること）
 deploy:
 	kubectl apply -f k8s/keycloak/namespace.yaml
-	@kubectl create secret generic keycloak-admin -n $(NAMESPACE) \
-		--from-literal=username=admin \
-		--from-literal=password=$(KEYCLOAK_ADMIN_PASSWORD) \
-		--dry-run=client -o yaml | kubectl apply -f -
-	@kubectl create secret generic postgres-superuser -n $(NAMESPACE) \
-		--from-literal=password=$(POSTGRES_SUPERUSER_PASSWORD) \
-		--dry-run=client -o yaml | kubectl apply -f -
-	@kubectl create secret generic keycloak-db -n $(NAMESPACE) \
-		--from-literal=username=keycloak \
-		--from-literal=password=$(KEYCLOAK_DB_PASSWORD) \
-		--dry-run=client -o yaml | kubectl apply -f -
+	$(call upsert_secret,keycloak-admin,--from-literal=username=admin --from-literal=password=$(KEYCLOAK_ADMIN_PASSWORD))
+	$(call upsert_secret,postgres-superuser,--from-literal=password=$(POSTGRES_SUPERUSER_PASSWORD))
+	$(call upsert_secret,keycloak-db,--from-literal=username=keycloak --from-literal=password=$(KEYCLOAK_DB_PASSWORD))
 	kubectl apply -f k8s/postgres/statefulset.yaml -f k8s/postgres/service.yaml
 	kubectl -n $(NAMESPACE) rollout status statefulset/postgres --timeout=180s
 	@# JobのPod specは不変なので、再実行するにはいったん削除してから作り直す（冪等なスクリプトなので安全）
@@ -146,18 +144,10 @@ keycloak-reimport-realm:
 
 # スタブ一式＋テスト用Keycloakフィクスチャをデプロイする（make deploy実行済み・クラスタ起動済み前提）
 deploy-verify-hop:
-	@kubectl create secret generic frontend-client -n $(NAMESPACE) \
-		--from-literal=client-secret=$(FRONTEND_CLIENT_SECRET) \
-		--dry-run=client -o yaml | kubectl apply -f -
-	@kubectl create secret generic fraud-mcp-server-client -n $(NAMESPACE) \
-		--from-literal=client-secret=$(FRAUD_MCP_SERVER_CLIENT_SECRET) \
-		--dry-run=client -o yaml | kubectl apply -f -
-	@kubectl create secret generic fraud-detection-engine-client -n $(NAMESPACE) \
-		--from-literal=client-secret=$(FRAUD_DETECTION_ENGINE_CLIENT_SECRET) \
-		--dry-run=client -o yaml | kubectl apply -f -
-	@kubectl create secret generic yamada-analyst -n $(NAMESPACE) \
-		--from-literal=password=$(YAMADA_ANALYST_PASSWORD) \
-		--dry-run=client -o yaml | kubectl apply -f -
+	$(call upsert_secret,frontend-client,--from-literal=client-secret=$(FRONTEND_CLIENT_SECRET))
+	$(call upsert_secret,fraud-mcp-server-client,--from-literal=client-secret=$(FRAUD_MCP_SERVER_CLIENT_SECRET))
+	$(call upsert_secret,fraud-detection-engine-client,--from-literal=client-secret=$(FRAUD_DETECTION_ENGINE_CLIENT_SECRET))
+	$(call upsert_secret,yamada-analyst,--from-literal=password=$(YAMADA_ANALYST_PASSWORD))
 	kubectl delete job keycloak-test-fixtures -n $(NAMESPACE) --ignore-not-found
 	kubectl apply -f k8s/keycloak/test-fixtures-configmap.yaml -f k8s/keycloak/test-fixtures-job.yaml
 	kubectl -n $(NAMESPACE) wait --for=condition=complete job/keycloak-test-fixtures --timeout=60s
