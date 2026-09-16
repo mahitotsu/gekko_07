@@ -7,11 +7,12 @@
 # Host/Path/Methodから表2の対応表でscopeを解決する。そのためこのroute_config自体は
 # 宛先の振り分け(パスパターンごとに同じクラスタへ)だけを担い、scope解決ロジックを持たない。
 #
-# account_service_upstreamクラスタのみ、SPIRE発行のSVIDによるmTLS+ALPN h2を追加する(ADR 0012)。
-# ext_authz_clusterは対象外(ext-authz-serviceはEnvoyサイドカーを持たないためスコープ外。
-# backlog.md参照)。ALPNは接続時のネゴシエーションにしか影響しないため、実際にh2を話すには
-# typed_extension_protocol_optionsで明示的にhttp2_protocol_optionsを設定する必要がある
-# (設定しないとALPNの結果に関わらずクラスタは既定のHTTP/1.1のまま)。
+# account_service_upstream・ext_authz_clusterの両方に、SPIRE発行のSVIDによるmTLS+ALPN h2を
+# 追加する(account_service_upstreamはADR 0012、ext_authz_clusterはADR 0016でext-authz-service
+# 自体にEnvoyサイドカーを追加したことに伴い追加)。ALPNは接続時のネゴシエーションにしか
+# 影響しないため、実際にh2を話すにはtyped_extension_protocol_optionsで明示的に
+# http2_protocol_optionsを設定する必要がある(設定しないとALPNの結果に関わらずクラスタは
+# 既定のHTTP/1.1のまま)。
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -147,6 +148,43 @@ data:
         - name: ext_authz_cluster
           type: STRICT_DNS
           lb_policy: ROUND_ROBIN
+          typed_extension_protocol_options:
+            envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+              "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+              explicit_http_config:
+                http2_protocol_options: {}
+          transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+              common_tls_context:
+                alpn_protocols: ["h2"]
+                tls_certificate_sds_secret_configs:
+                  - name: "default"
+                    sds_config:
+                      resource_api_version: V3
+                      api_config_source:
+                        api_type: GRPC
+                        transport_api_version: V3
+                        grpc_services:
+                          - envoy_grpc:
+                              cluster_name: spire_agent
+                combined_validation_context:
+                  default_validation_context:
+                    match_typed_subject_alt_names:
+                      - san_type: URI
+                        matcher:
+                          exact: "spiffe://gekko.internal/ns/gekko/sa/default/ext-authz-service"
+                  validation_context_sds_secret_config:
+                    name: "ROOTCA"
+                    sds_config:
+                      resource_api_version: V3
+                      api_config_source:
+                        api_type: GRPC
+                        transport_api_version: V3
+                        grpc_services:
+                          - envoy_grpc:
+                              cluster_name: spire_agent
           load_assignment:
             cluster_name: ext_authz_cluster
             endpoints:

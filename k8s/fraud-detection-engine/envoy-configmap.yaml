@@ -8,9 +8,10 @@
 # (ADR 0010表:「パスに依存しないワイルドカードルート1本でscopeを固定」)ため、frontend/
 # fraud-mcp-server向けのようなパスパターンごとのルート分岐は不要。
 #
-# account_service_upstreamクラスタのみ、SPIRE発行のSVIDによるmTLS+ALPN h2を追加する
-# (ADR 0015。fraud-mcp-server→account-serviceと同じ構成をこのホップへ横展開し、account-service
-# 側のplaintext受け口を完全に撤廃した)。
+# account_service_upstream・ext_authz_cc_clusterの両方に、SPIRE発行のSVIDによるmTLS+ALPN h2を
+# 追加する(account_service_upstreamはADR 0015。fraud-mcp-server→account-serviceと同じ構成を
+# このホップへ横展開し、account-service側のplaintext受け口を完全に撤廃した。ext_authz_cc_cluster
+# はADR 0016でext-authz-service-cc自体にEnvoyサイドカーを追加したことに伴い追加)。
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -129,6 +130,43 @@ data:
         - name: ext_authz_cc_cluster
           type: STRICT_DNS
           lb_policy: ROUND_ROBIN
+          typed_extension_protocol_options:
+            envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+              "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+              explicit_http_config:
+                http2_protocol_options: {}
+          transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+              common_tls_context:
+                alpn_protocols: ["h2"]
+                tls_certificate_sds_secret_configs:
+                  - name: "default"
+                    sds_config:
+                      resource_api_version: V3
+                      api_config_source:
+                        api_type: GRPC
+                        transport_api_version: V3
+                        grpc_services:
+                          - envoy_grpc:
+                              cluster_name: spire_agent
+                combined_validation_context:
+                  default_validation_context:
+                    match_typed_subject_alt_names:
+                      - san_type: URI
+                        matcher:
+                          exact: "spiffe://gekko.internal/ns/gekko/sa/default/ext-authz-service-cc"
+                  validation_context_sds_secret_config:
+                    name: "ROOTCA"
+                    sds_config:
+                      resource_api_version: V3
+                      api_config_source:
+                        api_type: GRPC
+                        transport_api_version: V3
+                        grpc_services:
+                          - envoy_grpc:
+                              cluster_name: spire_agent
           load_assignment:
             cluster_name: ext_authz_cc_cluster
             endpoints:

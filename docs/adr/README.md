@@ -23,3 +23,4 @@
 | [0013](0013-dpop-sender-constraining.md) | fraud-mcp-server→account-serviceの1ホップにDPoPでトークン送信者拘束を導入する | Superseded by 0015 |
 | [0014](0014-fraud-agent-token-exchange.md) | fraud-agent→fraud-mcp-serverをToken Exchangeに変更し、frontendの事前トークン取得（パターン④）を廃止する | Accepted |
 | [0015](0015-dpop-removal-and-fraud-detection-engine-mtls.md) | DPoPを撤去し、SPIRE mTLSをfraud-detection-engine→account-serviceへ横展開する | Accepted |
+| [0016](0016-ext-authz-and-keycloak-mtls.md) | SPIRE mTLSをext-authz-service(-cc)・Keycloakへ拡張する | Accepted |

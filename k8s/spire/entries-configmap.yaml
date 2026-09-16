@@ -69,4 +69,31 @@ data:
       -selector k8s:pod-label:app:fraud-detection-engine \
       -selector k8s:container-name:envoy
 
+    echo "==> ext-authz-service entry (envoy container only)"
+    create_if_missing "spiffe://${TRUST_DOMAIN}/ns/gekko/sa/default/ext-authz-service" \
+      -parentID "$NODE_ALIAS_ID" \
+      -spiffeID "spiffe://${TRUST_DOMAIN}/ns/gekko/sa/default/ext-authz-service" \
+      -selector k8s:ns:gekko \
+      -selector k8s:sa:default \
+      -selector k8s:pod-label:app:ext-authz-service \
+      -selector k8s:container-name:envoy
+
+    echo "==> ext-authz-service-cc entry (envoy container only)"
+    create_if_missing "spiffe://${TRUST_DOMAIN}/ns/gekko/sa/default/ext-authz-service-cc" \
+      -parentID "$NODE_ALIAS_ID" \
+      -spiffeID "spiffe://${TRUST_DOMAIN}/ns/gekko/sa/default/ext-authz-service-cc" \
+      -selector k8s:ns:gekko \
+      -selector k8s:sa:default \
+      -selector k8s:pod-label:app:ext-authz-service-cc \
+      -selector k8s:container-name:envoy
+
+    echo "==> keycloak entry (envoy container only)"
+    create_if_missing "spiffe://${TRUST_DOMAIN}/ns/gekko/sa/default/keycloak" \
+      -parentID "$NODE_ALIAS_ID" \
+      -spiffeID "spiffe://${TRUST_DOMAIN}/ns/gekko/sa/default/keycloak" \
+      -selector k8s:ns:gekko \
+      -selector k8s:sa:default \
+      -selector k8s:pod-label:app:keycloak \
+      -selector k8s:container-name:envoy
+
     echo "==> registration entries done"

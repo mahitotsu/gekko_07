@@ -1,0 +1,106 @@
+# Keycloak用Envoyサイドカー設定(ADR 0016)。account-serviceのingressパターン(ADR 0009/0012)と
+# 同じDownstreamTlsContextだが、jwt_authn/rbac/luaは持たない——ここでの認可は業務認可(scope等)
+# ではなく、ext-authz-service(-cc)以外からのmTLS接続を通信路レベルで拒否するだけの単純な
+# router転送。
+#
+# 8443(このリスナー)はext-authz-service/-cc専用のmTLS必須経路。既存の8080/9000
+# (keycloakコンテナ自体が直接受ける、無変更)は、ブラウザ経由のログイン・kcadm.shによる
+# 管理操作・verify-hop.shのROPCシミュレーションなど、SPIFFE身元を持ちえない呼び出し元向けに
+# 意図して平文のまま残す。account-serviceのように単一filter_chainへ統合しない(呼び出し元の
+# 性質が異なるため。k8s/keycloak/deployment.yamlのコメント参照)。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-envoy
+  namespace: gekko
+data:
+  envoy.yaml: |
+    admin:
+      address:
+        socket_address: { address: 127.0.0.1, port_value: 9901 }
+    node:
+      id: keycloak-envoy
+      cluster: keycloak
+    static_resources:
+      listeners:
+        - name: ingress-mtls
+          address:
+            socket_address: { address: 0.0.0.0, port_value: 8443 }
+          filter_chains:
+            - transport_socket:
+                name: envoy.transport_sockets.tls
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+                  require_client_certificate: true
+                  common_tls_context:
+                    alpn_protocols: ["h2"]
+                    tls_certificate_sds_secret_configs:
+                      - name: "default"
+                        sds_config:
+                          resource_api_version: V3
+                          api_config_source:
+                            api_type: GRPC
+                            transport_api_version: V3
+                            grpc_services:
+                              - envoy_grpc:
+                                  cluster_name: spire_agent
+                    combined_validation_context:
+                      default_validation_context:
+                        match_typed_subject_alt_names:
+                          - san_type: URI
+                            matcher:
+                              exact: "spiffe://gekko.internal/ns/gekko/sa/default/ext-authz-service"
+                          - san_type: URI
+                            matcher:
+                              exact: "spiffe://gekko.internal/ns/gekko/sa/default/ext-authz-service-cc"
+                      validation_context_sds_secret_config:
+                        name: "ROOTCA"
+                        sds_config:
+                          resource_api_version: V3
+                          api_config_source:
+                            api_type: GRPC
+                            transport_api_version: V3
+                            grpc_services:
+                              - envoy_grpc:
+                                  cluster_name: spire_agent
+              filters:
+                - name: envoy.filters.network.http_connection_manager
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                    stat_prefix: ingress_http
+                    route_config:
+                      name: local_route
+                      virtual_hosts:
+                        - name: keycloak
+                          domains: ["*"]
+                          routes:
+                            - match: { prefix: "/" }
+                              route: { cluster: keycloak_app_upstream }
+                    http_filters:
+                      - name: envoy.filters.http.router
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+      clusters:
+        # 同一Pod内のkeycloakコンテナ自身(8080)へ平文で転送する。mTLS終端はこのEnvoyで
+        # 完結しており、Pod内loopback越えは同一ネットワーク名前空間のため素のHTTP/1.1でよい。
+        - name: keycloak_app_upstream
+          type: STATIC
+          lb_policy: ROUND_ROBIN
+          load_assignment:
+            cluster_name: keycloak_app_upstream
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address: { address: 127.0.0.1, port_value: 8080 }
+        # SPIRE Agent Workload API(UDS)へのSDSチャネル(ADR 0012/0016)。
+        - name: spire_agent
+          connect_timeout: 0.25s
+          http2_protocol_options: {}
+          load_assignment:
+            cluster_name: spire_agent
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        pipe: { path: /run/spire/sockets/agent.sock }

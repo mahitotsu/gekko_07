@@ -3,6 +3,12 @@
 # fraud-detection-engine用のclient_credentialsは別インスタンス
 # (deployment-client-credentials.yaml)。呼び出し元を1インスタンスで動的に切り替える一般化は
 # 未着手(backlog.md「ext-authzサービスの呼び出し元汎用化」参照)。
+#
+# ADR 0016でEnvoyサイドカーを追加し、呼び出し元(fraud-mcp-server)からの着信・Keycloakへの
+# 発信の両方をSPIRE mTLS化した。account-service/fraud-mcp-serverと同じ「appはlocalhostのみ、
+# 秘密鍵に触れるのはEnvoyだけ」パターン(ADR 0009/0012)。hostAliasesで"keycloak"を127.0.0.1へ
+# 静的にマッピングし、appは実ホスト名でHTTPリクエストを組み立てるだけで、同一Pod内のEnvoy
+# (egress)が横取りする(fraud-mcp-server/deployment.yamlと同じADR 0010パターン)。
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -20,6 +26,9 @@ spec:
       labels:
         app: ext-authz-service
     spec:
+      hostAliases:
+        - ip: "127.0.0.1"
+          hostnames: ["keycloak"]
       containers:
         - name: ext-authz
           image: python:3.12-alpine
@@ -31,9 +40,12 @@ spec:
               value: "fraud-mcp-server"
             - name: CLIENT_SECRET_FILE
               value: "/secrets/client-secret"
-          ports:
-            - name: http
-              containerPort: 8080
+            - name: LISTEN_HOST
+              value: "127.0.0.1"
+            - name: LISTEN_PORT
+              value: "9000"
+            - name: KEYCLOAK_TOKEN_URL
+              value: "http://keycloak/realms/gekko/protocol/openid-connect/token"
           volumeMounts:
             - name: app-script
               mountPath: /scripts
@@ -48,6 +60,28 @@ spec:
             limits:
               cpu: "200m"
               memory: "128Mi"
+        - name: envoy
+          image: envoyproxy/envoy:v1.31.5
+          command: ["envoy", "-c", "/etc/envoy/envoy.yaml"]
+          ports:
+            - name: http
+              containerPort: 8080
+          volumeMounts:
+            - name: envoy-config
+              mountPath: /etc/envoy
+              readOnly: true
+            # SPIRE Agent Workload API(UDS)ソケット(ADR 0012/0016)。appコンテナはマウントしない
+            # (秘密鍵に触れるのはEnvoyのみ)。
+            - name: spire-agent-socket
+              mountPath: /run/spire/sockets
+              readOnly: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "300m"
+              memory: "128Mi"
       volumes:
         - name: app-script
           configMap:
@@ -55,3 +89,10 @@ spec:
         - name: client-secret
           secret:
             secretName: fraud-mcp-server-client
+        - name: envoy-config
+          configMap:
+            name: ext-authz-envoy
+        - name: spire-agent-socket
+          hostPath:
+            path: /run/spire/sockets
+            type: Directory

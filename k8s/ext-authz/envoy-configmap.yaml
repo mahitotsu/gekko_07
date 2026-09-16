@@ -1,0 +1,175 @@
+# ext-authz-service(Token Exchange専用インスタンス)のEnvoyサイドカー設定(ADR 0016)。
+# account-serviceのingressパターン(mTLS必須の単一filter_chain。ADR 0009/0015)と
+# fraud-mcp-serverのegressパターン(hostAliasesで宛先名を横取りし、ext_authz無しでrouter転送。
+# ADR 0010)を1つのEnvoyに同居させる。
+#
+# ingress: fraud-mcp-serverのEnvoy(egress)からのToken Exchangeチェック呼び出しを受け、
+# mTLS+ALPN h2を必須にした上でapp(127.0.0.1:9000)へ転送する。呼び出し元はfraud-mcp-server
+# のEnvoyだけなので(全てSPIRE化済み)、account-serviceが一度経由したTLS/plaintext分岐
+# (ADR 0012)は不要で、最初から単一のmTLS必須filter_chainにできる(ADR 0015と同じ判断)。
+# jwt_authn/rbac/lua(合言葉)はaccount-service固有の業務認可層の話であり、ext-authz-service
+# 自体はそれを持たない(ADR 0002:業務認可はKeycloakとの直接のやり取りで完結する)。
+#
+# egress: app自身がKeycloakのトークンエンドポイントを叩く際、hostAliases(deployment.yaml)で
+# "keycloak"を127.0.0.1に静的マッピングしているため、appからのリクエストはこのEnvoyの
+# egressリスナーで横取りされ、mTLS+ALPN h2でKeycloak側のEnvoyサイドカー(k8s/keycloak/
+# envoy-configmap.yaml、ポート8443)へ転送される。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ext-authz-envoy
+  namespace: gekko
+data:
+  envoy.yaml: |
+    admin:
+      address:
+        socket_address: { address: 127.0.0.1, port_value: 9901 }
+    node:
+      id: ext-authz-service-envoy
+      cluster: ext-authz-service
+    static_resources:
+      listeners:
+        - name: ingress
+          address:
+            socket_address: { address: 0.0.0.0, port_value: 8080 }
+          filter_chains:
+            - transport_socket:
+                name: envoy.transport_sockets.tls
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+                  require_client_certificate: true
+                  common_tls_context:
+                    alpn_protocols: ["h2"]
+                    tls_certificate_sds_secret_configs:
+                      - name: "default"
+                        sds_config:
+                          resource_api_version: V3
+                          api_config_source:
+                            api_type: GRPC
+                            transport_api_version: V3
+                            grpc_services:
+                              - envoy_grpc:
+                                  cluster_name: spire_agent
+                    combined_validation_context:
+                      default_validation_context:
+                        match_typed_subject_alt_names:
+                          - san_type: URI
+                            matcher:
+                              exact: "spiffe://gekko.internal/ns/gekko/sa/default/fraud-mcp-server"
+                      validation_context_sds_secret_config:
+                        name: "ROOTCA"
+                        sds_config:
+                          resource_api_version: V3
+                          api_config_source:
+                            api_type: GRPC
+                            transport_api_version: V3
+                            grpc_services:
+                              - envoy_grpc:
+                                  cluster_name: spire_agent
+              filters:
+                - name: envoy.filters.network.http_connection_manager
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                    stat_prefix: ingress_http
+                    route_config:
+                      name: local_route
+                      virtual_hosts:
+                        - name: ext_authz
+                          domains: ["*"]
+                          routes:
+                            - match: { prefix: "/" }
+                              route: { cluster: app_upstream }
+                    http_filters:
+                      - name: envoy.filters.http.router
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+        - name: egress
+          address:
+            socket_address: { address: 127.0.0.1, port_value: 80 }
+          filter_chains:
+            - filters:
+                - name: envoy.filters.network.http_connection_manager
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                    stat_prefix: egress_http
+                    route_config:
+                      name: egress_route
+                      virtual_hosts:
+                        - name: keycloak
+                          domains: ["keycloak"]
+                          routes:
+                            - match: { prefix: "/" }
+                              route: { cluster: keycloak_upstream }
+                    http_filters:
+                      - name: envoy.filters.http.router
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+      clusters:
+        - name: app_upstream
+          type: STATIC
+          lb_policy: ROUND_ROBIN
+          load_assignment:
+            cluster_name: app_upstream
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address: { address: 127.0.0.1, port_value: 9000 }
+        - name: keycloak_upstream
+          type: STRICT_DNS
+          lb_policy: ROUND_ROBIN
+          typed_extension_protocol_options:
+            envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+              "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+              explicit_http_config:
+                http2_protocol_options: {}
+          transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+              common_tls_context:
+                alpn_protocols: ["h2"]
+                tls_certificate_sds_secret_configs:
+                  - name: "default"
+                    sds_config:
+                      resource_api_version: V3
+                      api_config_source:
+                        api_type: GRPC
+                        transport_api_version: V3
+                        grpc_services:
+                          - envoy_grpc:
+                              cluster_name: spire_agent
+                combined_validation_context:
+                  default_validation_context:
+                    match_typed_subject_alt_names:
+                      - san_type: URI
+                        matcher:
+                          exact: "spiffe://gekko.internal/ns/gekko/sa/default/keycloak"
+                  validation_context_sds_secret_config:
+                    name: "ROOTCA"
+                    sds_config:
+                      resource_api_version: V3
+                      api_config_source:
+                        api_type: GRPC
+                        transport_api_version: V3
+                        grpc_services:
+                          - envoy_grpc:
+                              cluster_name: spire_agent
+          load_assignment:
+            cluster_name: keycloak_upstream
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address: { address: keycloak.gekko.svc.cluster.local, port_value: 8443 }
+        # SPIRE Agent Workload API(UDS)へのSDSチャネル(ADR 0012/0016)。
+        - name: spire_agent
+          connect_timeout: 0.25s
+          http2_protocol_options: {}
+          load_assignment:
+            cluster_name: spire_agent
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        pipe: { path: /run/spire/sockets/agent.sock }

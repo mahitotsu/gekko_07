@@ -167,4 +167,55 @@ kubectl -n "$NAMESPACE" run verify-hop-mtls-bypass-check --rm -i --restart=Never
   --max-time 5 "https://${ACCOUNT_POD_IP}:8080/accounts/123/transactions" || \
   echo "クライアント証明書なしのTLS接続は拒否された(期待通り。ADR 0012)"
 
+# ext-authz-service(-cc)・KeycloakへのSPIRE mTLS拡張(ADR 0016)。
+# 3a/3b/5が既にfraud-mcp-server/fraud-detection-engineのegress Envoy→ext-authz-service(-cc)の
+# ext_authzチェック呼び出し(=mTLS化された新ホップ)を経由して200/403を返しており、そのレスポンスが
+# 変わらないことは「mTLSが暗黙に効いた上でアプリ層は無風」の裏付けになる。ここでは加えて、
+# account-serviceと同じ手法でTLSハンドシェイクの実発生・直接到達不可・証明書なし接続の拒否を確認する。
+ext_authz_ssl_handshake_check() {
+  local pod="$1" label="$2"
+  echo "==> 8. ${label}のEnvoy管理ポート(:9901)でTLSハンドシェイクが実際に発生したことを確認"
+  kubectl -n "$NAMESPACE" exec "$pod" -c envoy -- bash -c '
+    exec 3<>/dev/tcp/127.0.0.1/9901
+    printf "GET /stats HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3
+    cat <&3
+  ' | grep -E 'listener\..*\.ssl\.handshake: [1-9]' \
+    && echo "mTLSハンドシェイク成功を確認(期待通り)" \
+    || echo "警告:ssl.handshakeカウンタが検出できませんでした(統計名が異なる可能性。config_dumpで要確認)" >&2
+}
+
+EXT_AUTHZ_POD=$(newest_pod ext-authz-service)
+EXT_AUTHZ_CC_POD=$(newest_pod ext-authz-service-cc)
+KEYCLOAK_POD=$(newest_pod keycloak)
+
+ext_authz_ssl_handshake_check "$EXT_AUTHZ_POD" "ext-authz-service"
+ext_authz_ssl_handshake_check "$EXT_AUTHZ_CC_POD" "ext-authz-service-cc"
+ext_authz_ssl_handshake_check "$KEYCLOAK_POD" "keycloak"
+
+echo "==> 9. ext-authz-serviceのappポート(9000)にPod外から直接到達できないことを確認(ADR 0016)"
+EXT_AUTHZ_POD_IP=$(kubectl -n "$NAMESPACE" get pod "$EXT_AUTHZ_POD" -o jsonpath='{.status.podIP}')
+kubectl -n "$NAMESPACE" run verify-hop-ext-authz-bypass-check --rm -i --restart=Never \
+  --image=curlimages/curl:8.10.1 --command -- \
+  curl -s -o /dev/null -w 'direct app port HTTP status: %{http_code}\n' \
+  --max-time 5 "http://${EXT_AUTHZ_POD_IP}:9000/" || \
+  echo "direct app port unreachable(期待通り。ADR 0009主対策①と同じ考え方)"
+
+echo "==> 10.(異常系)クライアント証明書なしのTLS接続がext-authz-serviceのmTLS必須filter_chainに拒否されることを確認"
+kubectl -n "$NAMESPACE" run verify-hop-ext-authz-mtls-bypass-check --rm -i --restart=Never \
+  --image=curlimages/curl:8.10.1 --command -- \
+  curl -s -k -o /dev/null -w 'no-client-cert TLS to mTLS listener status: %{http_code}\n' \
+  --max-time 5 "https://${EXT_AUTHZ_POD_IP}:8080/" || \
+  echo "クライアント証明書なしのTLS接続は拒否された(期待通り。ADR 0016)"
+
+echo "==> 11.(異常系)クライアント証明書なしのTLS接続がKeycloakのmTLS必須ポート(8443)に拒否されることを確認"
+kubectl -n "$NAMESPACE" run verify-hop-keycloak-mtls-bypass-check --rm -i --restart=Never \
+  --image=curlimages/curl:8.10.1 --command -- \
+  curl -s -k -o /dev/null -w 'no-client-cert TLS to keycloak mTLS listener status: %{http_code}\n' \
+  --max-time 5 "https://keycloak.${NAMESPACE}.svc.cluster.local:8443/" || \
+  echo "クライアント証明書なしのTLS接続は拒否された(期待通り。ADR 0016)"
+
+# Keycloakの8080は非メッシュ呼び出し元(ブラウザ/kcadm.sh)向けに意図して平文のまま残している
+# (ADR 0016。TODOではなく恒久設計)。ステップ1・2が引き続き成功していること自体が、この経路が
+# 回帰せず意図通り到達可能であることの裏付けになる。
+
 echo "==> 検証完了"

@@ -4,6 +4,12 @@
 # （既存realmに対してはIGNORE_EXISTING戦略のため、2回目以降の起動でrealm-configmap.yaml
 # を書き換えても自動反映されない。反映するにはAdmin Consoleで手動編集するか、
 # PostgresのkeycloakデータベースをリセットしてPodを再作成する。詳細はdocs/insights.md）。
+#
+# ADR 0016でEnvoyサイドカーを追加し、ext-authz-service(-cc)からの接続専用にmTLS必須のポート
+# (https-mtls:8443)を新設した。keycloakコンテナ自体の8080/9000は無変更のまま残す
+# ——ブラウザ経由のログイン・kcadm.shによる管理操作・verify-hop.shのROPCシミュレーションは
+# SPIFFE身元を持ちえないため、account-service(ADR 0015)のような単一filter_chainへの統合は
+# できない。ポートを分離し、mTLSは「メッシュ内の呼び出し元専用の追加経路」として共存させる。
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -102,7 +108,36 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 30
+        - name: envoy
+          image: envoyproxy/envoy:v1.31.5
+          command: ["envoy", "-c", "/etc/envoy/envoy.yaml"]
+          ports:
+            - name: https-mtls
+              containerPort: 8443
+          volumeMounts:
+            - name: envoy-config
+              mountPath: /etc/envoy
+              readOnly: true
+            # SPIRE Agent Workload API(UDS)ソケット(ADR 0012/0016)。keycloakコンテナは
+            # マウントしない(秘密鍵に触れるのはEnvoyのみ)。
+            - name: spire-agent-socket
+              mountPath: /run/spire/sockets
+              readOnly: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "300m"
+              memory: "128Mi"
       volumes:
         - name: realm-import
           configMap:
             name: keycloak-realm-gekko
+        - name: envoy-config
+          configMap:
+            name: keycloak-envoy
+        - name: spire-agent-socket
+          hostPath:
+            path: /run/spire/sockets
+            type: Directory

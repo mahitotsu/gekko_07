@@ -58,8 +58,14 @@ clean: down
 # 増えたら、k8s/postgres/には一切手を入れず、同様に各サービス自身のディレクトリに
 # db-init-job.yaml相当を追加する形で横展開する（ADR 0008）。Postgresを先にreadyにし、
 # 各サービスのDB初期化Jobを完了させてからそのサービス本体を適用する順序に意味がある。
+#
+# SPIRE（k8s/spire/）はADR 0016でKeycloakのEnvoyサイドカー（ext-authz-service(-cc)専用の
+# mTLSポート8443）の前提になったため、「1ホップ検証スタブ専用」から「base trackの前提
+# コンポーネント」へ格上げした。deploy-spireはspire-agent DaemonSetのrollout完了まで待つため、
+# Keycloakのデプロイより前に呼べば、KeycloakのEnvoyコンテナがspire-agentソケット
+# （hostPath /run/spire/sockets）を確実にマウントできる。
 
-# PostgreSQL・Keycloakをデプロイ（クラスタが起動済みであること）
+# PostgreSQL・SPIRE・Keycloakをデプロイ（クラスタが起動済みであること）
 deploy:
 	kubectl apply -f k8s/keycloak/namespace.yaml
 	@kubectl create secret generic keycloak-admin -n $(NAMESPACE) \
@@ -79,7 +85,8 @@ deploy:
 	kubectl delete job keycloak-db-init -n $(NAMESPACE) --ignore-not-found
 	kubectl apply -f k8s/keycloak/db-init-configmap.yaml -f k8s/keycloak/db-init-job.yaml
 	kubectl -n $(NAMESPACE) wait --for=condition=complete job/keycloak-db-init --timeout=60s
-	kubectl apply -f k8s/keycloak/realm-configmap.yaml -f k8s/keycloak/deployment.yaml -f k8s/keycloak/service.yaml
+	$(MAKE) deploy-spire
+	kubectl apply -f k8s/keycloak/realm-configmap.yaml -f k8s/keycloak/envoy-configmap.yaml -f k8s/keycloak/deployment.yaml -f k8s/keycloak/service.yaml
 	kubectl -n $(NAMESPACE) rollout status deployment/keycloak --timeout=180s
 	@echo "---"
 	@echo "Keycloak admin username: admin"
@@ -90,12 +97,13 @@ deploy:
 
 # アプリ層を削除する（クラスタ自体は残す。PVCも削除するためPostgresのデータも消える）
 undeploy:
-	kubectl delete -f k8s/keycloak/service.yaml -f k8s/keycloak/deployment.yaml -f k8s/keycloak/realm-configmap.yaml --ignore-not-found
+	kubectl delete -f k8s/keycloak/service.yaml -f k8s/keycloak/deployment.yaml -f k8s/keycloak/envoy-configmap.yaml -f k8s/keycloak/realm-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/keycloak/db-init-job.yaml -f k8s/keycloak/db-init-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/postgres/service.yaml -f k8s/postgres/statefulset.yaml --ignore-not-found
 	kubectl delete pvc -n $(NAMESPACE) -l app=postgres --ignore-not-found
 	kubectl delete secret keycloak-admin postgres-superuser keycloak-db -n $(NAMESPACE) --ignore-not-found
 	kubectl delete -f k8s/keycloak/namespace.yaml --ignore-not-found
+	$(MAKE) undeploy-spire
 
 # ホストのlocalhost:3000をKeycloakへport-forwardする（ADR 0004。フォアグラウンドで動き続けるプロセス）
 keycloak-forward:
@@ -142,12 +150,11 @@ deploy-verify-hop:
 	kubectl delete job keycloak-test-fixtures -n $(NAMESPACE) --ignore-not-found
 	kubectl apply -f k8s/keycloak/test-fixtures-configmap.yaml -f k8s/keycloak/test-fixtures-job.yaml
 	kubectl -n $(NAMESPACE) wait --for=condition=complete job/keycloak-test-fixtures --timeout=60s
-	kubectl apply -f k8s/ext-authz/app-configmap.yaml -f k8s/ext-authz/deployment.yaml -f k8s/ext-authz/service.yaml
-	kubectl apply -f k8s/ext-authz/deployment-client-credentials.yaml -f k8s/ext-authz/service-client-credentials.yaml
-	@# SPIREはaccount-service/fraud-mcp-serverのEnvoyサイドカーがSVIDを取得できる前提
-	@# (fraud-mcp-server→account-serviceのmTLSホップ。ADR 0012)なので、スタブapply・
-	@# rollout restartより先にregistration entriesまで完了させる
-	$(MAKE) deploy-spire
+	@# SPIRE(server/agent/registration entries)はmake deploy側で既にデプロイ済み(ADR 0016で
+	@# base trackへ格上げ)なので、ここでは呼ばない。ext-authz-service(-cc)向けのentryも
+	@# 含めて既に揃っている前提(deploy-verify-hopの前提「make deploy実行済み」に含まれる)。
+	kubectl apply -f k8s/ext-authz/app-configmap.yaml -f k8s/ext-authz/envoy-configmap.yaml -f k8s/ext-authz/deployment.yaml -f k8s/ext-authz/service.yaml
+	kubectl apply -f k8s/ext-authz/envoy-configmap-client-credentials.yaml -f k8s/ext-authz/deployment-client-credentials.yaml -f k8s/ext-authz/service-client-credentials.yaml
 	kubectl apply -f k8s/account-service/app-configmap.yaml -f k8s/account-service/envoy-configmap.yaml -f k8s/account-service/deployment.yaml -f k8s/account-service/service.yaml
 	kubectl apply -f k8s/fraud-mcp-server/app-configmap.yaml -f k8s/fraud-mcp-server/envoy-configmap.yaml -f k8s/fraud-mcp-server/deployment.yaml
 	kubectl apply -f k8s/fraud-detection-engine/envoy-configmap.yaml -f k8s/fraud-detection-engine/deployment.yaml
@@ -166,25 +173,27 @@ deploy-verify-hop:
 verify-hop:
 	./scripts/verify-hop.sh
 
-# 1ホップ先行検証用のスタブ一式・テストフィクスチャを削除する
+# 1ホップ先行検証用のスタブ一式・テストフィクスチャを削除する(SPIRE自体はmake deploy側の
+# 前提コンポーネントになった(ADR 0016)ため、ここでは削除しない。Keycloak+SPIREを残したまま
+# スタブだけ入れ替えられるようにする)
 undeploy-verify-hop:
 	kubectl delete -f k8s/fraud-detection-engine/deployment.yaml -f k8s/fraud-detection-engine/envoy-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/fraud-mcp-server/deployment.yaml -f k8s/fraud-mcp-server/envoy-configmap.yaml -f k8s/fraud-mcp-server/app-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/account-service/service.yaml -f k8s/account-service/deployment.yaml -f k8s/account-service/envoy-configmap.yaml -f k8s/account-service/app-configmap.yaml --ignore-not-found
-	kubectl delete -f k8s/ext-authz/service-client-credentials.yaml -f k8s/ext-authz/deployment-client-credentials.yaml --ignore-not-found
-	kubectl delete -f k8s/ext-authz/service.yaml -f k8s/ext-authz/deployment.yaml -f k8s/ext-authz/app-configmap.yaml --ignore-not-found
+	kubectl delete -f k8s/ext-authz/service-client-credentials.yaml -f k8s/ext-authz/deployment-client-credentials.yaml -f k8s/ext-authz/envoy-configmap-client-credentials.yaml --ignore-not-found
+	kubectl delete -f k8s/ext-authz/service.yaml -f k8s/ext-authz/deployment.yaml -f k8s/ext-authz/envoy-configmap.yaml -f k8s/ext-authz/app-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/keycloak/test-fixtures-job.yaml -f k8s/keycloak/test-fixtures-configmap.yaml --ignore-not-found
 	kubectl delete secret frontend-client fraud-mcp-server-client fraud-detection-engine-client yamada-analyst -n $(NAMESPACE) --ignore-not-found
-	$(MAKE) undeploy-spire
 
 # -------------------------
-# SPIFFE/SPIRE（ADR 0012、fraud-mcp-server→account-serviceの1ホップのみのmTLS）
+# SPIFFE/SPIRE（ADR 0012/0015/0016。account-service・ext-authz-service(-cc)・keycloakへのmTLS）
 # -------------------------
 # server→agent→registration entriesの順に起動・疎通を待つ必要がある（agentはserverに疎通できて
 # 初めてk8s_psatでattestできる。entries Jobはspire-serverの管理APIをkubectl execで叩く）。
+# ADR 0016でKeycloakのEnvoyサイドカーがこのSPIRE基盤に依存するようになったため、deploy target
+# 自身から(Keycloak applyより前に)呼ばれるbase trackの前提コンポーネントになった。
 
-# SPIRE server/agent/registration entriesをデプロイする（namespace gekkoとは別。make deploy実行済み・
-# クラスタ起動済み前提）
+# SPIRE server/agent/registration entriesをデプロイする（namespace gekkoとは別。クラスタ起動済み前提）
 deploy-spire:
 	kubectl apply -f k8s/spire/namespace.yaml
 	kubectl apply -f k8s/spire/server-account.yaml -f k8s/spire/spire-bundle-configmap.yaml \
