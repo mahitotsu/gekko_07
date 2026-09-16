@@ -15,6 +15,11 @@
 # 5. fraud-detection-engine-stub Pod内から、Authorizationヘッダーを一切持たずにaccount-serviceの
 #    freezeエンドポイントを叩き、Envoy egress(ext_authzによるclient_credentials取得)→
 #    Envoy ingress(jwt_authn/rbac/合言葉)という経路が正しく動くことを確認する
+#
+# パターン③(Token Exchange、account-service→analyst-attribute-service。表3)：
+# account-service自身のegress Envoy(ext_authzによるToken Exchange、JWT-SVIDクライアント認証)を
+# 経由してanalyst-attribute-serviceへ委任する。account-service宛てGETリクエスト(ステップ3a)を
+# 起点に、account-serviceのapp自身がこの委任を行う
 set -euo pipefail
 
 NAMESPACE=gekko
@@ -94,7 +99,14 @@ except urllib.error.HTTPError as e:
 }
 
 echo "==> 3a. fraud-mcp-server egress Envoy経由でaccount-serviceのGET(account:read)を叩く"
-call_account_service GET /accounts/123/transactions "$DELEGATED_TOKEN"
+echo "     (account-serviceは自身のegress Envoy経由でanalyst-attribute-serviceへさらに委任する。表3)"
+ACCOUNT_SERVICE_RESPONSE=$(call_account_service GET /accounts/123/transactions "$DELEGATED_TOKEN")
+echo "$ACCOUNT_SERVICE_RESPONSE"
+if echo "$ACCOUNT_SERVICE_RESPONSE" | grep -q '"analyst_attribute_service": {"status": 200'; then
+  echo "==> 3a'. account-service→analyst-attribute-serviceへの委任(表3)を確認(期待通り)"
+else
+  echo "警告:account-service経由でanalyst-attribute-serviceへ到達できませんでした" >&2
+fi
 
 echo "==> 3b. fraud-mcp-server egress Envoy経由でaccount-serviceのPOST(account:propose)を叩く"
 call_account_service POST /accounts/123/unfreeze-proposals "$DELEGATED_TOKEN"
@@ -108,6 +120,15 @@ kubectl -n "$NAMESPACE" run verify-hop-bypass-check --rm -i --restart=Never \
   --image=curlimages/curl:8.10.1 --command -- \
   curl -s -o /dev/null -w 'direct app port HTTP status: %{http_code}\n' \
   --max-time 5 "http://${ACCOUNT_POD_IP}:9000/accounts/123/transactions" || \
+  echo "direct app port unreachable(期待通り。ADR 0009主対策①)"
+
+ANALYST_POD=$(newest_pod analyst-attribute-service)
+ANALYST_POD_IP=$(kubectl -n "$NAMESPACE" get pod "$ANALYST_POD" -o jsonpath='{.status.podIP}')
+echo "==> 4. analyst-attribute-serviceのアプリポートへPod外から直接到達できないことを確認(表3)"
+kubectl -n "$NAMESPACE" run verify-hop-analyst-bypass-check --rm -i --restart=Never \
+  --image=curlimages/curl:8.10.1 --command -- \
+  curl -s -o /dev/null -w 'direct app port HTTP status: %{http_code}\n' \
+  --max-time 5 "http://${ANALYST_POD_IP}:9000/" || \
   echo "direct app port unreachable(期待通り。ADR 0009主対策①)"
 
 FRAUD_DETECTION_ENGINE_POD=$(newest_pod fraud-detection-engine)
@@ -167,6 +188,24 @@ kubectl -n "$NAMESPACE" run verify-hop-mtls-bypass-check --rm -i --restart=Never
   --max-time 5 "https://${ACCOUNT_POD_IP}:8080/accounts/123/transactions" || \
   echo "クライアント証明書なしのTLS接続は拒否された(期待通り。ADR 0012)"
 
+# analyst-attribute-serviceへの委任(表3、ステップ3a')が既に発生しているため、account-serviceの
+# egress Envoy→analyst-attribute-serviceのmTLS接続も同じ手法で確認できる。
+echo "==> 6. analyst-attribute-serviceのEnvoy管理ポート(:9901)でTLSハンドシェイクが実際に発生したことを確認(表3)"
+kubectl -n "$NAMESPACE" exec "$ANALYST_POD" -c envoy -- bash -c '
+  exec 3<>/dev/tcp/127.0.0.1/9901
+  printf "GET /stats HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3
+  cat <&3
+' | grep -E 'listener\..*\.ssl\.handshake: [1-9]' \
+  && echo "mTLSハンドシェイク成功を確認(期待通り)" \
+  || echo "警告:ssl.handshakeカウンタが検出できませんでした(統計名が異なる可能性。config_dumpで要確認)" >&2
+
+echo "==> 7.(異常系)クライアント証明書なしのTLS接続がanalyst-attribute-serviceのmTLS必須filter_chainに拒否されることを確認(表3)"
+kubectl -n "$NAMESPACE" run verify-hop-analyst-mtls-bypass-check --rm -i --restart=Never \
+  --image=curlimages/curl:8.10.1 --command -- \
+  curl -s -k -o /dev/null -w 'no-client-cert TLS to mTLS listener status: %{http_code}\n' \
+  --max-time 5 "https://${ANALYST_POD_IP}:8080/" || \
+  echo "クライアント証明書なしのTLS接続は拒否された(期待通り。ADR 0012)"
+
 # KeycloakへのSPIRE mTLS拡張(ADR 0016)。3a/3b/5が既にfraud-mcp-server/fraud-detection-engineの
 # egress Envoy→Keycloakのext_authzチェック呼び出し(=mTLS化された新ホップ)を経由して200/403を
 # 返しており、そのレスポンスが変わらないことは「mTLSが暗黙に効いた上でアプリ層は無風」の裏付けに
@@ -207,6 +246,7 @@ EDGE_PROXY_POD=$(newest_pod edge-proxy)
 ext_authz_ssl_handshake_check "$KEYCLOAK_POD" "keycloak"
 ext_authz_ssl_handshake_check_cluster "$FRAUD_MCP_POD" "fraud-mcp-server(token-exchangeサイドカー、ADR 0019)"
 ext_authz_ssl_handshake_check_cluster "$FRAUD_DETECTION_ENGINE_POD" "fraud-detection-engine(client-credentialsサイドカー、ADR 0020)"
+ext_authz_ssl_handshake_check_cluster "$ACCOUNT_POD" "account-service(token-exchangeサイドカー、表3)"
 
 # edge-proxyはinbound(:80)が平文でoutbound(→keycloak_upstream)だけmTLSのため、
 # listener側ではなくcluster側のssl.handshake統計を見る(他3者はinboundがmTLS必須なので
@@ -227,6 +267,13 @@ kubectl -n "$NAMESPACE" run verify-hop-client-credentials-bypass-check --rm -i -
   --image=curlimages/curl:8.10.1 --command -- \
   curl -s -o /dev/null -w 'direct app port HTTP status: %{http_code}\n' \
   --max-time 5 "http://${FRAUD_DETECTION_ENGINE_POD_IP}:9002/" || \
+  echo "direct app port unreachable(期待通り。ADR 0009主対策①と同じ考え方)"
+
+echo "==> 9. account-serviceのtoken-exchangeサイドカーのポート(9002)にPod外から直接到達できないことを確認(ADR 0009主対策①と同じ考え方。表3)"
+kubectl -n "$NAMESPACE" run verify-hop-account-token-exchange-bypass-check --rm -i --restart=Never \
+  --image=curlimages/curl:8.10.1 --command -- \
+  curl -s -o /dev/null -w 'direct app port HTTP status: %{http_code}\n' \
+  --max-time 5 "http://${ACCOUNT_POD_IP}:9002/" || \
   echo "direct app port unreachable(期待通り。ADR 0009主対策①と同じ考え方)"
 
 echo "==> 10.(異常系)クライアント証明書なしのTLS接続がKeycloakのmTLS必須ポート(8443)に拒否されることを確認"
@@ -261,5 +308,12 @@ kubectl -n "$NAMESPACE" run verify-hop-netpol-keycloak-mgmt-check --rm -i --rest
   curl -s -o /dev/null -w 'direct keycloak mgmt reach: %{http_code}\n' \
   --max-time 5 "http://${KEYCLOAK_POD_IP}:9000/health/ready" || \
   echo "keycloakのhttp-mgmt(9000)への到達不可(期待通り。ADR 0018。許可されるのはkubeletのprobeのみ)"
+
+echo "==> 14.(異常系)NetworkPolicy適用後、素のPodからanalyst-attribute-serviceに直接到達できないことを確認(ADR 0018。表3:account-service以外はDENY)"
+kubectl -n "$NAMESPACE" run verify-hop-netpol-analyst-check --rm -i --restart=Never \
+  --image=curlimages/curl:8.10.1 --command -- \
+  curl -s -o /dev/null -w 'direct analyst-attribute-service reach: %{http_code}\n' \
+  --max-time 5 "http://analyst-attribute-service:8080/" || \
+  echo "analyst-attribute-serviceへの到達不可(期待通り。ADR 0018)"
 
 echo "==> 検証完了"

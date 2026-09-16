@@ -270,11 +270,31 @@ data:
           "serviceAccountsEnabled": false,
           "authorizationServicesEnabled": false,
           "fullScopeAllowed": false,
+          "clientAuthenticatorType": "federated-jwt",
           "attributes": {
-            "standard.token.exchange.enabled": "true"
+            "standard.token.exchange.enabled": "true",
+            "jwt.credential.issuer": "spire-gekko",
+            "jwt.credential.sub": "spiffe://gekko.internal/ns/gekko/sa/default/account-service"
           },
           "defaultClientScopes": [],
           "optionalClientScopes": ["analyst:read"]
+        },
+        {
+          "clientId": "analyst-attribute-service",
+          "name": "analyst-attribute-service",
+          "description": "アナリストの担当地域・権限レベルを一元管理する属性局。委任チェーンの終端で、account-serviceからのみ照会される（他のどこも呼ばない・呼ばれない。表3）",
+          "enabled": true,
+          "protocol": "openid-connect",
+          "publicClient": false,
+          "standardFlowEnabled": false,
+          "implicitFlowEnabled": false,
+          "directAccessGrantsEnabled": false,
+          "serviceAccountsEnabled": false,
+          "authorizationServicesEnabled": false,
+          "fullScopeAllowed": false,
+          "attributes": {},
+          "defaultClientScopes": [],
+          "optionalClientScopes": []
         }
       ],
       "identityProviders": [

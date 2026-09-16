@@ -3,7 +3,14 @@
 # Keycloakクライアントid=K8s Service名=audience名を常に同一の文字列にする)。
 # Deployment名は"account-service-stub"とし、本実装完成時にこのDeploymentごと差し替える。
 #
-# Pod構成はinitContainer(合言葉生成)＋app＋Envoyの3者(architecture.md §3)。
+# Pod構成はinitContainer(合言葉生成)＋app＋Envoy＋token-exchangeの4者(architecture.md §3、
+# ADR 0019/0020のパターンをtoken-exchangeサイドカーとして最初から適用)。
+#
+# hostAliasesで"analyst-attribute-service"・"keycloak"を127.0.0.1へ静的にマッピングし、表3
+# (account-service→analyst-attribute-service)向けのegressリスナー(account-service-envoy
+# ConfigMap参照)へappからのリクエストとtoken-exchangeサイドカー自身のKeycloak向けリクエストを
+# 横取りさせる(fraud-mcp-server/deployment.yamlと同じADR 0010/0019パターン)。account-service
+# はingress/egress両方を持つ初めてのサービスになる。
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -21,6 +28,9 @@ spec:
       labels:
         app: account-service
     spec:
+      hostAliases:
+        - ip: "127.0.0.1"
+          hostnames: ["analyst-attribute-service", "keycloak"]
       initContainers:
         # ADR 0009 §2③:Pod内合言葉。initContainerの完了がメインコンテナ起動前に保証されるため、
         # 「先に生成、後で両方が読む」がレースコンディションなく書ける。
@@ -87,15 +97,61 @@ spec:
             limits:
               cpu: "300m"
               memory: "128Mi"
+        # 表3(account-service→analyst-attribute-service)のToken Exchange実行主体。envoyコンテナと
+        # 同じくWorkload API UDSソケットへアクセスする(JWT-SVID取得のため)。SPIRE registration
+        # entryもenvoyコンテナと並んでこのコンテナ名をselectorに持つ(k8s/spire/entries-configmap.yaml
+        # 参照。ADR 0019/0020と同じパターン)。
+        - name: token-exchange
+          image: python:3.12-alpine
+          command: ["python3", "/scripts/app.py"]
+          env:
+            - name: CLIENT_ID
+              value: "account-service"
+            - name: FIXED_SCOPE
+              value: "analyst:read"
+            - name: JWT_SVID_AUDIENCE
+              value: "http://localhost:3000/realms/gekko"
+            - name: LISTEN_HOST
+              value: "127.0.0.1"
+            - name: LISTEN_PORT
+              value: "9002"
+            - name: KEYCLOAK_TOKEN_URL
+              value: "http://keycloak/realms/gekko/protocol/openid-connect/token"
+          volumeMounts:
+            - name: token-exchange-app-script
+              mountPath: /scripts
+              readOnly: true
+            - name: spire-agent-socket
+              mountPath: /run/spire/sockets
+              readOnly: true
+            # Kubernetes ImageVolume(1.33+ Beta)でspire-agentイメージから`spire-agent`
+            # CLIバイナリだけを読み取り専用マウントする(ADR 0019と同じ理由。distroless系
+            # イメージでシェルが無くコピーもできないため)。
+            - name: spire-agent-bin
+              mountPath: /spire-bin
+              readOnly: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
       volumes:
         - name: app-script
           configMap:
             name: account-service-stub-app
+        - name: token-exchange-app-script
+          configMap:
+            name: account-service-token-exchange-app
         - name: envoy-config
           configMap:
             name: account-service-envoy
         - name: handshake
           emptyDir: {}
+        - name: spire-agent-bin
+          image:
+            reference: ghcr.io/spiffe/spire-agent:1.15.3
         - name: spire-agent-socket
           hostPath:
             path: /run/spire/sockets

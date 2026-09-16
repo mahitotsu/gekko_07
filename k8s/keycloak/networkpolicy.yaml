@@ -1,9 +1,10 @@
 # ADR 0018。https-mtls(8443)は許可されたSPIFFE IDを持つ呼び出し元
 # (fraud-mcp-server(ADR 0019で旧ext-authz-serviceから変更)・
 # fraud-detection-engine(ADR 0020で旧ext-authz-service-ccから変更)・account-service・
-# edge-proxy。ADR 0017 Consequences参照)からのみ、http-mgmt(9000)は
-# kubeletのprobeが到達するノードIP(このk3d環境ではdocker network 172.19.0.0/16)からのみ
-# 許可する。egressにSPIRE Serverのbundle endpoint(ADR 0019、spire namespace)向けを追加。
+# analyst-attribute-service(表3、JWKS取得)・edge-proxy。ADR 0017 Consequences参照)からのみ、
+# http-mgmt(9000)はkubeletのprobeが到達するノードIP(このk3d環境ではdocker network
+# 172.19.0.0/16)からのみ許可する。egressにSPIRE Serverのbundle endpoint(ADR 0019、
+# spire namespace)向けを追加。
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -27,6 +28,9 @@ spec:
         - podSelector:
             matchLabels:
               app: account-service
+        - podSelector:
+            matchLabels:
+              app: analyst-attribute-service
         - podSelector:
             matchLabels:
               app: edge-proxy

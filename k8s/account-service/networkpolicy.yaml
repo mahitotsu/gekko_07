@@ -1,5 +1,6 @@
 # ADR 0018。呼び出し元(fraud-mcp-server・fraud-detection-engine)からのingressと、
-# KeycloakのJWKS取得(mTLS)へのegressのみを許可する。
+# KeycloakのJWKS取得(mTLS)・analyst-attribute-serviceへのToken Exchange委任(表3。
+# ADR 0019/0020のパターンを最初から適用)へのegressを許可する。
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -31,3 +32,10 @@ spec:
       ports:
         - protocol: TCP
           port: 8443
+    - to:
+        - podSelector:
+            matchLabels:
+              app: analyst-attribute-service
+      ports:
+        - protocol: TCP
+          port: 8080

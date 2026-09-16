@@ -1,23 +1,15 @@
-# account-serviceの最小スタブ(1ホップ先行検証用。本実装はJava/Spring Boot、ADR 0007)。
-# ADR 0009 §3が要求する「共通の最小限の起動時ロジック」(loopback限定bind・接続元loopback再チェック・
-# 合言葉ヘッダー検証)だけを実装し、業務ロジックは持たない。受け取ったx-auth-*ヘッダーをそのまま
-# JSONで返すだけで、検証スクリプトはこれを見てEnvoy/ext_authzが正しく動いたかを確認する。
-#
-# 表3(account-service→analyst-attribute-service)先行検証のため、受け取った元のAuthorizationヘッダー
-# (jwt_authnのforward: trueで保持されている)をそのまま自分のegressリスナー(127.0.0.1:80、
-# hostAliasesで"analyst-attribute-service"を横取り)へ転送する処理を常に行う。egressのtoken-exchange
-# サイドカー(ADR 0019/0020のパターンをこのホップに最初から適用したもの)がこのAuthorizationヘッダーを
-# subject_tokenとしてToken Exchangeし、analyst-attribute-service向けの新しいトークンへ置き換える。
-# 呼び出し元がAuthorizationヘッダーを持たない場合(fraud-detection-engineのclient_credentials、表4)は
-# 転送自体をスキップする。これはビジネスロジックではなく、egress Envoy/ext_authzが正しく
-# 動いたかを検証スクリプトから見えるようにするための単純な中継＋結果合成のみ。
+# analyst-attribute-serviceの最小スタブ(表3先行検証用。本実装はGo、ADR 0007)。
+# account-service/app-configmap.yamlと同一のパターン(ADR 0009 §3:loopback限定bind・接続元
+# loopback再チェック・合言葉ヘッダー検証)。委任チェーンの終端であり、他のどこも呼ばないため、
+# account-serviceのような下流への転送は持たない。受け取ったx-auth-*ヘッダーをそのままJSONで
+# 返すだけで、検証スクリプトはこれを見てEnvoy/ext_authzが正しく動いたかを確認する。
 #
 # 検証ロジックは環境によらず単一(テスト時だけ迂回するフラグは作らない。CWE-489、ADR 0009 §3)。
 # 期待値の出どころ(合言葉ファイルのパス)だけを環境変数で設定可能にする。
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: account-service-stub-app
+  name: analyst-attribute-service-stub-app
   namespace: gekko
 data:
   app.py: |
@@ -25,31 +17,11 @@ data:
     import json
     import os
     import socketserver
-    import urllib.error
-    import urllib.request
 
     BIND_HOST = os.environ.get("APP_BIND_HOST", "127.0.0.1")
     APP_PORT = int(os.environ.get("APP_PORT", "9000"))
     HANDSHAKE_HEADER = os.environ.get("HANDSHAKE_HEADER_NAME", "x-gekko-handshake")
     HANDSHAKE_FILE = os.environ.get("HANDSHAKE_TOKEN_FILE", "/handshake/token")
-    ANALYST_ATTRIBUTE_SERVICE_URL = os.environ.get(
-        "ANALYST_ATTRIBUTE_SERVICE_URL", "http://analyst-attribute-service/"
-    )
-
-
-    def call_analyst_attribute_service(authorization):
-        if not authorization:
-            return {"skipped": "no Authorization header on inbound request"}
-        req = urllib.request.Request(
-            ANALYST_ATTRIBUTE_SERVICE_URL, headers={"Authorization": authorization}
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                return {"status": resp.status, "body": json.loads(resp.read())}
-        except urllib.error.HTTPError as e:
-            return {"status": e.code, "body": e.read().decode()}
-        except Exception as e:  # noqa: BLE001 - スタブなので広く捕捉して可視化する
-            return {"error": repr(e)}
 
 
     def is_loopback(addr):
@@ -88,9 +60,6 @@ data:
                     "sub": self.headers.get("x-auth-sub"),
                     "scope": self.headers.get("x-auth-scope"),
                     "jti": self.headers.get("x-auth-jti"),
-                    "analyst_attribute_service": call_analyst_attribute_service(
-                        self.headers.get("Authorization")
-                    ),
                 }
             ).encode()
             self.send_response(200)

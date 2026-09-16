@@ -4,8 +4,7 @@
 
 ## Token Exchange / Envoyサイドカー
 
-- **ext-authzサービスの呼び出し元汎用化（複数クライアント対応）**：[k8s/ext-authz/](../k8s/ext-authz/)は、呼び出し元ごとに固定資格情報を持つ別インスタンスを並べる形で対応していたが、[ADR 0019](adr/0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md)でfraud-mcp-server向け、[ADR 0020](adr/0020-fraud-detection-engine-identity-gap-and-client-credentials-federated-jwt.md)でfraud-detection-engine向けの共有インスタンスをいずれも廃止し、呼び出し元自身のPod内サイドカーへ移した。これにより`k8s/ext-authz/`ディレクトリの共有インスタンス方式は全廃した。残るaccount-service→analyst-attribute-serviceへ横展開する際、同じ「呼び出し元のPod内サイドカー化」パターンを踏襲する
-- **ext-authz-service-analystの身元検証ギャップ**：[ADR 0019](adr/0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md)で指摘した「Keycloakが検証するmTLS身元と主張するclient_idの不一致」は、fraud-mcp-server向け(パターン①、ADR 0019)・fraud-detection-engine向け(パターン②、[ADR 0020](adr/0020-fraud-detection-engine-identity-gap-and-client-credentials-federated-jwt.md))で解消した。ADR 0020でclient_credentialsグラントでもKeycloakのSPIFFE federated-jwt対応がそのまま使えることを実機確認済み。`ext-authz-service-analyst`(account-service→analyst-attribute-service)のみ同じギャップを抱えたまま残っており、同じ是正パターンの横展開を検討する
+- **ext-authzサービスの呼び出し元汎用化（複数クライアント対応）**：[k8s/ext-authz/](../k8s/ext-authz/)は、呼び出し元ごとに固定資格情報を持つ別インスタンスを並べる形で対応していたが、[ADR 0019](adr/0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md)でfraud-mcp-server向け、[ADR 0020](adr/0020-fraud-detection-engine-identity-gap-and-client-credentials-federated-jwt.md)でfraud-detection-engine向けの共有インスタンスをいずれも廃止し、呼び出し元自身のPod内サイドカーへ移した。account-service→analyst-attribute-service（表3）は[ADR 0021](adr/0021-account-service-analyst-attribute-service-spiffe-jwt-svid.md)で共有インスタンスを経由せず最初からこのパターンで実装した。これにより`k8s/ext-authz/`ディレクトリ自体が無くなり、共有インスタンス方式は全廃した。残るホップ（frontend→account-service/fraud-agent、fraud-agent→fraud-mcp-server）へ横展開する際は同じパターンを踏襲する
 - **frontendのdirectAccessGrantsEnabled一時許可の後始末**：[k8s/keycloak/test-fixtures-job.yaml](../k8s/keycloak/test-fixtures-job.yaml)は、フロントエンド未実装でもブラウザなしでログインし1ホップ先行検証を行うため、`frontend`クライアントの`directAccessGrantsEnabled`を一時的にtrueにしている。frontend実装時に、自動テストで使い続けるか、Authorization Code + PKCEのみに戻すかを判断する
 - **合言葉ヘッダー名・env var名の確定**：1ホップ先行検証でヘッダー名`x-gekko-handshake`・env var名`HANDSHAKE_TOKEN_FILE`を採用し、Python実装のスタブ間で統一した（[k8s/account-service/app-configmap.yaml](../k8s/account-service/app-configmap.yaml)等）。Java/TypeScript/Rust/Go等、他言語での本実装時にも同じ命名を踏襲する
 - **Unixドメインソケット化の再検討**：[ADR 0009](adr/0009-envoy-ingress-responsibility-and-bypass-prevention.md)でTCP loopback+合言葉方式を採用しUnixドメインソケット化は見送ったが、「同一Pod内でアプリが侵害された場合」まで守る要求が出てきたら再検討する
@@ -26,7 +25,7 @@
 
 [ADR 0012](adr/0012-spiffe-spire-mtls-single-hop.md)でfraud-mcp-server→account-service、[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)でfraud-detection-engine→account-service、[ADR 0016](adr/0016-ext-authz-and-keycloak-mtls.md)でext-authz-service(-cc)↔呼び出し元Envoy・ext-authz-service(-cc)↔Keycloak、[ADR 0017](adr/0017-edge-proxy-full-keycloak-mtls.md)でedge-proxy導入によるKeycloakの完全mTLS化(8080撤廃、account-serviceのJWKS取得もmTLS化)に導入済み。以下は明示的にスコープ外とした。
 
-- **他ホップへの横展開**：frontend→account-service/fraud-mcp-server、account-service→analyst-attribute-service等、残りの委任関係へのmTLS適用は未着手（frontend/analyst-attribute-service自体が未実装）。frontend実装時はedge-proxy(ADR 0017)を経由させ、同じPodを使い回す想定
+- **他ホップへの横展開**：frontend→account-service/fraud-mcp-server等、残りの委任関係へのmTLS適用は未着手（frontend自体が未実装）。account-service→analyst-attribute-service（表3）は[ADR 0021](adr/0021-account-service-analyst-attribute-service-spiffe-jwt-svid.md)で導入済み。frontend実装時はedge-proxy(ADR 0017)を経由させ、同じPodを使い回す想定
 - **NetworkPolicyのspire namespaceへの横展開**：[ADR 0018](adr/0018-network-policy-default-deny.md)で`gekko` namespaceにL3/4のdefault-denyを導入したが、`spire` namespace（spire-server/spire-agent）は対象外とした。spire-agentが`hostNetwork: true`で動作しており、kube-router netpolがhostNetwork Podに対してどう振る舞うかが未検証なため。加えて`spire-entries` Job（`kubectl exec`でspire-serverへ接続する）等、`gekko` namespaceとは異なる接続パターンを持つ点も要考慮
 - **ADR 0002見直し（RFC 8705を実現するためのWASMフィルタ化）**：見送ったままだが、そもそもRFC 8705（mTLSクライアント認証、`client-x509`）はKeycloak 26.7.0がSubject DNしか見ずSPIFFE URI SANに未対応（Keycloak公式Issue #41907）と判明したため、WASM化しても目的（SPIFFE身元でのクライアント認証）は達成できないことが分かった（[ADR 0019](adr/0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md)、docs/insights.md参照）。fraud-mcp-server向けは代わりにKeycloakネイティブのSPIFFE JWT-SVID対応で目的を達成済み。本項目自体はRFC 8705路線として完全に見送りでよい
 - **ワークロードPod（account-service-stub/fraud-mcp-server-stub等）自体への`hostPID`/`hostNetwork`付与**：SPIRE agentには必要だが、ワークロードPod側はカーネルのPID名前空間の性質上不要なはずという推測のもとで見送った。属性解決が実機で失敗した場合（SDS呼び出しがタイムアウトする、spire-serverのログに"no selectors found after max poll attempts"が出る等）のみ再検討する
@@ -49,7 +48,7 @@
 
 ## Keycloak
 
-- **`standard.token.exchange.enabled`属性の機能的検証**：1ホップ先行検証（frontend→fraud-mcp-server、fraud-mcp-server→account-service）でRFC 8693トークン交換リクエストが実際に通ることを確認済み（[insights.md](insights.md)参照）。ただしaudience解決には対象audience向けの`oidc-audience-mapper`がclient scope側に必要という追加の前提が判明した（同insights.md）。account-service→analyst-attribute-serviceの経路（analyst-attribute-serviceはまだKeycloakクライアントとして未定義）は未検証のまま
+- **`standard.token.exchange.enabled`属性の機能的検証**：1ホップ先行検証（frontend→fraud-mcp-server、fraud-mcp-server→account-service、account-service→analyst-attribute-service）でRFC 8693トークン交換リクエストが実際に通ることを確認済み（[insights.md](insights.md)・[ADR 0021](adr/0021-account-service-analyst-attribute-service-spiffe-jwt-svid.md)参照）。ただしaudience解決には対象audience向けの`oidc-audience-mapper`がclient scope側に必要という追加の前提が判明した（同insights.md）
 - **標準client scope（profile/email/roles等）の要否**：`--import-realm`での直接importでは自動生成されないため現状未定義（詳細はrealm-configmap.yamlのコメント参照）。ログイントークンに`preferred_username`等が必要になった時点でclientScopesに明示定義を追加する
 
 ## インフラ

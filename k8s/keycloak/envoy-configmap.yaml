@@ -3,10 +3,12 @@
 # 認可は業務認可(scope等)ではなく、許可された呼び出し元以外からのmTLS接続を通信路レベルで
 # 拒否するだけの単純なroutrer転送。
 #
-# 8443(このリスナー)は以下4者専用のmTLS必須経路:
+# 8443(このリスナー)は以下5者専用のmTLS必須経路:
 # - fraud-mcp-server(Token Exchange。ADR 0019で旧ext-authz-serviceから変更)
 # - fraud-detection-engine(client_credentials。ADR 0020で旧ext-authz-service-ccから変更)
-# - account-service(jwt_authnのJWKS取得。ADR 0017でmTLS化)
+# - account-service(jwt_authnのJWKS取得。ADR 0017でmTLS化。表3のToken Exchangeも自身の
+#   egress Envoyがこのポートへ接続する)
+# - analyst-attribute-service(jwt_authnのJWKS取得。表3。account-serviceと同じ理由)
 # - edge-proxy(ブラウザ・kcadm.sh・verify-hop.shなどSPIFFE身元を持ちえない呼び出し元の
 #   代理。ADR 0017)
 # ADR 0017でedge-proxyを導入したことで、keycloakコンテナ自体は8080を持たなくなり
@@ -63,6 +65,9 @@ data:
                           - san_type: URI
                             matcher:
                               exact: "spiffe://gekko.internal/ns/gekko/sa/default/account-service"
+                          - san_type: URI
+                            matcher:
+                              exact: "spiffe://gekko.internal/ns/gekko/sa/default/analyst-attribute-service"
                           - san_type: URI
                             matcher:
                               exact: "spiffe://gekko.internal/ns/gekko/sa/default/edge-proxy"

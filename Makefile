@@ -176,15 +176,18 @@ deploy-verify-hop:
 	kubectl -n $(NAMESPACE) wait --for=condition=complete job/keycloak-test-fixtures --timeout=60s
 	@# SPIRE(server/agent/registration entries)はmake deploy側で既にデプロイ済み(ADR 0016で
 	@# base trackへ格上げ)なので、ここでは呼ばない。
-	@# fraud-mcp-server向け(ADR 0019)・fraud-detection-engine向け(ADR 0020)のext-authz-service
-	@# 共有インスタンスはいずれも廃止し、呼び出し元自身のPod内サイドカーへ置き換えた。
-	kubectl apply -f k8s/account-service/app-configmap.yaml -f k8s/account-service/envoy-configmap.yaml -f k8s/account-service/deployment.yaml -f k8s/account-service/service.yaml
+	@# fraud-mcp-server向け(ADR 0019)・fraud-detection-engine向け(ADR 0020)・account-service向け
+	@# (表3)のext-authz-service共有インスタンスはいずれも廃止(または最初から作らず)、呼び出し元
+	@# 自身のPod内サイドカーへ置き換えた。
+	kubectl apply -f k8s/analyst-attribute-service/app-configmap.yaml -f k8s/analyst-attribute-service/envoy-configmap.yaml -f k8s/analyst-attribute-service/deployment.yaml -f k8s/analyst-attribute-service/service.yaml
+	kubectl apply -f k8s/account-service/app-configmap.yaml -f k8s/account-service/token-exchange-app-configmap.yaml -f k8s/account-service/envoy-configmap.yaml -f k8s/account-service/deployment.yaml -f k8s/account-service/service.yaml
 	kubectl apply -f k8s/fraud-mcp-server/app-configmap.yaml -f k8s/fraud-mcp-server/token-exchange-app-configmap.yaml -f k8s/fraud-mcp-server/envoy-configmap.yaml -f k8s/fraud-mcp-server/deployment.yaml
 	kubectl apply -f k8s/fraud-detection-engine/client-credentials-app-configmap.yaml -f k8s/fraud-detection-engine/envoy-configmap.yaml -f k8s/fraud-detection-engine/deployment.yaml
 	@# EnvoyはConfigMapの静的bootstrap設定を起動時に1度だけ読み込み、変更をホットリロードしない
 	@# （Keycloak realmの--import-realmと同種の落とし穴。insights.md参照）。ConfigMap更新が
 	@# 既存Podへ確実に反映されるよう、スタブは常に再起動する（いずれも状態を持たないため無害）
-	kubectl -n $(NAMESPACE) rollout restart deployment/account-service-stub deployment/fraud-mcp-server-stub deployment/fraud-detection-engine-stub
+	kubectl -n $(NAMESPACE) rollout restart deployment/analyst-attribute-service-stub deployment/account-service-stub deployment/fraud-mcp-server-stub deployment/fraud-detection-engine-stub
+	kubectl -n $(NAMESPACE) rollout status deployment/analyst-attribute-service-stub --timeout=120s
 	kubectl -n $(NAMESPACE) rollout status deployment/account-service-stub --timeout=120s
 	kubectl -n $(NAMESPACE) rollout status deployment/fraud-mcp-server-stub --timeout=120s
 	kubectl -n $(NAMESPACE) rollout status deployment/fraud-detection-engine-stub --timeout=120s
@@ -199,7 +202,8 @@ verify-hop:
 undeploy-verify-hop:
 	kubectl delete -f k8s/fraud-detection-engine/deployment.yaml -f k8s/fraud-detection-engine/envoy-configmap.yaml -f k8s/fraud-detection-engine/client-credentials-app-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/fraud-mcp-server/deployment.yaml -f k8s/fraud-mcp-server/envoy-configmap.yaml -f k8s/fraud-mcp-server/token-exchange-app-configmap.yaml -f k8s/fraud-mcp-server/app-configmap.yaml --ignore-not-found
-	kubectl delete -f k8s/account-service/service.yaml -f k8s/account-service/deployment.yaml -f k8s/account-service/envoy-configmap.yaml -f k8s/account-service/app-configmap.yaml --ignore-not-found
+	kubectl delete -f k8s/account-service/service.yaml -f k8s/account-service/deployment.yaml -f k8s/account-service/envoy-configmap.yaml -f k8s/account-service/token-exchange-app-configmap.yaml -f k8s/account-service/app-configmap.yaml --ignore-not-found
+	kubectl delete -f k8s/analyst-attribute-service/service.yaml -f k8s/analyst-attribute-service/deployment.yaml -f k8s/analyst-attribute-service/envoy-configmap.yaml -f k8s/analyst-attribute-service/app-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/keycloak/test-fixtures-job.yaml -f k8s/keycloak/test-fixtures-configmap.yaml --ignore-not-found
 	kubectl delete secret frontend-client fraud-mcp-server-client fraud-detection-engine-client yamada-analyst -n $(NAMESPACE) --ignore-not-found
 
@@ -249,14 +253,14 @@ deploy-network-policy:
 	kubectl apply -f k8s/postgres/networkpolicy.yaml -f k8s/keycloak/networkpolicy.yaml \
 		-f k8s/edge-proxy/networkpolicy.yaml \
 		-f k8s/account-service/networkpolicy.yaml -f k8s/fraud-mcp-server/networkpolicy.yaml \
-		-f k8s/fraud-detection-engine/networkpolicy.yaml
+		-f k8s/fraud-detection-engine/networkpolicy.yaml -f k8s/analyst-attribute-service/networkpolicy.yaml
 
 # NetworkPolicy一式を削除する
 undeploy-network-policy:
 	kubectl delete -f k8s/postgres/networkpolicy.yaml -f k8s/keycloak/networkpolicy.yaml \
 		-f k8s/edge-proxy/networkpolicy.yaml \
 		-f k8s/account-service/networkpolicy.yaml -f k8s/fraud-mcp-server/networkpolicy.yaml \
-		-f k8s/fraud-detection-engine/networkpolicy.yaml --ignore-not-found
+		-f k8s/fraud-detection-engine/networkpolicy.yaml -f k8s/analyst-attribute-service/networkpolicy.yaml --ignore-not-found
 	kubectl delete -f k8s/network-policy/default-deny.yaml -f k8s/network-policy/allow-dns.yaml --ignore-not-found
 
 # クラスタのコンテナを停止する（状態は保持したまま。再開はstartで）

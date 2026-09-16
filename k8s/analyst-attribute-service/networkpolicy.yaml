@@ -1,0 +1,30 @@
+# ADR 0018。委任チェーンの終端(表3)のため、呼び出し元はaccount-serviceのみ許可する。
+# egressはKeycloakのJWKS取得(mTLS)のみ(他のどこも呼ばない)。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: analyst-attribute-service
+  namespace: gekko
+spec:
+  podSelector:
+    matchLabels:
+      app: analyst-attribute-service
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: account-service
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: keycloak
+      ports:
+        - protocol: TCP
+          port: 8443
