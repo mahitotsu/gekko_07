@@ -239,3 +239,23 @@
 **原因**：`jwt_authn`の`providers`は`from_headers`を明示しない場合、既定で`Authorization`ヘッダーの`Bearer `プレフィックスのみを見る。
 
 **対応**：account-serviceのTLS filter_chain（fraud-mcp-server専用）のjwt_authn providerに`from_headers: [{name: "Authorization", value_prefix: "DPoP "}]`を追加した。plaintext filter_chain（fraud-detection-engine用、DPoP非対象）は既定の`Bearer `のままにした（同じjwt_authn設定を全filter_chainで共有していないため、片方だけ変更できる。ADR 0012の実機検証で導入したfilter_chain分割の副産物）。
+
+## ext-authz-serviceの身元検証ギャップとKeycloakクライアント認証方式の調査（gekko_07本体は未変更、スパイクのみ）
+
+現行のext-authz-service（ADR 0002/0016）は、呼び出し元（例：fraud-mcp-server）のKeycloakクライアントのclient_secretを保持し、呼び出し元に代わってToken Exchangeを行う。この構造には身元検証上のギャップがある：Keycloakが検証するmTLS接続の身元（ext-authz-service自身のSPIFFE ID）と、Keycloakへ主張しているclient_id（呼び出し元のもの）が一致しない。Keycloakの認可判定は最終的に「client_secretを知っているか」に基づいており、「本当にそのワークロードが要求しているか」を検証できていない。この欠落を埋める方式として、RFC 8705（mTLSクライアント認証）・Delegationモデル（`act`/`actor_token`）・KeycloakネイティブのSPIFFE対応、の3方向を使い捨てDockerコンテナ（`docker run quay.io/keycloak/keycloak:26.7.0`、gekko_07クラスタ本体には一切触れず）で調査した。**以下はいずれもスパイク段階の記録であり、gekko_07本体（`k8s/`以下）はまだ変更していない。**
+
+### RFC 8705（`client-x509`）はSubject DNのみを見る。SPIFFEのURI SANは見ない
+
+**症状**：呼び出し元自身のSPIRE発行X.509-SVID（URI SANにSPIFFE IDを持つ）を、Keycloakの`clientAuthenticatorType: client-x509`でそのままクライアント証明書として使えないか検証した。
+
+**原因**：`X509ClientAuthenticator.java`（Keycloak 26.7.0）をバイトコードレベルで確認したところ、識別子の抽出は`certificate.getSubjectDN().getName()`のみで、SAN（Subject Alternative Name）は一切参照しない。`x509.subjectdn`属性（正規表現可）でのSubject DN一致だけがサポート対象。SPIFFE仕様はリーフSVIDのSubject DNを空にすることを推奨しており、SPIRE本体もそれに準拠しているため、実際のSVIDでは一致させる対象そのものが存在しない。gekko_07の`k8s/spire/server-configmap.yaml`の`ca_subject`はルートCA自身の発行者名の設定であり、ワークロードへ発行するリーフSVIDのSubject DNをテンプレート化する仕組みではない。Keycloak公式Issue #41907（2025年8月、Open）が「SPIFFE/SPIREでのクライアント認証は未対応」と明記しており、設定不足ではなくKeycloak本体の既知の未対応機能であることを確認した。
+
+**対応**：X.509-SVID/RFC 8705経由の道は棄却し、JWT-SVIDベースの方式（下記）を採用する方向とした。
+
+### KeycloakネイティブのSPIFFE JWT-SVID対応（`federated-jwt`、Preview機能）は動く。ただし`client_assertion_type`を間違えると無言で失敗する
+
+**症状**：Keycloak 26.7.0には`spiffe`・`client-auth-federated`というfeature flag、`clientAuthenticatorType: federated-jwt`（表示名"Signed JWT - Federated"）、`identity-provider`の`providerId: spiffe`（`trustDomain`・`bundleEndpoint`設定）が実在する。これらを設定し、クライアント属性`jwt.credential.issuer`（IdPエイリアス参照）・`jwt.credential.sub`（期待するSPIFFE ID文字列）を正しく設定した上で、`iss`/`sub`が一致し正しく署名されたJWTを`client_assertion`として送っても、`client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer`（汎用RFC 7523の値）を使うと**常に`invalid_client`で失敗し、エラーメッセージも一切のTRACEログも手がかりを残さない**（自前で立てたJWKSバンドルエンドポイントへのHTTPリクエストすら発生しない＝署名検証まで到達していない）。
+
+**原因**：`FederatedJWTClientAuthenticator.authenticateClient()`をバイトコードレベルで確認したところ、`client_assertion_type`の値で`findStrategy()`が担当ストラテジーを検索し、一致するストラテジーが無ければ（あるいは`lookup()`が呼び出し元クライアントを特定できなければ）**例外もfailure()も呼ばず黙ってreturnする**。汎用の`urn:ietf:params:oauth:client-assertion-type:jwt-bearer`は、SPIFFE用ではなく「`sub`＝`client_id`」を前提とする旧来のデフォルトストラテジーにマッチしてしまい、`sub`にSPIFFE IDそのものを入れている今回のJWTでは当然クライアントが見つからず、素通りしていた。`SpiffeConstants.class`を直接読んだところ、SPIFFE用ストラテジーに対応する正しい値は`urn:ietf:params:oauth:client-assertion-type:jwt-spiffe`だった。
+
+**対応**：`client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-spiffe`に修正したところ、Keycloakが実際にバンドルエンドポイントへHTTPリクエストを送り、署名検証に成功し、client_secret無しで`"azp": "fraud-mcp-server"`のアクセストークンが発行されることを確認した（HTTP 200）。第三者製SPI（`christian-posta/spiffe-svid-client-authenticator`）を使わずとも、Keycloak本体のPreview機能だけでJWT-SVIDベースのクライアント認証が成立することを実証した。ただし`spiffe`はKeycloakの成熟度区分で"Preview"（`token-exchange-delegation`等の"Experimental"より一段階上だが安定版ではない）であり、関連するAdmin UI側には既知の未解決バグ（Issue #42634・#42044・#51682）がある点は留意する。gekko_07本体（実際のSPIRE JWT-SVID発行・Envoy/ext-authz-serviceの置き換え）への統合はまだ行っていない。

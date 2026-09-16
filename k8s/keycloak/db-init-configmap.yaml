@@ -7,6 +7,11 @@
 # 冪等：CREATE ROLEは存在チェック付きDOブロック、CREATE DATABASEはトランザクション内で
 # 実行できないためpsqlの条件分岐で存在チェックしてから作成する。Job自体もmake deployの
 # たびに削除→再作成するため（Makefile参照）、既存であれば何もしない。
+#
+# 起動直後は数回リトライする（ADR 0018でNetworkPolicy default-denyを導入して以降、
+# 実機で新規Pod起動直後の数百ms〜数秒間、kube-router netpolのiptables/ipset反映が
+# 間に合わず接続がConnection refusedになることを確認した。Podが長生きするDeployment
+# では顕在化しないが、起動直後に1回だけ接続する本Jobのようなワークロードで再現する）。
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -19,6 +24,12 @@ data:
 
     export PGPASSWORD="$POSTGRES_SUPERUSER_PASSWORD"
     PSQL="psql -v ON_ERROR_STOP=1 -h postgres -U postgres -d postgres"
+
+    for i in $(seq 1 10); do
+      $PSQL -tAc "SELECT 1" >/dev/null 2>&1 && break
+      echo "postgresへの接続待機中($i/10)..."
+      sleep 1
+    done
 
     $PSQL <<-EOSQL
       DO
