@@ -2,6 +2,8 @@
 
 実装を進める過程で見つかった、再発しそうな罠や実機検証で判明した仕様上の落とし穴を記録するナレッジベース。設計判断そのものは[architecture.md](architecture.md)、未着手の改善項目は[backlog.md](backlog.md)を参照。
 
+**注意**：以下は発見当時の実装（サービス名・ファイルパス）に基づく記述をそのまま残している。`ext-authz-service`・`ext-authz-service-cc`・`dpop-verifier`は、[ADR 0019](adr/0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md)/[0020](adr/0020-fraud-detection-engine-identity-gap-and-client-credentials-federated-jwt.md)/[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)でいずれも撤去済みで、現在は存在しない（現在の構成は[architecture.md](architecture.md)参照）。ただしEnvoy/Keycloak/SPIREそのものの仕様に関する知見は、後継のサイドカー（`token-exchange`・`client-credentials`）にもそのまま当てはまる。
+
 各項目は原則として次の構造で記述する（当てはまらない要素は省略する）。
 
 - **症状**：どんな問題・違和感が観察されたか
@@ -10,7 +12,7 @@
 
 ## Envoy / ext_authz / Token Exchange（1ホップ先行検証、fraud-mcp-server→account-service）
 
-[k8s/ext-authz/](../k8s/ext-authz/)・[k8s/account-service/](../k8s/account-service/)・[k8s/fraud-mcp-server/](../k8s/fraud-mcp-server/)・[scripts/verify-hop.sh](../scripts/verify-hop.sh)で実施。`account:read`/`account:propose`いずれもEnvoy egress(ext_authzによるToken Exchange)→Envoy ingress(jwt_authn/rbac/合言葉)→アプリ、という経路全体が200で通り、期待した`x-auth-*`ヘッダーが転送されることを確認した。Pod外からアプリポートへの直接到達が拒否されることも確認した（ADR 0009主対策①）。
+[k8s/account-service/](../k8s/account-service/)・[k8s/fraud-mcp-server/](../k8s/fraud-mcp-server/)・[scripts/verify-hop.sh](../scripts/verify-hop.sh)で実施（当時のToken Exchange実行主体は共有`ext-authz-service`。現在は`k8s/fraud-mcp-server/token-exchange-app-configmap.yaml`のPod内サイドカー、[ADR 0019](adr/0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md)）。`account:read`/`account:propose`いずれもEnvoy egress(ext_authzによるToken Exchange)→Envoy ingress(jwt_authn/rbac/合言葉)→アプリ、という経路全体が200で通り、期待した`x-auth-*`ヘッダーが転送されることを確認した。Pod外からアプリポートへの直接到達が拒否されることも確認した（ADR 0009主対策①）。
 
 ### ext_authz(HTTPモード)のcontext_extensionsはgRPCモード限定
 
@@ -18,7 +20,7 @@
 
 **原因**：`context_extensions`はgRPCモードのCheckRequest.attributes専用の仕組みで、HTTPモードには伝達経路がない。
 
-**対応**：HTTPモードのext_authzは、`Host`・`Method`・`Path`・`Content-Length`・`Authorization`を`authorization_request.allowed_headers`の設定と無関係に常に自動転送することも確認済み。ext_authzサービス自身が、この自動転送される`Host`（audience）と`Path`+`Method`（access-control-design.md 表2の対応表で解決するscope）だけからToken Exchangeリクエストを組み立てるよう設計を訂正した（[k8s/ext-authz/app-configmap.yaml](../k8s/ext-authz/app-configmap.yaml)）。ADR 0010・architecture.md §3を直接訂正済み（決定自体ではなく実装メカニズムの誤りだったため、新ADRは起こしていない）。
+**対応**：HTTPモードのext_authzは、`Host`・`Method`・`Path`・`Content-Length`・`Authorization`を`authorization_request.allowed_headers`の設定と無関係に常に自動転送することも確認済み。ext_authzサービス自身が、この自動転送される`Host`（audience）と`Path`+`Method`（access-control-design.md 表2の対応表で解決するscope）だけからToken Exchangeリクエストを組み立てるよう設計を訂正した（現在は[k8s/fraud-mcp-server/token-exchange-app-configmap.yaml](../k8s/fraud-mcp-server/token-exchange-app-configmap.yaml)）。ADR 0010・architecture.md §3を直接訂正済み（決定自体ではなく実装メカニズムの誤りだったため、新ADRは起こしていない）。
 
 ### Keycloak Standard Token Exchange V2:audience解決にはclient scope側のAudience protocol mapperが要る
 
@@ -54,7 +56,7 @@
 
 ## Envoy / ext_authz / client_credentials（パターン②先行検証、fraud-detection-engine→account-service）
 
-[k8s/ext-authz/deployment-client-credentials.yaml](../k8s/ext-authz/deployment-client-credentials.yaml)・[k8s/fraud-detection-engine/](../k8s/fraud-detection-engine/)・[scripts/verify-hop.sh](../scripts/verify-hop.sh)で実施（[ADR 0010](adr/0010-egress-listener-granularity.md)パターン②）。呼び出し元がsubject_tokenを一切持たない（Authorizationヘッダーなしでリクエストを組み立てる）点が①と異なり、ext_authz側が自分の資格情報でclient_credentialsトークンを取得・キャッシュしてから転送する構成にした。`account:freeze`のみを持つトークンでfreezeエンドポイントは200、read系エンドポイントは403（RBAC）になることを確認し、fraud-detection-engineがそれ以外の権限を持たないことも実機で裏付けた。
+[k8s/fraud-detection-engine/](../k8s/fraud-detection-engine/)・[scripts/verify-hop.sh](../scripts/verify-hop.sh)で実施（[ADR 0010](adr/0010-egress-listener-granularity.md)パターン②。当時のToken取得実行主体は共有`ext-authz-service-cc`。現在は`k8s/fraud-detection-engine/client-credentials-app-configmap.yaml`のPod内サイドカー、[ADR 0020](adr/0020-fraud-detection-engine-identity-gap-and-client-credentials-federated-jwt.md)）。呼び出し元がsubject_tokenを一切持たない（Authorizationヘッダーなしでリクエストを組み立てる）点が①と異なり、ext_authz側が自分の資格情報でclient_credentialsトークンを取得・キャッシュしてから転送する構成にした。`account:freeze`のみを持つトークンでfreezeエンドポイントは200、read系エンドポイントは403（RBAC）になることを確認し、fraud-detection-engineがそれ以外の権限を持たないことも実機で裏付けた。
 
 ### clientScope/clientのdescriptionが255文字を超えると`--import-realm`自体が失敗する（`make up`が新規クラスタで必ず失敗する状態だった）
 
@@ -222,7 +224,7 @@
 
 このPodにはNetworkPolicyの許可ルールが一つも存在しなかったため、ADR 0018のdefault-deny適用後は（削除前の時点でも）ingress/egressともに事実上封じ込められていた。マニフェストに存在しない野良Podは対応する許可ルールも持ち得ないため自動的に隔離される、という副次的な安全効果をNetworkPolicyのdefault-denyが持つことの実例として記録する。
 
-[k8s/ext-authz/app-configmap.yaml](../k8s/ext-authz/app-configmap.yaml)・`k8s/dpop-verifier/`（削除済み）・[k8s/account-service/envoy-configmap.yaml](../k8s/account-service/envoy-configmap.yaml)で実施。正常系（proof検証成功、200）・異常系（鍵不一致・iat失効、いずれも401）を`dpop-verifier`への直接呼び出しで確認し、fraud-mcp-server→account-serviceの実際の経路（DPoP拘束されたトークン、`Authorization: DPoP <token>`スキーム）でも200が通ることを確認した。
+`k8s/ext-authz/app-configmap.yaml`（削除済み）・`k8s/dpop-verifier/`（削除済み）・[k8s/account-service/envoy-configmap.yaml](../k8s/account-service/envoy-configmap.yaml)で実施。正常系（proof検証成功、200）・異常系（鍵不一致・iat失効、いずれも401）を`dpop-verifier`への直接呼び出しで確認し、fraud-mcp-server→account-serviceの実際の経路（DPoP拘束されたトークン、`Authorization: DPoP <token>`スキーム）でも200が通ることを確認した。
 
 ### Token ExchangeでのDPoP拘束は「引き継がれる」のではなく、要求者が自分の鍵で作り直す
 
@@ -248,9 +250,11 @@
 
 **対応**：account-serviceのTLS filter_chain（fraud-mcp-server専用）のjwt_authn providerに`from_headers: [{name: "Authorization", value_prefix: "DPoP "}]`を追加した。plaintext filter_chain（fraud-detection-engine用、DPoP非対象）は既定の`Bearer `のままにした（同じjwt_authn設定を全filter_chainで共有していないため、片方だけ変更できる。ADR 0012の実機検証で導入したfilter_chain分割の副産物）。
 
-## ext-authz-serviceの身元検証ギャップとKeycloakクライアント認証方式の調査（gekko_07本体は未変更、スパイクのみ）
+## ext-authz-serviceの身元検証ギャップとKeycloakクライアント認証方式の調査
 
-現行のext-authz-service（ADR 0002/0016）は、呼び出し元（例：fraud-mcp-server）のKeycloakクライアントのclient_secretを保持し、呼び出し元に代わってToken Exchangeを行う。この構造には身元検証上のギャップがある：Keycloakが検証するmTLS接続の身元（ext-authz-service自身のSPIFFE ID）と、Keycloakへ主張しているclient_id（呼び出し元のもの）が一致しない。Keycloakの認可判定は最終的に「client_secretを知っているか」に基づいており、「本当にそのワークロードが要求しているか」を検証できていない。この欠落を埋める方式として、RFC 8705（mTLSクライアント認証）・Delegationモデル（`act`/`actor_token`）・KeycloakネイティブのSPIFFE対応、の3方向を使い捨てDockerコンテナ（`docker run quay.io/keycloak/keycloak:26.7.0`、gekko_07クラスタ本体には一切触れず）で調査した。**以下はいずれもスパイク段階の記録であり、gekko_07本体（`k8s/`以下）はまだ変更していない。**
+**この調査結果は、後日[ADR 0019](adr/0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md)/[0020](adr/0020-fraud-detection-engine-identity-gap-and-client-credentials-federated-jwt.md)/[0021](adr/0021-account-service-analyst-attribute-service-spiffe-jwt-svid.md)でgekko_07本体に反映済み。**以下は反映前に使い捨て環境で行ったスパイクの記録で、調査の経緯・判明した事実（バイトコードレベルの原因特定を含む）を残す。
+
+当時のext-authz-service（ADR 0002/0016）は、呼び出し元（例：fraud-mcp-server）のKeycloakクライアントのclient_secretを保持し、呼び出し元に代わってToken Exchangeを行っていた。この構造には身元検証上のギャップがあった：Keycloakが検証するmTLS接続の身元（ext-authz-service自身のSPIFFE ID）と、Keycloakへ主張しているclient_id（呼び出し元のもの）が一致しない。Keycloakの認可判定は最終的に「client_secretを知っているか」に基づいており、「本当にそのワークロードが要求しているか」を検証できていなかった。この欠落を埋める方式として、RFC 8705（mTLSクライアント認証）・Delegationモデル（`act`/`actor_token`）・KeycloakネイティブのSPIFFE対応、の3方向を使い捨てDockerコンテナ（`docker run quay.io/keycloak/keycloak:26.7.0`、gekko_07クラスタ本体には一切触れず）で調査した。
 
 ### RFC 8705（`client-x509`）はSubject DNのみを見る。SPIFFEのURI SANは見ない
 
@@ -268,9 +272,9 @@
 
 **対応**：`client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-spiffe`に修正したところ、Keycloakが実際にバンドルエンドポイントへHTTPリクエストを送り、署名検証に成功し、client_secret無しで`"azp": "fraud-mcp-server"`のアクセストークンが発行されることを確認した（HTTP 200）。第三者製SPI（`christian-posta/spiffe-svid-client-authenticator`）を使わずとも、Keycloak本体のPreview機能だけでJWT-SVIDベースのクライアント認証が成立することを実証した。ただし`spiffe`はKeycloakの成熟度区分で"Preview"（`token-exchange-delegation`等の"Experimental"より一段階上だが安定版ではない）であり、関連するAdmin UI側には既知の未解決バグ（Issue #42634・#42044・#51682）がある点は留意する。gekko_07本体（実際のSPIRE JWT-SVID発行・Envoy/ext-authz-serviceの置き換え）への統合はまだ行っていない。
 
-### Stage 1a：gekko_07の実クラスタ上で、SPIRE発行の本物のJWT-SVID＋SPIRE Serverのbundle endpointでToken Exchangeが成立することを確認した（gekko_07本体は未コミット）
+### Stage 1a：gekko_07の実クラスタ上で、SPIRE発行の本物のJWT-SVID＋SPIRE Serverのbundle endpointでToken Exchangeが成立することを確認した
 
-前項の使い捨てDockerコンテナでの検証を、gekko_07の実k3dクラスタ（本物のSPIRE Server/Agent、本物のKeycloak）で再現した。以下は全て実機で確認済みだが、まだ`k8s/`配下のファイルには反映していない（`kubectl`で一時的に生きているクラスタへ直接適用しただけ）。
+前項の使い捨てDockerコンテナでの検証を、gekko_07の実k3dクラスタ（本物のSPIRE Server/Agent、本物のKeycloak）で再現した。以下は全て実機で確認済みの内容で、後日ADR 0019で`k8s/`配下へ反映された（このセクション自体は反映前、`kubectl`で一時的に生きているクラスタへ直接適用して検証した時点の記録）。
 
 **SPIRE Server側**：`server.conf`に以下の`federation.bundle_endpoint`ブロックを追加すると、SPIRE ServerがHTTPSでtrust bundle（JWKS形式、X.509-SVID用CAと`"use": "jwt-svid"`のJWT署名鍵の両方を含む）を公開する。
 

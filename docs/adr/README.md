@@ -23,7 +23,7 @@
 | [0013](0013-dpop-sender-constraining.md) | fraud-mcp-server→account-serviceの1ホップにDPoPでトークン送信者拘束を導入する | Superseded by 0015 |
 | [0014](0014-fraud-agent-token-exchange.md) | fraud-agent→fraud-mcp-serverをToken Exchangeに変更し、frontendの事前トークン取得（パターン④）を廃止する | Accepted |
 | [0015](0015-dpop-removal-and-fraud-detection-engine-mtls.md) | DPoPを撤去し、SPIRE mTLSをfraud-detection-engine→account-serviceへ横展開する | Accepted |
-| [0016](0016-ext-authz-and-keycloak-mtls.md) | SPIRE mTLSをext-authz-service(-cc)・Keycloakへ拡張する | Accepted |
+| [0016](0016-ext-authz-and-keycloak-mtls.md) | SPIRE mTLSをext-authz-service(-cc)・Keycloakへ拡張する | Partially superseded by 0019/0020/0021 |
 | [0017](0017-edge-proxy-full-keycloak-mtls.md) | edge-proxyを導入し、Keycloakを完全mTLS化する | Accepted |
 | [0018](0018-network-policy-default-deny.md) | gekko namespaceにNetworkPolicyでL3/4のdefault-denyを導入する | Accepted |
 | [0019](0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md) | ext-authz-serviceの身元検証ギャップを解消し、fraud-mcp-server→account-serviceをSPIFFE JWT-SVIDクライアント認証へ移行する | Accepted |

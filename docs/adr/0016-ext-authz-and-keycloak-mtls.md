@@ -1,6 +1,6 @@
 # ADR 0016: SPIRE mTLSをext-authz-service(-cc)・Keycloakへ拡張する
 
-- **Status**: Accepted
+- **Status**: Partially superseded by [0019](0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md)/[0020](0020-fraud-detection-engine-identity-gap-and-client-credentials-federated-jwt.md)/[0021](0021-account-service-analyst-attribute-service-spiffe-jwt-svid.md)（`ext-authz-service`(-cc)自体はこれらのADRで廃止された。Keycloak側のEnvoyサイドカー追加・SPIREのbase track格上げの決定は有効なまま）
 - **Date**: 2026-09-16
 
 ## Context
