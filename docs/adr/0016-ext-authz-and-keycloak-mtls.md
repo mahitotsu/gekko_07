@@ -1,6 +1,6 @@
 # ADR 0016: SPIRE mTLSをext-authz-service(-cc)・Keycloakへ拡張する
 
-- **Status**: Partially superseded by [0019](0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md)/[0020](0020-fraud-detection-engine-identity-gap-and-client-credentials-federated-jwt.md)/[0021](0021-account-service-analyst-attribute-service-spiffe-jwt-svid.md)（`ext-authz-service`(-cc)自体はこれらのADRで廃止された。Keycloak側のEnvoyサイドカー追加・SPIREのbase track格上げの決定は有効なまま）
+- **Status**: Partially superseded by [0017](0017-edge-proxy-full-keycloak-mtls.md)/[0019](0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md)/[0020](0020-fraud-detection-engine-identity-gap-and-client-credentials-federated-jwt.md)/[0021](0021-account-service-analyst-attribute-service-spiffe-jwt-svid.md)/[0022](0022-keycloak-mgmt-probe-exec.md)（`ext-authz-service`(-cc)自体は0019/0020/0021で廃止された。「Keycloakの8080/9000は今後も恒久的に平文のまま残る」という本ADRの決定は0017(8080撤廃・edge-proxy化、JWKS取得も8443/mTLS化)と0022(9000をloopback+execプローブ化)で覆っている。Keycloak側のEnvoyサイドカー追加・SPIREのbase track格上げの決定は有効なまま）
 - **Date**: 2026-09-16
 
 ## Context
@@ -41,6 +41,6 @@ KeycloakはPostgresと並ぶ基盤コンポーネントであり、スタブ実�
 ## Consequences
 
 - `ext-authz-service`(-cc)↔呼び出し元Envoy、`ext-authz-service`(-cc)↔Keycloakの両ホップがmTLS化され、[ADR 0002](0002-token-exchange-in-envoy-sidecar.md)・[ADR 0009](0009-envoy-ingress-responsibility-and-bypass-prevention.md)が掲げる「TLS終端は常にEnvoy」という設計の一貫性が回復した。backlog.mdの「ext-authz-service自体のSPIFFE化」項目は解消済みとして削除する
-- **Keycloakの8080/9000は今後も恒久的に平文のまま残る**。これはADR 0012/0015が「解消すべき既知の限界」として扱っていたのとは異なり、ブラウザ・管理操作というSPIFFE身元を持ちえない呼び出し元が存在する限り解消できない、構造的な設計上の境界である。将来browserベースの認証にmTLSを課す手段(WebAuthn的な端末証明など)が採用されない限り、この非対称性は残り続ける
+- **(0017/0022で覆った)** 「Keycloakの8080/9000は今後も恒久的に平文のまま残る」と、ブラウザ・管理操作というSPIFFE身元を持ちえない呼び出し元が存在する限り解消できない構造的境界だと当時は判断した。しかし[ADR 0017](0017-edge-proxy-full-keycloak-mtls.md)がedge-proxyを導入してこの非対称性自体を吸収し(8080はkeycloakコンテナのloopbackへ後退、外部からの平文到達点はedge-proxy側に一本化)、[ADR 0022](0022-keycloak-mgmt-probe-exec.md)が9000もexecプローブ化でloopback限定にしたことで、「解消不能な恒久的非対称性」という前提自体が外れた
 - SPIREが`make deploy`単独の実行でも起動するようになり、Keycloak+Postgresだけを触りたい場合でも`k8s/spire/`一式(StatefulSet+PVC、DaemonSet、`hostPID`/`hostNetwork`)が常時稼働するようになった。ローカル環境のリソース消費は増えるが、新しいメカニズムを追加しない(既存のSPIRE基盤を再利用する)ことを優先した
-- account-serviceのjwt_authnが参照するKeycloakのJWKSエンドポイント(`http://keycloak.gekko.svc.cluster.local:8080/realms/gekko/protocol/openid-connect/certs`)は本ADRの対象外。引き続き平文の8080を使う(account-service自身はEnvoyのSDS経由でmTLSを検証しているが、jwt_authnのJWKS取得はEnvoy内部のHTTPクラスタ呼び出しであり、この経路のmTLS化は将来の課題としてbacklog.mdに残す)
+- **(0017で解消済み)** account-serviceのjwt_authnが参照するKeycloakのJWKSエンドポイントは当初`http://keycloak.gekko.svc.cluster.local:8080/...`のまま本ADRの対象外としていたが、[ADR 0017](0017-edge-proxy-full-keycloak-mtls.md)のKeycloak完全mTLS化に伴い`https://keycloak.gekko.svc.cluster.local:8443/...`(mTLS、`keycloak_jwks`クラスタ)に切り替わっている([k8s/account-service/envoy-configmap.yaml](../../k8s/account-service/envoy-configmap.yaml)参照)。backlog.mdへの追記が漏れたまま本ADRの記述だけが古くなっていたが、実体は既に解消済み
