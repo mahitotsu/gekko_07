@@ -301,13 +301,13 @@ kubectl -n "$NAMESPACE" run verify-hop-netpol-postgres-check --rm -i --restart=N
   echo "postgres:5432への到達不可(期待通り。ADR 0018。NetworkPolicyでブロックされていれば" \
        "connect timed outに、許可されていればpostgresプロトコルエラーで即座に失敗するはず)"
 
-echo "==> 13.(異常系)NetworkPolicy適用後、素のPodからkeycloakのhttp-mgmt(9000)に直接到達できないことを確認(ADR 0018)"
+echo "==> 13.(異常系)NetworkPolicy適用後、素のPodからkeycloakのhttp-mgmt(9000)に直接到達できないことを確認(ADR 0022でexecプローブ化・KC_HTTP_MANAGEMENT_HOST=127.0.0.1化して以降、誰からもネットワーク経由で到達不能)"
 KEYCLOAK_POD_IP=$(kubectl -n "$NAMESPACE" get pod "$KEYCLOAK_POD" -o jsonpath='{.status.podIP}')
 kubectl -n "$NAMESPACE" run verify-hop-netpol-keycloak-mgmt-check --rm -i --restart=Never \
   --image=curlimages/curl:8.10.1 --command -- \
   curl -s -o /dev/null -w 'direct keycloak mgmt reach: %{http_code}\n' \
   --max-time 5 "http://${KEYCLOAK_POD_IP}:9000/health/ready" || \
-  echo "keycloakのhttp-mgmt(9000)への到達不可(期待通り。ADR 0018。許可されるのはkubeletのprobeのみ)"
+  echo "keycloakのhttp-mgmt(9000)への到達不可(期待通り。ADR 0022。kubeletもexecプローブ経由でしか到達できない)"
 
 echo "==> 14.(異常系)NetworkPolicy適用後、素のPodからanalyst-attribute-serviceに直接到達できないことを確認(ADR 0018。表3:account-service以外はDENY)"
 kubectl -n "$NAMESPACE" run verify-hop-netpol-analyst-check --rm -i --restart=Never \

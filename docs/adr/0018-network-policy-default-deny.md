@@ -1,6 +1,6 @@
 # ADR 0018: gekko namespaceにNetworkPolicyでL3/4のdefault-denyを導入する
 
-- **Status**: Accepted
+- **Status**: Partially superseded by [0022](0022-keycloak-mgmt-probe-exec.md)（Keycloakのhttp-mgmt:9000に対する`ipBlock`ベースのingress許可ルールは0022で撤廃された。Postgres等、他の許可ルールの決定は有効なまま）
 - **Date**: 2026-09-16
 
 ## Context

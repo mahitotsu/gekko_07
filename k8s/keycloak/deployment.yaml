@@ -9,9 +9,16 @@
 # (https-mtls:8443)を新設した。ADR 0017でさらにedge-proxy(非mTLS外部接続を代理する
 # リバースプロキシ)を導入し、keycloakコンテナ自体の8080はKC_HTTP_HOST=127.0.0.1で
 # Pod外から直接到達不能にした(ADR 0009と同じ考え方。account-service/ext-authz-serviceの
-# appコンテナと同様)。KC_HTTP_MANAGEMENT_HOSTは明示的に0.0.0.0のまま残す——
-# `--http-management-host`は既定で`--http-host`を継承するため、これが無いとhealth/mgmt(9000)
-# まで道連れでloopback化し、kubeletのreadiness/liveness/startupProbeが壊れることを実機で確認した。
+# appコンテナと同様)。
+#
+# ADR 0022:health/mgmt(9000)も同じくPod外から直接到達不能にした。ADR 0017時点では
+# KC_HTTP_MANAGEMENT_HOSTを0.0.0.0のまま残していた(loopback化するとkubeletの
+# readiness/liveness/startupProbeがPod IP:9000へ到達できず壊れることを実機で確認したため)が、
+# kubeletのhttpGetプローブはService/NetworkPolicyの通常モデルを迂回してPod IPへ直接接続する
+# ため、9000は「kubeletのみ許可」という条件付きの平文の穴として残っていた。probeをexec化
+# (kubeletがCRI経由でコンテナ内に`/dev/tcp`ワンライナーを実行し、コンテナ内のloopback
+# 127.0.0.1:9000へアクセスする方式)に切り替えることで、この制約自体を解消し、
+# KC_HTTP_MANAGEMENT_HOSTも127.0.0.1にできた。
 #
 # ADR 0019：`--features=spiffe,client-auth-federated`でKeycloakネイティブのSPIFFE
 # JWT-SVIDクライアント認証(Preview機能)を有効化する。KC_TRUSTSTORE_PATHSはSPIRE Serverの
@@ -59,13 +66,14 @@ spec:
               value: "true"
             - name: KC_HEALTH_ENABLED
               value: "true"
-            # ADR 0017: appをPod外から直接到達不能にする(ADR 0009と同じ考え方)。
-            # KC_HTTP_MANAGEMENT_HOSTが無いと--http-hostを継承してmgmt(9000)まで
-            # loopback化され、kubeletのプローブが壊れる(実機確認済み)。
+            # ADR 0017/0022: appをPod外から直接到達不能にする(ADR 0009と同じ考え方)。
+            # KC_HTTP_MANAGEMENT_HOSTが無いと--http-hostを継承してmgmt(9000)も同じ
+            # 127.0.0.1になる(これが望む挙動。ADR 0022でexecプローブ化したため明示不要になったが、
+            # 挙動を読み手に明確にするため引き続き明示する)。
             - name: KC_HTTP_HOST
               value: "127.0.0.1"
             - name: KC_HTTP_MANAGEMENT_HOST
-              value: "0.0.0.0"
+              value: "127.0.0.1"
             # ADR 0008: account-service等と同じ共有PostgreSQLインスタンス内の
             # 専用データベースに接続する（ロールもDB名も"keycloak"）。
             - name: KC_DB
@@ -103,24 +111,39 @@ spec:
           # 逼迫（docs/insights.md）があり、GC・CPU競合で応答が1秒を超えることがあり得る。
           # 特にlivenessProbeがこれで詰まると誤検知でコンテナが強制再起動されるため、
           # 3サービス（readiness/liveness/startup）とも余裕を持たせる。
+          #
+          # ADR 0022:httpGetではなくexecにしている。kubeletのhttpGetプローブはPod IPへ
+          # 直接ネットワーク接続するため、http-mgmt(9000)をKC_HTTP_MANAGEMENT_HOST=127.0.0.1に
+          # した時点でkubeletから到達不能になり成立しない。execプローブはkubeletがCRI経由で
+          # コンテナ内にコマンドを実行する方式なので、コンテナ内部のloopback(127.0.0.1)に
+          # 問題なく到達できる。curlが同梱されていないため(公式イメージの既知の制約。
+          # docs/insights.mdの`envoyproxy/envoy`と同じ理由)、bashの`/dev/tcp`疑似デバイスで
+          # 生のHTTPリクエストを送る(このコンテナの/bin/shはbashへのシンボリックリンク。
+          # 実機確認済み)。
           readinessProbe:
-            httpGet:
-              path: /health/ready
-              port: http-mgmt
+            exec:
+              command:
+                - sh
+                - -c
+                - '{ printf "HEAD /health/ready HTTP/1.0\r\n\r\n" >&0; grep -q "HTTP/1.0 200"; } 0<>/dev/tcp/localhost/9000'
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 3
           livenessProbe:
-            httpGet:
-              path: /health/live
-              port: http-mgmt
+            exec:
+              command:
+                - sh
+                - -c
+                - '{ printf "HEAD /health/live HTTP/1.0\r\n\r\n" >&0; grep -q "HTTP/1.0 200"; } 0<>/dev/tcp/localhost/9000'
             periodSeconds: 15
             timeoutSeconds: 5
             failureThreshold: 3
           startupProbe:
-            httpGet:
-              path: /health/started
-              port: http-mgmt
+            exec:
+              command:
+                - sh
+                - -c
+                - '{ printf "HEAD /health/started HTTP/1.0\r\n\r\n" >&0; grep -q "HTTP/1.0 200"; } 0<>/dev/tcp/localhost/9000'
             # augmentation・DBスキーマ移行が最低でも数十秒かかることが実機で分かっているため
             # （初回起動ログで47秒等）、絶対に成功し得ない最初の20秒は無駄なプローブをしない。
             initialDelaySeconds: 20

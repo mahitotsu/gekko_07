@@ -1,6 +1,6 @@
 # ADR 0017: edge-proxyを導入し、Keycloakを完全mTLS化する
 
-- **Status**: Accepted
+- **Status**: Partially superseded by [0022](0022-keycloak-mgmt-probe-exec.md)（`KC_HTTP_MANAGEMENT_HOST=0.0.0.0`のまま残すという決定は0022で`127.0.0.1`+execプローブに変更された。edge-proxy導入・8080撤廃の決定自体は有効なまま）
 - **Date**: 2026-09-16
 
 ## Context

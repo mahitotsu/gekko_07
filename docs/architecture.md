@@ -50,7 +50,7 @@
 
 トークン送信者拘束（DPoP、RFC 9449）は[ADR 0013](adr/0013-dpop-sender-constraining.md)で一度導入したが、このホップは既にmTLSで呼び出し元の身元を限定済みのため実利の重複が大きく、[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)で撤去した。実機検証で得た知見（Token Exchangeを跨いだDPoP拘束は「拘束のスロットが委任チェーンに1箇所、終端ホップのみ」という制約を持つ）はbacklog.mdに残してある。
 
-**NetworkPolicy（L3/4のdefault-deny）**（[ADR 0018](adr/0018-network-policy-default-deny.md)）：上記2層（業務認可・mTLS）とは独立な3層目として、`gekko` namespace全体にingress/egress双方向のdefault-denyを導入し、実装済みの接続経路のみを明示的に許可する。特にmTLSの適用対象外だった共有Postgresインスタンス（7節参照）とKeycloakのkubelet向けhttp-mgmt:9000は、この層で初めてL3/4の到達制限がかかった。`spire` namespace（hostNetworkで動くspire-agent等）は本ADRの対象外で、backlog.mdに残してある。
+**NetworkPolicy（L3/4のdefault-deny）**（[ADR 0018](adr/0018-network-policy-default-deny.md)）：上記2層（業務認可・mTLS）とは独立な3層目として、`gekko` namespace全体にingress/egress双方向のdefault-denyを導入し、実装済みの接続経路のみを明示的に許可する。mTLSの適用対象外だった共有Postgresインスタンス（7節参照）は、この層で初めてL3/4の到達制限がかかった。`spire` namespace（hostNetworkで動くspire-agent等）は本ADRの対象外で、backlog.mdに残してある。Keycloakのkubelet向けhttp-mgmt:9000は当初「kubeletのノードIPからのみ許可」というNetworkPolicyの許可リストで到達範囲を絞っていたが、[ADR 0022](adr/0022-keycloak-mgmt-probe-exec.md)でProbeをexec化し`KC_HTTP_MANAGEMENT_HOST=127.0.0.1`にしたことで、そもそも誰からもネットワーク経由で到達不能になり、この層での許可ルール自体が不要になった。
 
 ## 4. Keycloakのクライアント・スコープ設計
 

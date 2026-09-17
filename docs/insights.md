@@ -212,6 +212,12 @@
 
 **確認内容**：Keycloakのhttp-mgmt:9000（readiness/liveness/startupProbe）とedge-proxyの80番（`kubectl port-forward`経由の外部アクセス、ADR 0004）を、ノードIP単体ではなくk3dのdocker networkサブネット全体（`172.19.0.0/16`）からのingressとして許可した。`make deploy-network-policy`適用後、Keycloak Podに再起動・CrashLoopBackOffは発生せず（probe疎通は継続）、`make keycloak-forward`経由の`scripts/verify-hop.sh`（ROPCログイン等、port-forward前提のステップ含む）も全ステップ成功した。事前にbacklog.mdで「default-denyにすると素朴にはプローブが壊れる」と懸念していた点は、ノードIPを含むCIDR単位での許可で解消できることを確認した。
 
+**後日談（[ADR 0022](adr/0022-keycloak-mgmt-probe-exec.md)）**：この`ipBlock`許可自体、第三者レビューで「kubeletのhttpGetプローブがService/NetworkPolicyの通常モデルを迂回してPod IPへ直接到達する」という構造的な弱点として指摘され、execプローブ化(下記)によって不要になった。当時は「NetworkPolicyでノードIPからのみ絞る」ことを解決策として採用したが、より根本的には「そもそもネットワークに公開しない」選択肢があったことになる。
+
+### KeycloakのhttpGetプローブをexecプローブに置き換えても、`/dev/tcp`ワンライナーで問題なく機能した
+
+**確認内容**：`kubectl exec`でKeycloak Pod(keycloakコンテナ)に入り、`{ printf 'HEAD /health/ready HTTP/1.0\r\n\r\n' >&0; grep 'HTTP/1.0 200'; } 0<>/dev/tcp/localhost/9000`を実行したところ、`/health/ready`・`/health/live`・`/health/started`いずれも`HTTP/1.0 200 OK`が返った。`/bin/sh`は`bash`へのシンボリックリンク（`ls -l /bin/sh`で確認）で、`which`コマンドは無いがbashの`/dev/tcp`疑似デバイスは利用できる。Keycloak公式ドキュメント(observability/health)がcurl非同梱環境向けに推奨している構成そのままで動作した。これは`envoyproxy/envoy`イメージ（上記）と同じ「curl/wgetは無いがbashはある」パターンで、本プロジェクトで2件目の実例になる。
+
 ### DNS解決は`kube-system`/`kube-dns`への53番egress許可のみで全Podに行き渡った
 
 **確認内容**：`podSelector: {}`で全Pod共通の1本のNetworkPolicy（`k8s/network-policy/allow-dns.yaml`）だけを追加し、個々のサービスのNetworkPolicyには一切DNS関連のegressルールを書いていない。この状態で`postgres`・`keycloak.gekko.svc.cluster.local`等、全てのService名前解決を伴う既存フローが問題なく成功した。namespaceラベル`kubernetes.io/metadata.name: kube-system`はKubernetes標準の自動付与ラベルで、k3d(v1.35系)でも別途手動付与する必要はなかった。

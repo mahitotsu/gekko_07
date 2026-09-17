@@ -1,7 +1,8 @@
 # http(8080)はADR 0017でedge-proxy導入に伴い撤廃した(keycloakコンテナ自体が
 # KC_HTTP_HOST=127.0.0.1でPod外から直接到達不能になったため、Serviceでの公開自体が無意味)。
 # ブラウザ/kcadm.sh/verify-hop.shは edge-proxy(k8s/edge-proxy/)経由でアクセスする。
-# http-mgmtはkubeletのプローブ用としてそのまま維持。https-mtlsはEnvoyサイドカー
+# http-mgmt(9000)もADR 0022でkubeletのProbeをexec化しKC_HTTP_MANAGEMENT_HOST=127.0.0.1に
+# したため、同じ理由でServiceでの公開自体が無意味になり撤廃した。https-mtlsはEnvoyサイドカー
 # (envoy-configmap.yaml)のmTLS必須リスナーへの経路(ext-authz-service/-cc・account-service・
 # edge-proxy専用。ADR 0016/0017)。
 apiVersion: v1
@@ -13,9 +14,6 @@ spec:
   selector:
     app: keycloak
   ports:
-    - name: http-mgmt
-      port: 9000
-      targetPort: http-mgmt
     - name: https-mtls
       port: 8443
       targetPort: https-mtls
