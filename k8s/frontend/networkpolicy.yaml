@@ -1,0 +1,45 @@
+# ADR 0018/0024。呼び出し元(edge-proxy。ブラウザの生トラフィックを中継する唯一の入口)からの
+# ingressと、KeycloakのJWKS取得・ログイン(mTLS)・account-service/fraud-agentへのToken Exchange
+# 委任へのegressを許可する。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: frontend
+  namespace: gekko
+spec:
+  podSelector:
+    matchLabels:
+      app: frontend
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: edge-proxy
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: keycloak
+      ports:
+        - protocol: TCP
+          port: 8443
+    - to:
+        - podSelector:
+            matchLabels:
+              app: account-service
+      ports:
+        - protocol: TCP
+          port: 8080
+    - to:
+        - podSelector:
+            matchLabels:
+              app: fraud-agent
+      ports:
+        - protocol: TCP
+          port: 8080

@@ -1,0 +1,153 @@
+# frontendの最小スタブDeployment(edge-proxy配線・簡易ログイン検証用。ADR 0002/0009/0010/0024)。
+# Service名・ラベルは本実装と同じ"frontend"にする(ADR 0010 MUST:Keycloakクライアントid=
+# K8s Service名=audience名を常に同一の文字列にする)。Deployment名は"frontend-stub"とし、
+# 本実装(TypeScript/Nuxt.js)完成時にこのDeploymentごと差し替える。
+#
+# Pod構成はinitContainer(合言葉生成)＋app＋Envoy＋token-exchangeの4者(account-service/
+# fraud-agentと同型)。hostAliasesで"account-service"・"fraud-agent"・"keycloak"を
+# 127.0.0.1へ静的にマッピングし、egressリスナー(frontend-envoy ConfigMap参照)へappからの
+# リクエストとtoken-exchangeサイドカー自身のKeycloak向けリクエスト(ログインのROPCも含む)を
+# 横取りさせる。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend-stub
+  namespace: gekko
+  labels:
+    app: frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      hostAliases:
+        - ip: "127.0.0.1"
+          hostnames: ["account-service", "fraud-agent", "keycloak"]
+      initContainers:
+        # ADR 0009 §2③:Pod内合言葉。initContainerの完了がメインコンテナ起動前に保証されるため、
+        # 「先に生成、後で両方が読む」がレースコンディションなく書ける。
+        - name: handshake-init
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - "head -c32 /dev/urandom | od -An -tx1 | tr -d ' \\n' > /handshake/token"
+          volumeMounts:
+            - name: handshake
+              mountPath: /handshake
+      containers:
+        - name: app
+          image: python:3.12-alpine
+          command: ["python3", "/scripts/app.py"]
+          env:
+            - name: APP_BIND_HOST
+              value: "127.0.0.1" # ADR 0009 主対策①:Pod外から直接到達不能にする
+            - name: APP_PORT
+              value: "9000"
+            - name: HANDSHAKE_TOKEN_FILE
+              value: "/handshake/token"
+          volumeMounts:
+            - name: app-script
+              mountPath: /scripts
+              readOnly: true
+            - name: handshake
+              mountPath: /handshake
+              readOnly: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+        - name: envoy
+          image: envoyproxy/envoy:v1.31.5
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              export HANDSHAKE_TOKEN="$(cat /handshake/token)"
+              exec envoy -c /etc/envoy/envoy.yaml
+          ports:
+            - name: http
+              containerPort: 8080
+          volumeMounts:
+            - name: envoy-config
+              mountPath: /etc/envoy
+              readOnly: true
+            - name: handshake
+              mountPath: /handshake
+              readOnly: true
+            # SPIRE Agent Workload API(UDS)ソケット(ADR 0012)。appコンテナはマウントしない
+            # (秘密鍵に触れるのはEnvoyのみ)。
+            - name: spire-agent-socket
+              mountPath: /run/spire/sockets
+              readOnly: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "300m"
+              memory: "128Mi"
+        # ログイン(ROPC)とToken Exchangeの実行主体。envoyコンテナと同じくWorkload API UDS
+        # ソケットへアクセスする(JWT-SVID取得のため)。SPIRE registration entryもenvoyコンテナと
+        # 並んでこのコンテナ名をselectorに持つ(k8s/spire/entries-configmap.yaml参照。
+        # ADR 0019/0020/0021/0023と同じパターン)。
+        - name: token-exchange
+          image: python:3.12-alpine
+          command: ["python3", "/scripts/app.py"]
+          env:
+            - name: CLIENT_ID
+              value: "frontend"
+            - name: JWT_SVID_AUDIENCE
+              value: "http://localhost:3000/realms/gekko"
+            - name: LISTEN_HOST
+              value: "127.0.0.1"
+            - name: LISTEN_PORT
+              value: "9002"
+            - name: KEYCLOAK_TOKEN_URL
+              value: "http://keycloak/realms/gekko/protocol/openid-connect/token"
+          volumeMounts:
+            - name: token-exchange-app-script
+              mountPath: /scripts
+              readOnly: true
+            - name: spire-agent-socket
+              mountPath: /run/spire/sockets
+              readOnly: true
+            # Kubernetes ImageVolume(1.33+ Beta)でspire-agentイメージから`spire-agent`
+            # CLIバイナリだけを読み取り専用マウントする(ADR 0019と同じ理由。distroless系
+            # イメージでシェルが無くコピーもできないため)。
+            - name: spire-agent-bin
+              mountPath: /spire-bin
+              readOnly: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+      volumes:
+        - name: app-script
+          configMap:
+            name: frontend-stub-app
+        - name: token-exchange-app-script
+          configMap:
+            name: frontend-token-exchange-app
+        - name: envoy-config
+          configMap:
+            name: frontend-envoy
+        - name: handshake
+          emptyDir: {}
+        - name: spire-agent-bin
+          image:
+            reference: ghcr.io/spiffe/spire-agent:1.15.3
+        - name: spire-agent-socket
+          hostPath:
+            path: /run/spire/sockets
+            type: Directory

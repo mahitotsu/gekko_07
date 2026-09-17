@@ -1,8 +1,8 @@
 # ADR 0018。https-mtls(8443)は許可されたSPIFFE IDを持つ呼び出し元
 # (fraud-mcp-server(ADR 0019で旧ext-authz-serviceから変更)・
 # fraud-detection-engine(ADR 0020で旧ext-authz-service-ccから変更)・account-service・
-# analyst-attribute-service(表3、JWKS取得)・edge-proxy・fraud-agent(ADR 0023)。
-# ADR 0017 Consequences参照)からのみ許可する。
+# analyst-attribute-service(表3、JWKS取得)・edge-proxy・fraud-agent(ADR 0023)・
+# frontend(ADR 0024)。ADR 0017 Consequences参照)からのみ許可する。
 # http-mgmt(9000)向けのingressルールはADR 0022でexecプローブ化した際に撤廃した
 # (KC_HTTP_MANAGEMENT_HOST=127.0.0.1化に伴い、kubeletを含め誰からもネットワーク経由では
 # 到達不能になったため、ノードIPを許可する必要自体が無くなった)。egressにSPIRE Serverの
@@ -39,6 +39,9 @@ spec:
         - podSelector:
             matchLabels:
               app: fraud-agent
+        - podSelector:
+            matchLabels:
+              app: frontend
       ports:
         - protocol: TCP
           port: 8443

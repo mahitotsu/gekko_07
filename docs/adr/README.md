@@ -31,3 +31,4 @@
 | [0021](0021-account-service-analyst-attribute-service-spiffe-jwt-svid.md) | account-service→analyst-attribute-service(表3)をSPIFFE JWT-SVIDクライアント認証で実装する | Accepted |
 | [0022](0022-keycloak-mgmt-probe-exec.md) | Keycloakのkubelet向けhttp-mgmt(9000)をexecプローブ化してloopback限定にする | Accepted |
 | [0023](0023-fraud-agent-fraud-mcp-server-hop.md) | fraud-agentを新規実装し、fraud-mcp-serverのingressを活性化する | Accepted |
+| [0024](0024-frontend-edge-proxy-and-simplified-login.md) | frontendを新規実装し、edge-proxy配線・簡易ログインでaccount-service/fraud-agentへ横展開する | Accepted |

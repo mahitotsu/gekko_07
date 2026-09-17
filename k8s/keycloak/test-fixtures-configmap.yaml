@@ -1,7 +1,9 @@
 # 1ホップ先行検証(fraud-mcp-server→account-service)のためだけの最小限のテスト用フィクスチャ。
-# 本番の認可設計(architecture.md §4)は変更しない。frontendのdirectAccessGrantsEnabledのみ
-# 一時的にtrueにする(フロントエンド実装前でもブラウザなしでログインし、実際のToken Exchange
-# チェーンを検証するため)。フロントエンド実装時に見直す(backlog.md参照)。
+# 本番の認可設計(architecture.md §4)は変更しない。
+#
+# frontendの`directAccessGrantsEnabled`は、ADR 0024でrealm-configmap.yaml側に恒久化した
+# (簡易ログイン(ROPC)がfrontend本体の現在の実装そのものになったため。以前はここで一時的に
+# trueへ上書きしていた)。
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -27,17 +29,8 @@ data:
 
     "$KCADM" config credentials --server "$SERVER" --realm master --user admin --password "$KEYCLOAK_ADMIN_PASSWORD"
 
-    client_id_of() {
-      "$KCADM" get clients -r gekko -q "clientId=$1" | grep -m1 '"id"' | sed -E 's/.*"id" *: *"([^"]+)".*/\1/'
-    }
-
-    FRONTEND_ID="$(client_id_of frontend)"
-    "$KCADM" update "clients/$FRONTEND_ID" -r gekko \
-      -s directAccessGrantsEnabled=true \
-      -s "secret=$FRONTEND_CLIENT_SECRET"
-
-    # fraud-mcp-server(ADR 0019)・fraud-detection-engine(ADR 0020)はいずれも
-    # clientAuthenticatorType: federated-jwtへ移行したため、client_secretの設定は
+    # frontend(ADR 0024)・fraud-mcp-server(ADR 0019)・fraud-detection-engine(ADR 0020)は
+    # いずれもclientAuthenticatorType: federated-jwtへ移行したため、client_secretの設定は
     # 不要になった(realm-configmap.yamlのjwt.credential.*属性で完結する)。
 
     # テストアナリスト(access-control-design.md 表6)。冪等: 既にいれば作り直さない。

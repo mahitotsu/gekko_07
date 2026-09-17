@@ -1,9 +1,14 @@
-# edge-proxyのEnvoy設定(ADR 0017)。外部(port-forward)からの平文接続を受け、Keycloakへは
-# SPIRE発行のSVIDによるmTLS+ALPN h2で転送する。keycloak_upstreamクラスタは
+# edge-proxyのEnvoy設定(ADR 0017)。外部(port-forward)からの平文接続を受け、Keycloak/frontend
+# へはSPIRE発行のSVIDによるmTLS+ALPN h2で転送する。keycloak_upstreamクラスタは
 # k8s/ext-authz/envoy-configmap.yamlの同名クラスタと同一構成(呼び出し元が異なるだけ)。
 #
-# 現状はKeycloak1系統への丸ごとパススルー(domains: ["*"]、prefix "/")のみ。frontend実装時に
-# route_configへvirtual_host/routeを追加してパスベースで振り分ける想定(ADR 0004)。
+# ADR 0024:frontend実装にあわせてroute_configをパスベースで分割した。`/realms/`配下(Keycloakの
+# OIDCエンドポイント。ROPC/Token Exchange/将来のAuthorization Codeフローのいずれも配下)は
+# keycloak_upstreamへ、それ以外は新設のfrontend_upstreamへ。`/realms/`ルートを先に置く必要がある
+# (Envoyのroute matchは列挙順で最初にマッチしたものが勝つため、後段の catch-all "/" より前)。
+# 現状edge-proxy経由の呼び出しは`/realms/...`(kcadm.sh等は Keycloak Pod内へkubectl execで直接
+# 到達するため対象外)とfrontendの2系統のみで、他のKeycloakパス(`/admin/`等)はedge-proxyを
+# 経由していないため、この分割は既存動作に影響しない。
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -31,11 +36,13 @@ data:
                     route_config:
                       name: local_route
                       virtual_hosts:
-                        - name: keycloak
+                        - name: edge
                           domains: ["*"]
                           routes:
-                            - match: { prefix: "/" }
+                            - match: { prefix: "/realms/" }
                               route: { cluster: keycloak_upstream }
+                            - match: { prefix: "/" }
+                              route: { cluster: frontend_upstream }
                     http_filters:
                       - name: envoy.filters.http.router
                         typed_config:
@@ -88,6 +95,54 @@ data:
                   - endpoint:
                       address:
                         socket_address: { address: keycloak.gekko.svc.cluster.local, port_value: 8443 }
+        # ADR 0024: frontend向けクラスタ(SPIRE発行のSVIDによるmTLS+ALPN h2)。
+        - name: frontend_upstream
+          type: STRICT_DNS
+          lb_policy: ROUND_ROBIN
+          typed_extension_protocol_options:
+            envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+              "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+              explicit_http_config:
+                http2_protocol_options: {}
+          transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+              common_tls_context:
+                alpn_protocols: ["h2"]
+                tls_certificate_sds_secret_configs:
+                  - name: "default"
+                    sds_config:
+                      resource_api_version: V3
+                      api_config_source:
+                        api_type: GRPC
+                        transport_api_version: V3
+                        grpc_services:
+                          - envoy_grpc:
+                              cluster_name: spire_agent
+                combined_validation_context:
+                  default_validation_context:
+                    match_typed_subject_alt_names:
+                      - san_type: URI
+                        matcher:
+                          exact: "spiffe://gekko.internal/ns/gekko/sa/default/frontend"
+                  validation_context_sds_secret_config:
+                    name: "ROOTCA"
+                    sds_config:
+                      resource_api_version: V3
+                      api_config_source:
+                        api_type: GRPC
+                        transport_api_version: V3
+                        grpc_services:
+                          - envoy_grpc:
+                              cluster_name: spire_agent
+          load_assignment:
+            cluster_name: frontend_upstream
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address: { address: frontend.gekko.svc.cluster.local, port_value: 8080 }
         # SPIRE Agent Workload API(UDS)へのSDSチャネル(ADR 0012/0016/0017)。
         - name: spire_agent
           connect_timeout: 0.25s

@@ -1,47 +1,28 @@
-# account-service ingress側Envoy設定(ADR 0009)。jwt_authn(署名・iss・aud検証、クレームを
-# x-auth-*ヘッダーへ)→rbac(access-control-design.md 表2のscope要求)→lua(rbac通過後にのみ
-# 合言葉ヘッダーを付与。ADR 0009 §2③)→router、の順で通す。
+# frontend ingress+egress側Envoy設定(edge-proxy配線・簡易ログイン検証用。ADR 0009/0024)。
 #
-# freezeポリシーはfraud-detection-engineのclient_credentialsトークン(委任チェーン外。表4参照)
-# のみを受け付ける。jwt_authnはsubクレームの有無を区別しないため、account:freezeスコープの
-# 保有だけがゲートになる(ADR 0010パターン②の実機検証で追加)。
-#
-# SPIRE発行のSVIDによるmTLS+ALPN h2(ADR 0012)をfraud-mcp-server→account-serviceに導入した際、
-# 呼び出し元を1つに限定するとSPIRE化していないfraud-detection-engineが壊れるため、TLS/plaintext
-# の2つのfilter_chainに分けていた。ADR 0015でfraud-detection-engineもSPIRE化し、account-service
-# の呼び出し元は全てmTLS必須になったため、単一のfilter_chainに戻した(plaintext受け口の完全撤廃。
-# ADR 0012が残していた既知の限界を解消)。transport_socketはjwt_authn/rbac/luaのHTTPフィルタ
-# チェーンより手前(TLS層)で効くため、既存のフィルタ順序・スコープ検証ロジックには影響しない。
-# require_client_certificate: trueが相互(サーバー側のみでない)TLSを強制する。
-# combined_validation_contextのmatch_typed_subject_alt_namesで、mTLSレベルでも呼び出し元を
-# fraud-mcp-server・fraud-detection-engine自身のSPIFFE IDに限定する(認可層のscope検証とは
-# 独立な、通信路レベルの許可リスト)。
-#
-# DPoP(ADR 0013)による送信者拘束は一度導入したが、このホップは既にSPIRE mTLSで呼び出し元の身元を
-# 限定済みのため実利がmTLSと大きく重複する一方、Token Exchangeを跨いだ拘束はチェーンの終端ホップに
-# しか置けないという制約だけが残るという判断でADR 0013をSupersededとし、撤去した(ADR 0015参照)。
-#
-# 表3(account-service→analyst-attribute-service)向けにegressリスナーを追加した。fraud-mcp-server
-# のegressパターン(ADR 0002/0010:hostAliasesで宛先名を横取りし、ext_authz→実アップストリームへ
-# 転送)を、ADR 0019/0020のToken Exchange実行主体をPod内サイドカーへ置く構成のまま、このEnvoyに
-# 同居させた。このプロジェクトでingress/egress両方のリスナーを持つのはaccount-serviceが最初
-# (他は今のところサーバー専用かクライアント専用のどちらか)。spire_agentクラスタはingress側と共用する。
+# frontendは唯一、mTLSを持てない外部クライアント(ブラウザ)の代役を務める入口であり、他の
+# 内部サービス間ホップとはingressの形が異なる。呼び出し元は常にedge-proxy(mTLS、ブラウザの
+# 生トラフィックを中継するだけ)で、edge-proxyからのリクエスト自体にはKeycloak発行JWTが
+# 乗っていない(/loginはログイン前なので当然、それ以外もセッションはCookie相当の概念で
+# 保持する想定のため)。今回の簡易ログインでは、ログイン後の呼び出し(/accounts/... ・/chat)は
+# 呼び出し元(verify-hop.sh。将来のブラウザ相当)がログイントークンをAuthorizationヘッダーで
+# そのまま持ち回る形にしたため、jwt_authnは/login以外のパスにのみ要求する(mixed
+# requirement)。scopeによる差別化は行わない(ログイントークンはscopeをほとんど持たないため。
+# access-control-design.md参照)——実際の認可はaccount-service/fraud-agent側の受け側で行う。
+# そのためrbacフィルタは付けない。
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: account-service-envoy
+  name: frontend-envoy
   namespace: gekko
 data:
   envoy.yaml: |
     admin:
       address:
         socket_address: { address: 127.0.0.1, port_value: 9901 }
-    # SDS(SPIRE Agent Workload API)はxDSプロトコルの一種であり、DiscoveryRequestにnode識別子が
-    # 要る(実機検証で判明:未設定だと"TlsCertificateSdsApi: node 'id' and 'cluster' are required"で
-    # 起動時エラーになる。ADR 0012)。
     node:
-      id: account-service-envoy
-      cluster: account-service
+      id: frontend-envoy
+      cluster: frontend
     static_resources:
       listeners:
         - name: ingress
@@ -70,21 +51,8 @@ data:
                         match_typed_subject_alt_names:
                           - san_type: URI
                             matcher:
-                              exact: "spiffe://gekko.internal/ns/gekko/sa/default/fraud-mcp-server"
-                          - san_type: URI
-                            matcher:
-                              exact: "spiffe://gekko.internal/ns/gekko/sa/default/fraud-detection-engine"
-                          # ADR 0024: frontendの確定パス(account:unfreeze)・読み取りパス
-                          # (account:read)を許可する。
-                          - san_type: URI
-                            matcher:
-                              exact: "spiffe://gekko.internal/ns/gekko/sa/default/frontend"
+                              exact: "spiffe://gekko.internal/ns/gekko/sa/default/edge-proxy"
                       validation_context_sds_secret_config:
-                        # "ROOTCA"はSPIRE Agent SDSの既定マジック名(default_bundle_name)。
-                        # 信頼ドメイン名等の任意文字列を指定すると、SPIRE側はそれを特定の
-                        # SPIFFE ID(フェデレーション用)へのリクエストと解釈し、該当エントリが
-                        # 存在しないため"workload is not authorized for the requested identities"
-                        # で拒否される(実機検証で判明。ADR 0012)。
                         name: "ROOTCA"
                         sds_config:
                           resource_api_version: V3
@@ -102,7 +70,7 @@ data:
                     route_config:
                       name: local_route
                       virtual_hosts:
-                        - name: account_service
+                        - name: frontend
                           domains: ["*"]
                           routes:
                             - match: { prefix: "/" }
@@ -114,7 +82,7 @@ data:
                           providers:
                             keycloak:
                               issuer: "http://localhost:3000/realms/gekko"
-                              audiences: ["account-service"]
+                              audiences: ["frontend"]
                               remote_jwks:
                                 http_uri:
                                   uri: "https://keycloak.gekko.svc.cluster.local:8443/realms/gekko/protocol/openid-connect/certs"
@@ -130,68 +98,18 @@ data:
                                 - header_name: "x-auth-jti"
                                   claim_name: "jti"
                           rules:
+                            # /loginはログイン前なのでJWTを要求しない(順序が重要。prefix "/"より
+                            # 先に置く)。それ以外は全てaud=frontendのログイントークンを要求する。
+                            - match: { path: "/login" }
                             - match: { prefix: "/" }
                               requires: { provider_name: "keycloak" }
-                      - name: envoy.filters.http.rbac
-                        typed_config:
-                          "@type": type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBAC
-                          rules:
-                            action: ALLOW
-                            policies:
-                              read:
-                                permissions:
-                                  - and_rules:
-                                      rules:
-                                        - header: { name: ":method", string_match: { exact: "GET" } }
-                                        - url_path:
-                                            path: { prefix: "/accounts/" }
-                                principals:
-                                  - header: { name: "x-auth-scope", string_match: { contains: "account:read" } }
-                              propose:
-                                permissions:
-                                  - and_rules:
-                                      rules:
-                                        - header: { name: ":method", string_match: { exact: "POST" } }
-                                        - url_path:
-                                            path:
-                                              safe_regex:
-                                                google_re2: {}
-                                                regex: "^/accounts/[^/]+/unfreeze-proposals$"
-                                principals:
-                                  - header: { name: "x-auth-scope", string_match: { contains: "account:propose" } }
-                              freeze:
-                                permissions:
-                                  - and_rules:
-                                      rules:
-                                        - header: { name: ":method", string_match: { exact: "POST" } }
-                                        - url_path:
-                                            path:
-                                              safe_regex:
-                                                google_re2: {}
-                                                regex: "^/accounts/[^/]+/freeze$"
-                                principals:
-                                  - header: { name: "x-auth-scope", string_match: { contains: "account:freeze" } }
-                              # ADR 0024: frontendが最初の呼び出し元(確定パス、決定論的操作)。
-                              unfreeze:
-                                permissions:
-                                  - and_rules:
-                                      rules:
-                                        - header: { name: ":method", string_match: { exact: "POST" } }
-                                        - url_path:
-                                            path:
-                                              safe_regex:
-                                                google_re2: {}
-                                                regex: "^/accounts/[^/]+/unfreeze$"
-                                principals:
-                                  - header: { name: "x-auth-scope", string_match: { contains: "account:unfreeze" } }
                       - name: envoy.filters.http.lua
                         typed_config:
                           "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
                           default_source_code:
                             inline_string: |
-                              -- rbacの後に配置しているため、ここに到達するのはrbacを通過した
-                              -- リクエストのみ(ADR 0009 §2③:素通りしたリクエストに付与しては
-                              -- 意味がない)。
+                              -- 全パス一律で合言葉を付与する(rbacフィルタが無いため、ここでの
+                              -- 「後段」はjwt_authnの後という意味になる。ADR 0009 §2③)。
                               function envoy_on_request(request_handle)
                                 local token = os.getenv("HANDSHAKE_TOKEN")
                                 if token then
@@ -201,10 +119,10 @@ data:
                       - name: envoy.filters.http.router
                         typed_config:
                           "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
-        # 表3(account-service→analyst-attribute-service)向けegressリスナー(ADR 0019/0020と同じ
-        # パターン)。hostAliasesで"analyst-attribute-service"・"keycloak"を127.0.0.1へ横取りし、
-        # appからのリクエストとtoken-exchangeサイドカー自身のKeycloak向けリクエストの両方を
-        # このリスナーで受け止める。
+        # frontend→account-service/fraud-agent向けegressリスナー(ADR 0019/0020/0023と同じ
+        # パターン)。hostAliasesで"account-service"・"fraud-agent"・"keycloak"を127.0.0.1へ
+        # 横取りし、appからのリクエストとtoken-exchangeサイドカー自身のKeycloak向けリクエストの
+        # 両方をこのリスナーで受け止める。
         - name: egress
           address:
             socket_address: { address: 127.0.0.1, port_value: 80 }
@@ -217,15 +135,20 @@ data:
                     route_config:
                       name: egress_route
                       virtual_hosts:
-                        - name: analyst_attribute_service
-                          domains: ["analyst-attribute-service"]
+                        - name: account_service
+                          domains: ["account-service"]
                           routes:
                             - match: { prefix: "/" }
-                              route: { cluster: analyst_attribute_service_upstream }
+                              route: { cluster: account_service_upstream }
+                        - name: fraud_agent
+                          domains: ["fraud-agent"]
+                          routes:
+                            - match: { prefix: "/" }
+                              route: { cluster: fraud_agent_upstream }
                         # token-exchangeサイドカー自身がKeycloakのトークンエンドポイントを叩く際の
-                        # 宛先。http_filtersはリスナー全体に適用されるため、このルートだけext_authz
-                        # を無効化しないと、サイドカー自身のKeycloak宛て通信が自己参照的にext_authz
-                        # へ回されてしまう(ADR 0019で判明した問題と同じ)。
+                        # 宛先(ログインのROPCも含む)。http_filtersはリスナー全体に適用されるため、
+                        # このルートだけext_authzを無効化しないと、サイドカー自身のKeycloak宛て
+                        # 通信が自己参照的にext_authzへ回されてしまう(ADR 0019で判明した問題と同じ)。
                         - name: keycloak
                           domains: ["keycloak"]
                           routes:
@@ -268,9 +191,6 @@ data:
                   - endpoint:
                       address:
                         socket_address: { address: 127.0.0.1, port_value: 9000 }
-        # ADR 0017でmTLS化(edge-proxy導入に伴いKeycloakの8080が撤廃されたため)。
-        # account-serviceは既にSPIRE化済みのため、edge-proxyを経由せず直接Keycloakの
-        # mTLSポート(8443)へ接続する。
         - name: keycloak_jwks
           type: STRICT_DNS
           lb_policy: ROUND_ROBIN
@@ -318,8 +238,7 @@ data:
                   - endpoint:
                       address:
                         socket_address: { address: keycloak.gekko.svc.cluster.local, port_value: 8443 }
-        # SPIRE Agent Workload API(UDS)へのSDSチャネル(ADR 0012)。tls_certificate_sds_secret_configs/
-        # validation_context_sds_secret_configの双方から参照される。
+        # SPIRE Agent Workload API(UDS)へのSDSチャネル(ADR 0012)。
         - name: spire_agent
           connect_timeout: 0.25s
           http2_protocol_options: {}
@@ -330,9 +249,10 @@ data:
                   - endpoint:
                       address:
                         pipe: { path: /run/spire/sockets/agent.sock }
-        # 表3向けegressリスナーのアップストリーム。SPIRE発行のSVIDによるmTLS+ALPN h2を追加する
-        # (fraud-mcp-server→account-serviceと同じ構成をこのホップへ横展開)。
-        - name: analyst_attribute_service_upstream
+        # egressリスナーのアップストリーム(account-service向け)。SPIRE発行のSVIDによる
+        # mTLS+ALPN h2。account-service側のingressにもfrontendのSPIFFE IDを許可リストへ
+        # 追加している(k8s/account-service/envoy-configmap.yaml参照)。
+        - name: account_service_upstream
           type: STRICT_DNS
           lb_policy: ROUND_ROBIN
           typed_extension_protocol_options:
@@ -361,7 +281,7 @@ data:
                     match_typed_subject_alt_names:
                       - san_type: URI
                         matcher:
-                          exact: "spiffe://gekko.internal/ns/gekko/sa/default/analyst-attribute-service"
+                          exact: "spiffe://gekko.internal/ns/gekko/sa/default/account-service"
                   validation_context_sds_secret_config:
                     name: "ROOTCA"
                     sds_config:
@@ -373,12 +293,61 @@ data:
                           - envoy_grpc:
                               cluster_name: spire_agent
           load_assignment:
-            cluster_name: analyst_attribute_service_upstream
+            cluster_name: account_service_upstream
             endpoints:
               - lb_endpoints:
                   - endpoint:
                       address:
-                        socket_address: { address: analyst-attribute-service.gekko.svc.cluster.local, port_value: 8080 }
+                        socket_address: { address: account-service.gekko.svc.cluster.local, port_value: 8080 }
+        # egressリスナーのアップストリーム(fraud-agent向け、ADR 0023でSAN許可リストに
+        # frontendが先回りして登録済み)。
+        - name: fraud_agent_upstream
+          type: STRICT_DNS
+          lb_policy: ROUND_ROBIN
+          typed_extension_protocol_options:
+            envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+              "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+              explicit_http_config:
+                http2_protocol_options: {}
+          transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+              common_tls_context:
+                alpn_protocols: ["h2"]
+                tls_certificate_sds_secret_configs:
+                  - name: "default"
+                    sds_config:
+                      resource_api_version: V3
+                      api_config_source:
+                        api_type: GRPC
+                        transport_api_version: V3
+                        grpc_services:
+                          - envoy_grpc:
+                              cluster_name: spire_agent
+                combined_validation_context:
+                  default_validation_context:
+                    match_typed_subject_alt_names:
+                      - san_type: URI
+                        matcher:
+                          exact: "spiffe://gekko.internal/ns/gekko/sa/default/fraud-agent"
+                  validation_context_sds_secret_config:
+                    name: "ROOTCA"
+                    sds_config:
+                      resource_api_version: V3
+                      api_config_source:
+                        api_type: GRPC
+                        transport_api_version: V3
+                        grpc_services:
+                          - envoy_grpc:
+                              cluster_name: spire_agent
+          load_assignment:
+            cluster_name: fraud_agent_upstream
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address: { address: fraud-agent.gekko.svc.cluster.local, port_value: 8080 }
         # token-exchangeサイドカー(同一Pod、loopback)。app_upstreamと同じ信頼境界のため
         # plaintextでよい(mTLS不要。ADR 0019と同じ考え方)。
         - name: token_exchange_cluster

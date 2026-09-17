@@ -1,0 +1,14 @@
+# Envoyのリスナーポートのみを公開する。アプリ(127.0.0.1:9000)は一切公開しない
+# (ADR 0009 主対策①:KubernetesのServiceはアプリのポートではなくEnvoyのリスナーだけを指す)。
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: gekko
+spec:
+  selector:
+    app: frontend
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

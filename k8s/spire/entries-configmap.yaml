@@ -3,9 +3,10 @@
 # (k8s:container-name:envoy。アプリコンテナは秘密鍵に一切触れない)。
 # spire-server entry createは重複IDに対して非冪等なため、entry showで存在確認してから作成する。
 #
-# fraud-mcp-server・fraud-detection-engine・account-service・fraud-agentは例外的に、同一SPIFFE ID
-# に対しenvoy・token-exchangeまたはclient-credentials(ADR 0019/0020/0021/0023)の2コンテナ分の
-# entryを持つ(いずれもインフラ層のコンテナで、appコンテナ自体は秘密鍵に触れないという原則は変わらない)。
+# fraud-mcp-server・fraud-detection-engine・account-service・fraud-agent・frontendは例外的に、
+# 同一SPIFFE IDに対しenvoy・token-exchangeまたはclient-credentials(ADR 0019/0020/0021/0023/0024)の
+# 2コンテナ分のentryを持つ(いずれもインフラ層のコンテナで、appコンテナ自体は秘密鍵に触れないという
+# 原則は変わらない)。
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -147,6 +148,21 @@ data:
     echo "==> fraud-agent entry (token-exchange container only)"
     create_if_missing_by_selectors "spiffe://${TRUST_DOMAIN}/ns/gekko/sa/default/fraud-agent" \
       k8s:ns:gekko k8s:sa:default k8s:pod-label:app:fraud-agent k8s:container-name:token-exchange
+
+    echo "==> frontend entry (envoy container only)"
+    create_if_missing "spiffe://${TRUST_DOMAIN}/ns/gekko/sa/default/frontend" \
+      -parentID "$NODE_ALIAS_ID" \
+      -spiffeID "spiffe://${TRUST_DOMAIN}/ns/gekko/sa/default/frontend" \
+      -selector k8s:ns:gekko \
+      -selector k8s:sa:default \
+      -selector k8s:pod-label:app:frontend \
+      -selector k8s:container-name:envoy
+
+    # ADR 0024: ログイン(ROPC)・Token Exchange実行主体(token-exchangeサイドカー)も同じ
+    # SPIFFE IDで動く必要がある(JWT-SVID取得のため。fraud-mcp-server(ADR 0019)と同じ理由)。
+    echo "==> frontend entry (token-exchange container only)"
+    create_if_missing_by_selectors "spiffe://${TRUST_DOMAIN}/ns/gekko/sa/default/frontend" \
+      k8s:ns:gekko k8s:sa:default k8s:pod-label:app:frontend k8s:container-name:token-exchange
 
     echo "==> edge-proxy entry (envoy container only)"
     create_if_missing "spiffe://${TRUST_DOMAIN}/ns/gekko/sa/default/edge-proxy" \

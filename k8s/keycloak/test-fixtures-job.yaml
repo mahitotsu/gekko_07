@@ -25,11 +25,6 @@ spec:
                 secretKeyRef:
                   name: keycloak-admin
                   key: password
-            - name: FRONTEND_CLIENT_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: frontend-client
-                  key: client-secret
             - name: YAMADA_ANALYST_PASSWORD
               valueFrom:
                 secretKeyRef:

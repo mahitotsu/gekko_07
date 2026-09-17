@@ -76,6 +76,12 @@ data:
                           - san_type: URI
                             matcher:
                               exact: "spiffe://gekko.internal/ns/gekko/sa/default/fraud-agent"
+                          # ADR 0024: frontendのtoken-exchangeサイドカーが、簡易ログイン(ROPC)と
+                          # account-service/fraud-agent向けToken Exchangeの両方で自身でKeycloakへ
+                          # 直接mTLS接続する。
+                          - san_type: URI
+                            matcher:
+                              exact: "spiffe://gekko.internal/ns/gekko/sa/default/frontend"
                       validation_context_sds_secret_config:
                         name: "ROOTCA"
                         sds_config:

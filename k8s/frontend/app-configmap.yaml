@@ -1,0 +1,128 @@
+# frontendの最小スタブ(edge-proxy配線・簡易ログイン検証用。本実装はTypeScript/Nuxt.js、
+# ADR 0007。ADR 0024)。account-service-stub(k8s/account-service/app-configmap.yaml)と同型の
+# 最小起動時ロジック(loopback限定bind・接続元loopback再チェック・合言葉ヘッダー検証)。
+#
+# パスによって転送先を振り分ける薄いルーターとして動作する:
+#   - POST /login             : 同一Pod内のtoken-exchangeサイドカー(127.0.0.1:9002/login)へ
+#                                そのまま中継する。ROPCの実行自体・SPIRE JWT-SVIDの取り扱いは
+#                                サイドカーの責務(ADR 0002の原則:appはKeycloadと直接通信しない)
+#   - GET/POST /accounts/...  : 受け取ったAuthorizationヘッダーをそのまま自分のegressリスナー
+#                                (hostAliasesで"account-service"を横取り)へ転送する
+#   - POST /chat              : 同様に"fraud-agent"へ転送する
+# いずれもegressのtoken-exchangeサイドカーがAuthorizationヘッダーをsubject_tokenとして
+# Token Exchangeし、宛先ごとの新しいトークンへ置き換える(ADR 0019〜0021/0023と同じパターン)。
+#
+# 検証ロジックは環境によらず単一(テスト時だけ迂回するフラグは作らない。CWE-489、ADR 0009 §3)。
+# 期待値の出どころ(合言葉ファイルのパス)だけを環境変数で設定可能にする。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-stub-app
+  namespace: gekko
+data:
+  app.py: |
+    import http.server
+    import os
+    import socketserver
+    import urllib.error
+    import urllib.request
+
+    BIND_HOST = os.environ.get("APP_BIND_HOST", "127.0.0.1")
+    APP_PORT = int(os.environ.get("APP_PORT", "9000"))
+    HANDSHAKE_HEADER = os.environ.get("HANDSHAKE_HEADER_NAME", "x-gekko-handshake")
+    HANDSHAKE_FILE = os.environ.get("HANDSHAKE_TOKEN_FILE", "/handshake/token")
+    TOKEN_EXCHANGE_URL = os.environ.get("TOKEN_EXCHANGE_URL", "http://127.0.0.1:9002")
+    ACCOUNT_SERVICE_URL = os.environ.get("ACCOUNT_SERVICE_URL", "http://account-service")
+    FRAUD_AGENT_URL = os.environ.get("FRAUD_AGENT_URL", "http://fraud-agent")
+
+
+    def is_loopback(addr):
+        return addr in ("127.0.0.1", "::1")
+
+
+    def forward(url, method, authorization, body):
+        headers = {"Authorization": authorization} if authorization else {}
+        req = urllib.request.Request(url, method=method, data=body, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return resp.status, resp.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read()
+        except Exception as e:  # noqa: BLE001 - スタブなので広く捕捉して可視化する
+            return 502, repr(e).encode()
+
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def handle_one_request(self):
+            # 多層防御②(ADR 0009):bindアドレスの設定に関係なく、接続元がloopbackでなければ拒否する。
+            if not is_loopback(self.client_address[0]):
+                self.send_response(403)
+                self.end_headers()
+                self.close_connection = True
+                return
+            return super().handle_one_request()
+
+        def _respond(self, status, body):
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_request(self):
+            # 多層防御③(ADR 0009):合言葉ヘッダーを検証してから初めてリクエストを取り次ぐ。
+            # /loginも含め全パス一律に適用する(ingressのjwt_authnは/loginを免除するが、
+            # このEnvoy経由バイパス防止層はパスによらず一律であるべきため)。
+            try:
+                with open(HANDSHAKE_FILE) as f:
+                    expected = f.read().strip()
+            except OSError:
+                expected = None
+            got = self.headers.get(HANDSHAKE_HEADER)
+            if not expected or not got or got != expected:
+                self.send_response(403)
+                self.end_headers()
+                self.wfile.write(b"handshake verification failed")
+                return
+
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            body = self.rfile.read(length) if length else None
+
+            if self.path == "/login":
+                status, resp_body = forward(f"{TOKEN_EXCHANGE_URL}/login", "POST", None, body)
+                self._respond(status, resp_body)
+                return
+
+            authorization = self.headers.get("Authorization")
+            if self.path.startswith("/accounts/"):
+                status, resp_body = forward(
+                    f"{ACCOUNT_SERVICE_URL}{self.path}", self.command, authorization, body
+                )
+            elif self.path == "/chat":
+                status, resp_body = forward(
+                    f"{FRAUD_AGENT_URL}{self.path}", self.command, authorization, body
+                )
+            else:
+                self.send_response(404)
+                self.end_headers()
+                return
+
+            self._respond(status, resp_body)
+
+        do_GET = do_request
+        do_POST = do_request
+        do_PUT = do_request
+        do_DELETE = do_request
+
+        def log_message(self, fmt, *args):
+            print("%s - %s" % (self.address_string(), fmt % args), flush=True)
+
+
+    class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
+        daemon_threads = True
+
+
+    if __name__ == "__main__":
+        srv = Server((BIND_HOST, APP_PORT), Handler)
+        print(f"stub app listening on {BIND_HOST}:{APP_PORT}", flush=True)
+        srv.serve_forever()

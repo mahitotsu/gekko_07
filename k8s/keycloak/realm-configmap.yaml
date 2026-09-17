@@ -163,21 +163,24 @@ data:
         {
           "clientId": "frontend",
           "name": "frontend (BFF)",
-          "description": "アナリスト向けBFF。ログイン（Authorization Code + PKCE）と用途ごとのToken Exchangeを実行する",
+          "description": "アナリスト向けBFF。ログイン（本実装はAuthorization Code + PKCEの想定だが、現状はROPCをHTTPエンドポイント化した簡易ログインで代用。ADR 0024）と用途ごとのToken Exchangeを実行する",
           "enabled": true,
           "protocol": "openid-connect",
           "publicClient": false,
           "standardFlowEnabled": true,
           "implicitFlowEnabled": false,
-          "directAccessGrantsEnabled": false,
+          "directAccessGrantsEnabled": true,
           "serviceAccountsEnabled": false,
           "authorizationServicesEnabled": false,
           "fullScopeAllowed": false,
+          "clientAuthenticatorType": "federated-jwt",
           "redirectUris": ["http://localhost:3000/*"],
           "webOrigins": ["http://localhost:3000"],
           "attributes": {
             "standard.token.exchange.enabled": "true",
-            "pkce.code.challenge.method": "S256"
+            "pkce.code.challenge.method": "S256",
+            "jwt.credential.issuer": "spire-gekko",
+            "jwt.credential.sub": "spiffe://gekko.internal/ns/gekko/sa/default/frontend"
           },
           "defaultClientScopes": [],
           "optionalClientScopes": ["account:read", "account:unfreeze"],

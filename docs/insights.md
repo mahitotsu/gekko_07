@@ -307,4 +307,14 @@ federation {
 
 **Keycloak側**：`identity-provider`(`providerId: spiffe`、`trustDomain`は`spiffe://`スキーム付きで指定しないと"Invalid trust domain name"で弾かれる)を追加し、`fraud-mcp-server`クライアントを`clientAuthenticatorType: federated-jwt`＋`jwt.credential.issuer`(IdPエイリアス)/`jwt.credential.sub`(SPIFFE ID)に変更。
 
+## frontend/fraud-agent実装（ADR 0023/0024）
+
+### `account:read`のaudienceマッパー共有スコープは、requesting client側でaudienceを技術的に制限しない
+
+**症状**：ADR 0024でfrontendのToken Exchange呼び出しを、各サービス自身のtoken-exchangeサイドカー経由に置き換える前は、verify-hop.shがKeycloakへ直接`client_id=frontend`で`audience=fraud-mcp-server`を要求してもエラーにならず成功していた。しかしaccess-control-design.md 表1では、frontend→fraud-mcp-serverの直接exchangeは明示的にDENYとされている（frontendの正しい委任経路はfraud-agent経由のみ）。
+
+**原因**：`account:read`client scopeは、account-service・fraud-agent・fraud-mcp-serverの3つのaudienceに対する`oidc-audience-mapper`を持つ（frontend・fraud-agent・fraud-mcp-serverの3クライアントがこの1つのscopeを共有し、それぞれ自分の正しいaudienceだけを要求する設計。architecture.md §3）。しかしKeycloakのToken Exchangeは、要求元クライアントが`account:read`scopeを持ってさえいれば、`audience`パラメータでその3つのうちどれでも要求でき、要求先のaudience自体がリクエスト元クライアントを制限するような仕組みは無い。つまりtable 1のDENYは、Keycloakのクライアント設定や認可ポリシーによってサーバー側で強制されているわけではなく、**各クライアントの実装（token-exchangeサイドカーが何を要求するか）が正しいaudienceだけを要求することに依存している**。architecture.md §4が明記する「Client Policiesは使わない」設計上、この監査ギャップは現状放置されている。
+
+**対応**：今回は範囲外として是正しなかった（Client Policies導入は既存の設計判断を覆すため、行うなら独立したADRが必要）。ただし今回、verify-hop.sh自身がこの抜け道（frontendを名乗って直接fraud-mcp-server宛てexchangeする）を使っていたことに気づき、frontend→fraud-agent→fraud-mcp-serverの実チェーン（各サービス自身のtoken-exchangeサイドカーを経由）に置き換えて解消した。全クライアントの実装（サイドカーのSCOPE_RULES）は正しいaudienceしか要求しないため、現状はリスクが顕在化していない。
+
 **実際に通った検証**：`client_credentials`グラントでは`{"error":"unauthorized_client","error_description":"Client not enabled to retrieve service account"}`（=クライアント認証自体は成功、fraud-mcp-serverの`serviceAccountsEnabled: false`が理由でグラント自体が拒否されただけ）。既存のverify-hop.sh同様の2段階委任（frontendでログイン→frontendがfraud-mcp-server宛てにToken Exchange→そのDELEGATED_TOKENをsubject_tokenにfraud-mcp-server自身がaccount-service宛てにToken Exchange、ただし`client_secret`の代わりに`client_assertion_type=...jwt-spiffe`＋`client_assertion=<JWT-SVID>`を使用）を実行したところ、**HTTP 200でaccount-service向けアクセストークンが発行された**。RFC 8705が不成立と判明した際の懸念（Keycloakネイティブpreview機能が実際に機能するか）は、この実クラスタでの成功により解消したと判断できる。
