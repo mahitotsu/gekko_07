@@ -322,13 +322,11 @@ start:
 # クラスタとノードの状態を確認する
 status:
 	k3d cluster list
-	@echo "---"
+	@echo "--- nodes ---"
 	@kubectl get nodes 2>/dev/null || echo "(cluster not reachable)"
-	@echo "---"
-	@kubectl get namespaces 2>/dev/null || echo "(cluster not reachable)"
-	@echo "---"
+	@echo "--- $(NAMESPACE) ---"
 	@kubectl -n $(NAMESPACE) get deployments,services,pods 2>/dev/null || echo "(namespace '$(NAMESPACE)' not reachable)"
-	@echo "---"
+	@echo "--- spire ---"
 	@kubectl -n spire get statefulsets,daemonsets,services,pods 2>/dev/null || echo "(namespace 'spire' not reachable)"
-	@echo "---"
+	@echo "--- observability ---"
 	@kubectl -n observability get deployments,daemonsets,services,pods 2>/dev/null || echo "(namespace 'observability' not reachable)"
