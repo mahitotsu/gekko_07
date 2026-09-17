@@ -23,13 +23,16 @@
 - **backlog.md**：「未着手・未決定」のみを列挙する。着手したらその場で項目を削除し、結果はarchitecture.md/services.md/insights.mdのいずれかへ記録する。
 - **insights.md**：設計判断ではなく、実装中に踏んだ罠・実機で判明した仕様上の制約を「症状/原因/対応」の型で記録する。
 
-## 更新タイミングの原則（横断的整合性）
+## 文書修正時の横断確認ルール
 
-**新しいADRが過去のAccepted ADRの決定を変更・撤回する場合、影響を受けた旧ADR全てのStatusを同じコミットで`Partially/Fully superseded by NNNN`に更新する。** 旧ADR本文（Context/Decision）は書き換えず、Status行と該当するConsequences箇条書きへの短い注記だけで対応する。
+**docs/配下のいずれかのファイルを修正するセッションでは、コミット前に必ず「他の文書に修正要否があるか」を確認する。** 修正して満足した文書だけを見て終わらない。文書は互いに参照し合っており、片方だけ直すと反対側が古いまま残る（ADR 0016の実例：ADR 0022でKeycloakの9000ポートの決定を変えた際、同じ決定に触れていたADR 0016の更新だけが漏れた）。
 
 手順：
 
-1. 変更しようとしている設定・決定について、`grep -rn "<キーワード>" docs/adr/`でそれを最初に決めたADR、および同じ設定に後から触れた全てのADRを洗い出す（1箇所だけとは限らない。ADR 0016のように「本文中の一文」として埋もれているケースがある）
-2. 見つかった旧ADR全てのStatus行を更新し、何がどう変わったかをConsequencesに1〜2行追記する
-3. architecture.md・backlog.md・insights.mdの該当箇所も同じコミットで更新する（backlog.mdで「将来の課題」として言及されていた項目が解消された場合は、backlog.mdではなく言及元のADR側にも解消済みである旨を残す）
-4. `k8s/`配下の変更を伴う場合は、docsをAccepted扱いにする前に`make verify-hop`（または該当するmakeターゲット）で実機確認する
+1. 変更したキーワード・設定名・サービス名で`grep -rln "<キーワード>" docs/ CLAUDE.md`を実行し、同じ内容に触れている全ファイルを洗い出す（1箇所とは限らない。ADR本文中の一文に埋もれているケースもある）
+2. ヒットした各ファイルについて、今回の変更後も記述が正しいか確認する。特に以下の組み合わせに注意する：
+   - **ADR同士**：新しいADRが過去のAccepted ADRの決定を変更・撤回する場合、影響を受けた旧ADR全てのStatusを`Partially/Fully superseded by NNNN`に更新する。旧ADR本文（Context/Decision）は書き換えず、Status行と該当するConsequences箇条書きへの短い注記だけで対応する
+   - **ADR→architecture.md**：ADRの決定が変わったら、architecture.mdの対応箇所（現在有効な断面）も同じ内容に書き換える
+   - **backlog.md→ADR/architecture.md/services.md/insights.md**：backlog.mdの項目に着手・解消した場合、その項目を削除し、結果をarchitecture.md/services.md/insights.mdのいずれかに記録する。逆に、ADRやarchitecture.mdの変更でbacklog.mdの既存項目が解消された場合も、backlog.md側の削除を忘れない
+   - **k8s/等の実装→docs全般**：`k8s/`配下の変更を伴う場合は、docsをAccepted/現在有効扱いにする前に`make verify-hop`（または該当するmakeターゲット）で実機確認し、その実装に言及しているADR/architecture.md/insights.mdの記述が古くなっていないか確認する
+3. 修正が必要な文書が見つかった場合は後回しにせず、その場で同じコミットに含める
