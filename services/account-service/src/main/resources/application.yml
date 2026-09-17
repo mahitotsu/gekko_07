@@ -1,0 +1,27 @@
+# ADR 0009 主対策①:Pod外から直接到達不能にするため、既定でloopback限定bindにする
+# (k8s/account-service/deployment.yamlのAPP_BIND_HOST/APP_PORTと同じ環境変数名を踏襲)。
+server:
+  address: ${APP_BIND_HOST:127.0.0.1}
+  port: ${APP_PORT:9000}
+
+spring:
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:postgres}:${DB_PORT:5432}/${DB_NAME}
+    username: ${DB_USER}
+    password: ${DB_PASSWORD}
+  flyway:
+    enabled: true
+
+analyst-attribute-service:
+  # account-service自身のegress Envoy(127.0.0.1:80、hostAliasesで宛先を横取り)経由。
+  # token-exchangeサイドカーがAuthorizationヘッダーをsubject_tokenにToken Exchangeしてから
+  # 転送する(表3)。
+  url: ${ANALYST_ATTRIBUTE_SERVICE_URL:http://analyst-attribute-service/}
+
+handshake:
+  header-name: ${HANDSHAKE_HEADER_NAME:x-gekko-handshake}
+  token-file: ${HANDSHAKE_TOKEN_FILE:/handshake/token}
+
+logging:
+  level:
+    root: INFO

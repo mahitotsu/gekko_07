@@ -1,0 +1,58 @@
+# seed-configmap.yamlのresolve.sh(initContainer)・seed.sh(mainコンテナ)を実行するJob。
+# 表6のテストアナリスト属性はKeycloakユーザーのUUID確定後にしか投入できないため、
+# make deploy-verify-hop側(テストフィクスチャの一部)に置く。account-service/analyst-attribute-
+# service本体はmake deploy側(base track)で既にデプロイ済みであることが前提(ADR 0026)。
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: analyst-attribute-service-seed
+  namespace: gekko
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        app: analyst-attribute-service-seed
+    spec:
+      restartPolicy: Never
+      initContainers:
+        - name: resolve-subs
+          image: quay.io/keycloak/keycloak:26.7.0
+          command: ["/bin/bash", "/scripts/resolve.sh"]
+          env:
+            - name: KEYCLOAK_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-admin
+                  key: password
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: shared
+              mountPath: /shared
+      containers:
+        - name: seed
+          image: postgres:17.11
+          command: ["/bin/bash", "/scripts/seed.sh"]
+          env:
+            - name: ANALYST_ATTRIBUTE_SERVICE_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: analyst-attribute-service-db
+                  key: password
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: shared
+              mountPath: /shared
+              readOnly: true
+      volumes:
+        - name: scripts
+          configMap:
+            name: analyst-attribute-service-seed
+            defaultMode: 0755
+        - name: shared
+          emptyDir: {}

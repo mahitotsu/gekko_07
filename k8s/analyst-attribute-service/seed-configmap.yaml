@@ -1,0 +1,76 @@
+# access-control-design.md 表6のテストアナリスト属性をanalyst-attribute-serviceのDBへ投入する。
+# ADR 0026:x-auth-sub(analyst_attribute_service.analysts.idの一致キー)はKeycloakが発行する
+# ユーザーUUIDであり、ユーザー名(yamada-analyst等)ではないため、k8s/keycloak/test-fixtures-job.yaml
+# がKeycloak上にユーザーを作成した後でなければ実際のUUIDが確定しない。そのため
+# initContainer(Keycloakイメージのkcadm.shでUUIDを解決)→mainコンテナ(psqlでUPSERT)という
+# 2段構成にし、emptyDirで解決結果を橋渡しする(initContainerの完了保証を使う。ADR 0009 §2③の
+# 合言葉生成と同じ考え方)。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: analyst-attribute-service-seed
+  namespace: gekko
+data:
+  resolve.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    KCADM=/opt/keycloak/bin/kcadm.sh
+    SERVER="http://edge-proxy.gekko.svc.cluster.local:80"
+
+    for i in $(seq 1 10); do
+      curl -s -o /dev/null "$SERVER/realms/gekko" && break
+      echo "edge-proxyへの接続待機中($i/10)..."
+      sleep 1
+    done
+
+    "$KCADM" config credentials --server "$SERVER" --realm master --user admin --password "$KEYCLOAK_ADMIN_PASSWORD"
+
+    : > /shared/subs.txt
+    for username in yamada-analyst suzuki-senior tanaka-junior; do
+      user_id="$("$KCADM" get users -r gekko -q username="$username" | grep -m1 '"id"' | sed -E 's/.*"id" *: *"([^"]+)".*/\1/')"
+      echo "$username $user_id" >> /shared/subs.txt
+    done
+    cat /shared/subs.txt
+
+  seed.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    export PGPASSWORD="$ANALYST_ATTRIBUTE_SERVICE_DB_PASSWORD"
+    PSQL="psql -v ON_ERROR_STOP=1 -h postgres -U analyst_attribute_service -d analyst_attribute_service"
+
+    # analyst-attribute-serviceアプリ自身が起動時にCREATE TABLE IF NOT EXISTSでスキーマを
+    # 用意する(main.go)ため、DBへの接続可否だけでなく"analysts"テーブルの存在まで待つ
+    # (Deploymentのrollout完了は「コンテナプロセスが起動した」ことしか保証せず、アプリ内部の
+    # スキーマ初期化完了までは保証しないため。db-init-configmap.yamlの接続待機と同じ考え方)。
+    for i in $(seq 1 20); do
+      $PSQL -tAc "SELECT to_regclass('public.analysts')" 2>/dev/null | grep -q analysts && break
+      echo "analystsテーブルの用意を待機中($i/20)..."
+      sleep 1
+    done
+
+    regions_for() {
+      case "$1" in
+        yamada-analyst) echo "{tokyo}" ;;
+        suzuki-senior)  echo "{tokyo,osaka}" ;;
+        tanaka-junior)  echo "{osaka}" ;;
+      esac
+    }
+    level_for() {
+      case "$1" in
+        yamada-analyst) echo "junior" ;;
+        suzuki-senior)  echo "senior" ;;
+        tanaka-junior)  echo "junior" ;;
+      esac
+    }
+
+    while read -r username user_id; do
+      [ -z "$username" ] && continue
+      regions="$(regions_for "$username")"
+      level="$(level_for "$username")"
+      $PSQL -c "INSERT INTO analysts (id, regions, level) VALUES ('$user_id', '$regions', '$level')
+                ON CONFLICT (id) DO UPDATE SET regions = EXCLUDED.regions, level = EXCLUDED.level;"
+    done < /shared/subs.txt
+
+    echo "analyst attribute test fixtures ready"

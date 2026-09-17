@@ -25,17 +25,15 @@
 fraud-mcp-server・fraud-detection-engine・account-service・analyst-attribute-service・fraud-agent・frontend・edge-proxy・Keycloak間の全ホップにSPIRE mTLSを導入済み（[ADR 0012](adr/0012-spiffe-spire-mtls-single-hop.md)/[0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)/[0017](adr/0017-edge-proxy-full-keycloak-mtls.md)/[0019](adr/0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md)/[0020](adr/0020-fraud-detection-engine-identity-gap-and-client-credentials-federated-jwt.md)/[0021](adr/0021-account-service-analyst-attribute-service-spiffe-jwt-svid.md)/[0023](adr/0023-fraud-agent-fraud-mcp-server-hop.md)/[0024](adr/0024-frontend-edge-proxy-and-simplified-login.md)）。全ホップへの横展開は完了し、残るのは以下の明示的スコープ外項目のみ。
 
 - **NetworkPolicyのspire namespaceへの横展開**：[ADR 0018](adr/0018-network-policy-default-deny.md)で`gekko` namespaceにL3/4のdefault-denyを導入したが、`spire` namespace（spire-server/spire-agent）は対象外とした。spire-agentが`hostNetwork: true`で動作しており、kube-router netpolがhostNetwork Podに対してどう振る舞うかが未検証なため。加えて`spire-entries` Job（`kubectl exec`でspire-serverへ接続する）等、`gekko` namespaceとは異なる接続パターンを持つ点も要考慮
-- **ワークロードPod（account-service-stub/fraud-mcp-server-stub等）自体への`hostPID`/`hostNetwork`付与**：SPIRE agentには必要だが、ワークロードPod側はカーネルのPID名前空間の性質上不要なはずという推測のもとで見送った。属性解決が実機で失敗した場合（SDS呼び出しがタイムアウトする、spire-serverのログに"no selectors found after max poll attempts"が出る等）のみ再検討する
+- **ワークロードPod（account-service/fraud-mcp-server-stub等）自体への`hostPID`/`hostNetwork`付与**：SPIRE agentには必要だが、ワークロードPod側はカーネルのPID名前空間の性質上不要なはずという推測のもとで見送った。属性解決が実機で失敗した場合（SDS呼び出しがタイムアウトする、spire-serverのログに"no selectors found after max poll attempts"が出る等）のみ再検討する
 - **`spiffe-csi`ドライバ・`spire-controller-manager`**：新規可動部を増やさないため、hostPathでのソケット共有・`spire-server entry create` CLIでの手動登録を選んだ。本番相当の運用を検証したくなった場合に再評価する
 
 ## 属性・アクセス制御の粒度
 
 - **口座属性の拡張要否**：現状は地域(`region`)とティア(`standard`/`high-value`)の2軸のみ（access-control-design.md 表5）。実装を進める中でさらに軸が必要になるか要検討
-- **アナリストの担当地域が複数ある場合の表現**：配列で持つ想定（access-control-design.md 表6）だが、Keycloakロール/属性のどちらに載せるかは未定
 
 ## 監査
 
-- **`proposal_id`のaccount-service側実装（DB永続化）**：[ADR 0025](adr/0025-audit-log-aggregation.md)でログ集約基盤（`sessionId`/`sub`/`jti`による相関）は完成したが、`proposal_id`自体はaccount-serviceが本実装（ADR 0007、Java/Spring Boot）に着手するまで未着手のまま。実装時に、提案（propose）記録時の発行とunfreeze時の突合をどう永続化するか決める
 - **otel-lgtmの同梱コンポーネント（Prometheus/Tempo/Pyroscope/OTel Collector）を無効化できるか**：ADR 0025で採用した`grafana/otel-lgtm`はGrafana+Lokiのみ使う想定だが、残り4コンポーネントも起動している。個別に無効化できるかは未調査（動くが未使用として許容している）
 - **`k8s/keycloak/test-fixtures-job.yaml`のパスワード設定の再現性問題**：realm再import直後にジョブを実行すると、作成直後のユーザーでログインが401になることがある（kcadmでset-passwordを打ち直すと直る）。原因未特定（[insights.md](insights.md)参照）
 

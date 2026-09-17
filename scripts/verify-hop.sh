@@ -16,8 +16,8 @@
 #    リクエストする)経由で取得する
 # 2. そのトークンを持ってfraud-mcp-server-stub Pod内からaccount-serviceを叩き、
 #    Envoy egress(ext_authzによるToken Exchange)→Envoy ingress(jwt_authn/rbac/合言葉)→
-#    account-service-stubアプリ、という経路全体が正しく動くことを確認する
-# 3. account-service-stubのアプリポートにPod外から直接到達できないことを確認する(ADR 0009主対策①)
+#    account-serviceアプリ(本実装)、という経路全体が正しく動くことを確認する
+# 3. account-serviceのアプリポートにPod外から直接到達できないことを確認する(ADR 0009主対策①)
 #
 # パターン②(client_credentials、fraud-detection-engine→account-service):
 # 4. fraud-detection-engine-stub Pod内から、Authorizationヘッダーを一切持たずにaccount-serviceの
@@ -122,14 +122,17 @@ fi
 FRAUD_MCP_POD=$(newest_pod fraud-mcp-server)
 
 call_account_service() {
-  local method="$1" path="$2" token="$3"
+  local method="$1" path="$2" token="$3" body="${4:-{\}}"
   kubectl -n "$NAMESPACE" exec "$FRAUD_MCP_POD" -c app -- env \
-    TOKEN="$token" METHOD="$method" URL="http://account-service${path}" \
+    TOKEN="$token" METHOD="$method" URL="http://account-service${path}" BODY="$body" \
     python3 -c '
 import json, os, urllib.error, urllib.request
-req = urllib.request.Request(os.environ["URL"], method=os.environ["METHOD"], headers={"Authorization": "Bearer " + os.environ["TOKEN"]})
+headers = {"Authorization": "Bearer " + os.environ["TOKEN"]}
+data = None
 if os.environ["METHOD"] == "POST":
-    req.data = b"{}"
+    data = os.environ["BODY"].encode()
+    headers["Content-Type"] = "application/json"
+req = urllib.request.Request(os.environ["URL"], method=os.environ["METHOD"], data=data, headers=headers)
 try:
     with urllib.request.urlopen(req, timeout=10) as resp:
         print(resp.status)
@@ -141,17 +144,17 @@ except urllib.error.HTTPError as e:
 }
 
 echo "==> 2a. fraud-mcp-server egress Envoy経由でaccount-serviceのGET(account:read)を叩く"
-echo "     (account-serviceは自身のegress Envoy経由でanalyst-attribute-serviceへさらに委任する。表3)"
+echo "     (account-serviceは自身のegress Envoy経由でanalyst-attribute-serviceへさらに委任し、表5のABAC判定を行う。表3)"
 ACCOUNT_SERVICE_RESPONSE=$(call_account_service GET /accounts/123/transactions "$DELEGATED_TOKEN")
 echo "$ACCOUNT_SERVICE_RESPONSE"
-if echo "$ACCOUNT_SERVICE_RESPONSE" | grep -q '"analyst_attribute_service": {"status": 200'; then
-  echo "==> 2a'. account-service→analyst-attribute-serviceへの委任(表3)を確認(期待通り)"
+if echo "$ACCOUNT_SERVICE_RESPONSE" | grep -q '"region":"tokyo"'; then
+  echo "==> 2a'. account-service→analyst-attribute-serviceへの委任(表3)・表5のABAC判定(yamada-analyst=東京担当→ALLOW)を確認(期待通り)"
 else
-  echo "警告:account-service経由でanalyst-attribute-serviceへ到達できませんでした" >&2
+  echo "警告:account-service経由でanalyst-attribute-serviceへ到達できませんでした、またはABAC判定が期待と異なります" >&2
 fi
 
 echo "==> 2b. fraud-mcp-server egress Envoy経由でaccount-serviceのPOST(account:propose)を叩く"
-call_account_service POST /accounts/123/unfreeze-proposals "$DELEGATED_TOKEN"
+call_account_service POST /accounts/123/unfreeze-proposals "$DELEGATED_TOKEN" '{"reasoning":"直近の取引パターンを確認したが誤検知の疑いが強い"}'
 
 echo "==> 2c.(異常系)aud=frontendのログイントークンでそのまま叩く(拒否されるはず)"
 call_account_service GET /accounts/123/transactions "$LOGIN_TOKEN" || true
@@ -176,14 +179,17 @@ kubectl -n "$NAMESPACE" run verify-hop-analyst-bypass-check --rm -i --restart=Ne
 FRAUD_DETECTION_ENGINE_POD=$(newest_pod fraud-detection-engine)
 
 call_account_service_no_auth() {
-  local method="$1" path="$2"
+  local method="$1" path="$2" body="${3:-{\}}"
   kubectl -n "$NAMESPACE" exec "$FRAUD_DETECTION_ENGINE_POD" -c app -- env \
-    METHOD="$method" URL="http://account-service${path}" \
+    METHOD="$method" URL="http://account-service${path}" BODY="$body" \
     python3 -c '
 import os, urllib.error, urllib.request
-req = urllib.request.Request(os.environ["URL"], method=os.environ["METHOD"])
+headers = {}
+data = None
 if os.environ["METHOD"] == "POST":
-    req.data = b"{}"
+    data = os.environ["BODY"].encode()
+    headers["Content-Type"] = "application/json"
+req = urllib.request.Request(os.environ["URL"], method=os.environ["METHOD"], data=data, headers=headers)
 try:
     with urllib.request.urlopen(req, timeout=10) as resp:
         print(resp.status)
@@ -195,7 +201,7 @@ except urllib.error.HTTPError as e:
 }
 
 echo "==> 4. fraud-detection-engine egress Envoy経由でaccount-serviceのfreeze(account:freeze、client_credentials)を叩く(Authorizationヘッダーなし)"
-call_account_service_no_auth POST /accounts/123/freeze
+call_account_service_no_auth POST /accounts/123/freeze '{"reason":"短時間に連続する高額送金を検知","ruleFired":"RULE_RAPID_TRANSFER","score":0.75}'
 
 echo "==> 4b.(異常系)fraud-detection-engine egress Envoy経由でaccount-serviceのGET(account:read)を叩く(account:freezeしか持たないため拒否されるはず)"
 call_account_service_no_auth GET /accounts/123/transactions || true
@@ -204,19 +210,60 @@ echo "==> 5. frontend経由でaccount-serviceのGET(account:read)を叩く(edge-
 echo "     →frontend egress(Token Exchange)→account-service ingress、全区間を実際のfrontendから検証。ADR 0024)"
 FRONTEND_READ_RESPONSE=$(curl -s -X GET "$EDGE/accounts/123/transactions" -H "Authorization: Bearer $LOGIN_TOKEN")
 echo "$FRONTEND_READ_RESPONSE"
-if echo "$FRONTEND_READ_RESPONSE" | grep -q '"analyst_attribute_service": {"status": 200'; then
-  echo "==> 5'. frontend→account-service→analyst-attribute-serviceの全区間委任を確認(期待通り)"
+if echo "$FRONTEND_READ_RESPONSE" | grep -q '"region":"tokyo"'; then
+  echo "==> 5'. frontend→account-service→analyst-attribute-serviceの全区間委任・表5のABAC判定を確認(期待通り)"
 else
-  echo "警告:frontend経由でaccount-serviceへ到達できませんでした" >&2
+  echo "警告:frontend経由でaccount-serviceへ到達できませんでした、またはABAC判定が期待と異なります" >&2
 fi
 
 echo "==> 6. frontend経由でaccount-serviceのPOST /unfreeze(account:unfreeze、確定パス。account-serviceの新規rbacポリシー)を叩く"
-FRONTEND_UNFREEZE_RESPONSE=$(curl -s -X POST "$EDGE/accounts/123/unfreeze" -H "Authorization: Bearer $LOGIN_TOKEN" -d '{}')
+echo "     (直前のステップ4でaccount 123を凍結済みにしてあるため、何度スクリプトを再実行してもこのunfreezeは成功するはず)"
+FRONTEND_UNFREEZE_RESPONSE=$(curl -s -X POST "$EDGE/accounts/123/unfreeze" -H "Authorization: Bearer $LOGIN_TOKEN" -H "Content-Type: application/json" -d '{}')
 echo "$FRONTEND_UNFREEZE_RESPONSE"
-if echo "$FRONTEND_UNFREEZE_RESPONSE" | grep -q '"scope": "account:unfreeze"'; then
-  echo "==> 6'. account-serviceのunfreeze rbacポリシー(ADR 0024で新規追加)を確認(期待通り)"
+if echo "$FRONTEND_UNFREEZE_RESPONSE" | grep -q '"accountId":"123"'; then
+  echo "==> 6'. account-serviceのunfreeze rbacポリシー(ADR 0024で新規追加)・凍結解除の実行を確認(期待通り)"
 else
   echo "警告:frontend経由でaccount-serviceのunfreezeへ到達できませんでした" >&2
+fi
+
+echo "==> 6c. 表5のABAC判定を実機検証する(BR1・BR2・BR3)"
+SUZUKI_SENIOR_PASSWORD=$(cat "$SECRETS_DIR/suzuki-senior-password")
+TANAKA_JUNIOR_PASSWORD=$(cat "$SECRETS_DIR/tanaka-junior-password")
+SUZUKI_LOGIN_TOKEN=$(curl -s -X POST "$EDGE/login" -H "Content-Type: application/json" \
+  -d "{\"username\":\"suzuki-senior\",\"password\":\"$SUZUKI_SENIOR_PASSWORD\"}" | jq -r .access_token)
+TANAKA_LOGIN_TOKEN=$(curl -s -X POST "$EDGE/login" -H "Content-Type: application/json" \
+  -d "{\"username\":\"tanaka-junior\",\"password\":\"$TANAKA_JUNIOR_PASSWORD\"}" | jq -r .access_token)
+
+echo "     6c-1. yamada-analyst(junior・東京)が東京のhigh-value口座(789)を読もうとして404になること(BR2)"
+YAMADA_789_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X GET "$EDGE/accounts/789/transactions" -H "Authorization: Bearer $LOGIN_TOKEN")
+[ "$YAMADA_789_STATUS" = "404" ] && echo "        期待通り(404)" || echo "        警告:期待は404だが実際は$YAMADA_789_STATUS" >&2
+
+echo "     6c-2. yamada-analyst(担当地域=東京)が大阪の口座(999)を読もうとして404になること(BR1)"
+YAMADA_999_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X GET "$EDGE/accounts/999/transactions" -H "Authorization: Bearer $LOGIN_TOKEN")
+[ "$YAMADA_999_STATUS" = "404" ] && echo "        期待通り(404)" || echo "        警告:期待は404だが実際は$YAMADA_999_STATUS" >&2
+
+echo "     6c-3. suzuki-senior(senior・東京/大阪)は大阪のhigh-value口座(456)を読めること(BR3)"
+SUZUKI_456_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X GET "$EDGE/accounts/456/transactions" -H "Authorization: Bearer $SUZUKI_LOGIN_TOKEN")
+[ "$SUZUKI_456_STATUS" = "200" ] && echo "        期待通り(200)" || echo "        警告:期待は200だが実際は$SUZUKI_456_STATUS" >&2
+
+echo "     6c-4. tanaka-junior(junior・大阪)は大阪のstandard口座(999)を読めること(BR1・BR2)"
+TANAKA_999_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X GET "$EDGE/accounts/999/transactions" -H "Authorization: Bearer $TANAKA_LOGIN_TOKEN")
+[ "$TANAKA_999_STATUS" = "200" ] && echo "        期待通り(200)" || echo "        警告:期待は200だが実際は$TANAKA_999_STATUS" >&2
+
+echo "     6c-5. GET /accounts/frozen はアナリストごとに異なる結果セットを返す(use-cases.md UC3/UC4の「除外」)"
+YAMADA_FROZEN=$(curl -s -X GET "$EDGE/accounts/frozen" -H "Authorization: Bearer $LOGIN_TOKEN")
+SUZUKI_FROZEN=$(curl -s -X GET "$EDGE/accounts/frozen" -H "Authorization: Bearer $SUZUKI_LOGIN_TOKEN")
+echo "        yamada-analyst(junior・東京): $YAMADA_FROZEN"
+echo "        suzuki-senior(senior・東京/大阪): $SUZUKI_FROZEN"
+if echo "$YAMADA_FROZEN" | grep -q '"id":"789"'; then
+  echo "        警告:yamada-analystの結果に東京のhigh-value口座(789)が含まれています(BR2違反)" >&2
+else
+  echo "        期待通り:yamada-analystの結果セットから789(high-value)は除外されている"
+fi
+if echo "$SUZUKI_FROZEN" | grep -q '"id":"456"'; then
+  echo "        期待通り:suzuki-seniorの結果セットに大阪のhigh-value口座(456)が含まれている"
+else
+  echo "        警告:suzuki-seniorの結果セットに456が含まれていません(BR3違反の疑い)" >&2
 fi
 
 echo "==> 7. frontend経由でfraud-agentのチャット開始(/chat、audience=fraud-agent)を叩く(edge-proxy→frontend ingress→"

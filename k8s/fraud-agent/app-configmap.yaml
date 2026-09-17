@@ -1,5 +1,5 @@
 # fraud-agentの最小スタブ(frontend→fraud-agent→fraud-mcp-serverホップ検証用。本実装は
-# TypeScript/Claude Agent SDK、ADR 0007)。account-service-stub(k8s/account-service/app-configmap.yaml)
+# TypeScript/Claude Agent SDK、ADR 0007)。他のスタブ(frontend/app-configmap.yaml等)
 # と同型の最小起動時ロジック(loopback限定bind・接続元loopback再チェック・合言葉ヘッダー検証)。
 #
 # frontend→fraud-agentホップ検証のため、受け取った元のAuthorizationヘッダー(jwt_authnの

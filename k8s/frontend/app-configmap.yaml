@@ -1,6 +1,6 @@
 # frontendの最小スタブ(edge-proxy配線・簡易ログイン検証用。本実装はTypeScript/Nuxt.js、
-# ADR 0007。ADR 0024)。account-service-stub(k8s/account-service/app-configmap.yaml)と同型の
-# 最小起動時ロジック(loopback限定bind・接続元loopback再チェック・合言葉ヘッダー検証)。
+# ADR 0007。ADR 0024)。他のスタブと同型の最小起動時ロジック
+# (loopback限定bind・接続元loopback再チェック・合言葉ヘッダー検証)。
 #
 # パスによって転送先を振り分ける薄いルーターとして動作する:
 #   - POST /login             : 同一Pod内のtoken-exchangeサイドカー(127.0.0.1:9002/login)へ
@@ -40,8 +40,12 @@ data:
         return addr in ("127.0.0.1", "::1")
 
 
-    def forward(url, method, authorization, body):
-        headers = {"Authorization": authorization} if authorization else {}
+    def forward(url, method, authorization, content_type, body):
+        headers = {}
+        if authorization:
+            headers["Authorization"] = authorization
+        if content_type:
+            headers["Content-Type"] = content_type
         req = urllib.request.Request(url, method=method, data=body, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=5) as resp:
@@ -88,19 +92,21 @@ data:
             length = int(self.headers.get("Content-Length", 0) or 0)
             body = self.rfile.read(length) if length else None
 
+            content_type = self.headers.get("Content-Type")
+
             if self.path == "/login":
-                status, resp_body = forward(f"{TOKEN_EXCHANGE_URL}/login", "POST", None, body)
+                status, resp_body = forward(f"{TOKEN_EXCHANGE_URL}/login", "POST", None, content_type, body)
                 self._respond(status, resp_body)
                 return
 
             authorization = self.headers.get("Authorization")
             if self.path.startswith("/accounts/"):
                 status, resp_body = forward(
-                    f"{ACCOUNT_SERVICE_URL}{self.path}", self.command, authorization, body
+                    f"{ACCOUNT_SERVICE_URL}{self.path}", self.command, authorization, content_type, body
                 )
             elif self.path == "/chat":
                 status, resp_body = forward(
-                    f"{FRAUD_AGENT_URL}{self.path}", self.command, authorization, body
+                    f"{FRAUD_AGENT_URL}{self.path}", self.command, authorization, content_type, body
                 )
             else:
                 self.send_response(404)

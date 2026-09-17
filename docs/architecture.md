@@ -138,7 +138,7 @@ fraud-detection-engineの client_credentials トークン(scope=account:freeze)
 - **`sub`/`userId`/`username`**：誰が。委任チェーン全体で元のアナリストのまま維持される（Impersonation方式）。client_credentialsグラント（fraud-detection-engineの自動凍結処理）には`sessionId`自体が存在せず、`sub`はその処理自身のサービスアカウントになる（BR7と整合）
 - **`token_id`（jti）/`scope`/`audience`**：各ホップで何をしたか。ホップごとに新しいトークンが発行されるため、`jti`はホップごとに変わる
 
-集約先はKeycloakのイベントログ（`eventsEnabled`、`TOKEN_EXCHANGE`/`LOGIN`等。`userId`/`username`/`sessionId`/`token_id`/`scope`/`audience`/`subject_token_client_id`を含む）を主軸とし、全ホップのEnvoyアクセスログ（`x-auth-sub`/`x-auth-scope`/`x-auth-jti`）を補助的に併用する。`proposal_id`（AIの提案と人間の確定を紐付けるための識別子）自体のaccount-service側実装（DB永続化）は、account-serviceの本実装（ADR 0007）まで持ち越しており未着手。
+集約先はKeycloakのイベントログ（`eventsEnabled`、`TOKEN_EXCHANGE`/`LOGIN`等。`userId`/`username`/`sessionId`/`token_id`/`scope`/`audience`/`subject_token_client_id`を含む）を主軸とし、全ホップのEnvoyアクセスログ（`x-auth-sub`/`x-auth-scope`/`x-auth-jti`）を補助的に併用する。`proposal_id`（AIの提案と人間の確定を紐付けるための識別子）はaccount-serviceの本実装（[ADR 0026](adr/0026-account-service-analyst-attribute-service-implementation.md)）でDB永続化済み：`unfreeze_proposals.id`として発行され、`unfreeze_executions.proposal_id`（NULL可、AIの提案に基づかない実行を許すため）で突合する。
 
 ## 9. 既知の制約・未決定事項
 

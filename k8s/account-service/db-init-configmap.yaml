@@ -1,0 +1,43 @@
+# account-service自身のDB・ロールをプロビジョニングするスクリプト(k8s/keycloak/db-init-configmap.yaml
+# と同一パターン。ADR 0008・0026)。共有Postgres StatefulSet(k8s/postgres/)はaccount-serviceの
+# 存在を一切知らず、account-service側が自分のDB・ロールを自分で(Postgresのsuperuser権限を借りて)作りに行く。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: account-service-db-init
+  namespace: gekko
+data:
+  init.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    export PGPASSWORD="$POSTGRES_SUPERUSER_PASSWORD"
+    PSQL="psql -v ON_ERROR_STOP=1 -h postgres -U postgres -d postgres"
+
+    for i in $(seq 1 10); do
+      $PSQL -tAc "SELECT 1" >/dev/null 2>&1 && break
+      echo "postgresへの接続待機中($i/10)..."
+      sleep 1
+    done
+
+    $PSQL <<-EOSQL
+      DO
+      \$\$
+      BEGIN
+        IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'account_service') THEN
+          CREATE ROLE account_service WITH LOGIN PASSWORD '$ACCOUNT_SERVICE_DB_PASSWORD';
+        ELSE
+          ALTER ROLE account_service WITH LOGIN PASSWORD '$ACCOUNT_SERVICE_DB_PASSWORD';
+        END IF;
+      END
+      \$\$;
+    EOSQL
+
+    if ! $PSQL -tAc "SELECT 1 FROM pg_database WHERE datname = 'account_service'" | grep -q 1; then
+      $PSQL -c "CREATE DATABASE account_service OWNER account_service;"
+    fi
+
+    $PSQL -c "REVOKE CONNECT ON DATABASE account_service FROM PUBLIC;"
+    $PSQL -c "GRANT CONNECT ON DATABASE account_service TO account_service;"
+
+    echo "account_service role/database ready"

@@ -1,0 +1,42 @@
+# analyst-attribute-service自身のDB・ロールをプロビジョニングするスクリプト
+# (k8s/keycloak/db-init-configmap.yamlと同一パターン。ADR 0008・0026)。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: analyst-attribute-service-db-init
+  namespace: gekko
+data:
+  init.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    export PGPASSWORD="$POSTGRES_SUPERUSER_PASSWORD"
+    PSQL="psql -v ON_ERROR_STOP=1 -h postgres -U postgres -d postgres"
+
+    for i in $(seq 1 10); do
+      $PSQL -tAc "SELECT 1" >/dev/null 2>&1 && break
+      echo "postgresへの接続待機中($i/10)..."
+      sleep 1
+    done
+
+    $PSQL <<-EOSQL
+      DO
+      \$\$
+      BEGIN
+        IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'analyst_attribute_service') THEN
+          CREATE ROLE analyst_attribute_service WITH LOGIN PASSWORD '$ANALYST_ATTRIBUTE_SERVICE_DB_PASSWORD';
+        ELSE
+          ALTER ROLE analyst_attribute_service WITH LOGIN PASSWORD '$ANALYST_ATTRIBUTE_SERVICE_DB_PASSWORD';
+        END IF;
+      END
+      \$\$;
+    EOSQL
+
+    if ! $PSQL -tAc "SELECT 1 FROM pg_database WHERE datname = 'analyst_attribute_service'" | grep -q 1; then
+      $PSQL -c "CREATE DATABASE analyst_attribute_service OWNER analyst_attribute_service;"
+    fi
+
+    $PSQL -c "REVOKE CONNECT ON DATABASE analyst_attribute_service FROM PUBLIC;"
+    $PSQL -c "GRANT CONNECT ON DATABASE analyst_attribute_service TO analyst_attribute_service;"
+
+    echo "analyst_attribute_service role/database ready"

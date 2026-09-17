@@ -1,7 +1,7 @@
 # spire-agent本体(ADR 0012)。hostPID/hostNetworkはこのリポジトリで初めて使う特権的な設定で、
 # k8s WorkloadAttestorがSO_PEERCRED経由でWorkload API呼び出し元のPIDを解決し、ホストの
 # /proc経由でcgroup/コンテナへ相関づけるために必要(この目的のためだけの意図的な例外。
-# ワークロードPod側(account-service-stub/fraud-mcp-server-stub)には付与しない。
+# ワークロードPod側(account-service/fraud-mcp-server-stub等)には付与しない。
 # 属性解決が実機で失敗した場合のみ再検討する)。
 # initContainerはspire-serverが疎通可能になるまで待つ(起動順序のガード。公式quickstartと同じ形)。
 apiVersion: apps/v1

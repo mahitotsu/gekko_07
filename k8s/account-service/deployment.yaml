@@ -1,7 +1,6 @@
-# account-serviceの最小スタブDeployment(1ホップ先行検証用。ADR 0002/0009/0010)。
+# account-serviceの本実装Deployment(Java/Spring Boot。ADR 0002/0007/0009/0010/0026)。
 # Service名・ラベルは本実装と同じ"account-service"にする(ADR 0010 MUST:
 # Keycloakクライアントid=K8s Service名=audience名を常に同一の文字列にする)。
-# Deployment名は"account-service-stub"とし、本実装完成時にこのDeploymentごと差し替える。
 #
 # Pod構成はinitContainer(合言葉生成)＋app＋Envoy＋token-exchangeの4者(architecture.md §3、
 # ADR 0019/0020のパターンをtoken-exchangeサイドカーとして最初から適用)。
@@ -11,10 +10,14 @@
 # ConfigMap参照)へappからのリクエストとtoken-exchangeサイドカー自身のKeycloak向けリクエストを
 # 横取りさせる(fraud-mcp-server/deployment.yamlと同じADR 0010/0019パターン)。account-service
 # はingress/egress両方を持つ初めてのサービスになる。
+#
+# appコンテナのイメージはservices/account-service/のMavenプロジェクトをMakefileの
+# build-account-serviceターゲットでビルドし、`k3d image import`でクラスタへ持ち込む
+# (レジストリは使わない。ADR 0026)。
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: account-service-stub
+  name: account-service
   namespace: gekko
   labels:
     app: account-service
@@ -45,8 +48,8 @@ spec:
               mountPath: /handshake
       containers:
         - name: app
-          image: python:3.12-alpine
-          command: ["python3", "/scripts/app.py"]
+          image: gekko07/account-service:local
+          imagePullPolicy: IfNotPresent
           env:
             - name: APP_BIND_HOST
               value: "127.0.0.1" # ADR 0009 主対策①:Pod外から直接到達不能にする
@@ -54,20 +57,33 @@ spec:
               value: "9000"
             - name: HANDSHAKE_TOKEN_FILE
               value: "/handshake/token"
+            - name: ANALYST_ATTRIBUTE_SERVICE_URL
+              value: "http://analyst-attribute-service/"
+            - name: DB_HOST
+              value: "postgres"
+            - name: DB_NAME
+              value: "account_service"
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: account-service-db
+                  key: username
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: account-service-db
+                  key: password
           volumeMounts:
-            - name: app-script
-              mountPath: /scripts
-              readOnly: true
             - name: handshake
               mountPath: /handshake
               readOnly: true
           resources:
             requests:
-              cpu: "50m"
-              memory: "64Mi"
+              cpu: "100m"
+              memory: "256Mi"
             limits:
-              cpu: "200m"
-              memory: "128Mi"
+              cpu: "500m"
+              memory: "512Mi"
         - name: envoy
           image: envoyproxy/envoy:v1.31.5
           command: ["/bin/sh", "-c"]
@@ -138,9 +154,6 @@ spec:
               cpu: "200m"
               memory: "128Mi"
       volumes:
-        - name: app-script
-          configMap:
-            name: account-service-stub-app
         - name: token-exchange-app-script
           configMap:
             name: account-service-token-exchange-app

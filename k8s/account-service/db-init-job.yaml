@@ -1,0 +1,39 @@
+# db-init-configmap.yamlのスクリプトを実行する1回限りのJob(k8s/keycloak/db-init-job.yamlと同一パターン)。
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: account-service-db-init
+  namespace: gekko
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        app: account-service-db-init
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: db-init
+          image: postgres:17.11
+          command: ["/bin/bash", "/scripts/init.sh"]
+          env:
+            - name: POSTGRES_SUPERUSER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-superuser
+                  key: password
+            - name: ACCOUNT_SERVICE_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: account-service-db
+                  key: password
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: script
+          configMap:
+            name: account-service-db-init
+            defaultMode: 0755

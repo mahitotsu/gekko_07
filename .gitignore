@@ -1,3 +1,8 @@
 # make deployが生成するローカル専用のシークレット（.secrets/参照）。
 # 中身はランダム生成されたローカル環境専用の認証情報で、gitには置かない。
 /.secrets/
+
+# services/配下のビルド生成物（ADR 0026。Dockerfile内のビルドで再生成されるため、
+# ローカルでの動作確認のために生成したものをコミットしない）。
+services/*/target/
+services/analyst-attribute-service/analyst-attribute-service

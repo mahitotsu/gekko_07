@@ -30,6 +30,16 @@ spec:
                 secretKeyRef:
                   name: yamada-analyst
                   key: password
+            - name: SUZUKI_SENIOR_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: suzuki-senior
+                  key: password
+            - name: TANAKA_JUNIOR_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: tanaka-junior
+                  key: password
           volumeMounts:
             - name: script
               mountPath: /scripts

@@ -4,7 +4,7 @@
 
 各サービスの技術スタックは意図的に統一しない（多言語構成の理由は[requirements.md](requirements.md)「背景（なぜサイドカーへ切り出すか）」参照：Token Exchangeをサイドカーへ切り出す価値は、実装言語がバラバラな構成でこそ際立つ）。個々の選定理由は[ADR 0007](adr/0007-per-service-language-selection.md)を参照。
 
-以下のサービス本実装はいずれも未着手（設計段階）。ただしaccount-service・fraud-mcp-server・fraud-detection-engine・analyst-attribute-service・fraud-agent・frontendは、Envoy/ext_authzによるToken Exchange・SPIFFE/SPIRE mTLSの実機検証用スタブとして存在する（本実装とは別物。詳細は[architecture.md](architecture.md)・[insights.md](insights.md)参照）。frontendのみ、ログイン（Authorization Code + PKCE）を簡易ログイン（ROPCのHTTPエンドポイント化）で代用している（[ADR 0024](adr/0024-frontend-edge-proxy-and-simplified-login.md)）。
+account-service・analyst-attribute-serviceは本実装済み（[ADR 0026](adr/0026-account-service-analyst-attribute-service-implementation.md)）。残るfraud-mcp-server・fraud-detection-engine・fraud-agent・frontendの本実装は未着手（設計段階）で、Envoy/ext_authzによるToken Exchange・SPIFFE/SPIRE mTLSの実機検証用スタブとして存在する（本実装とは別物。詳細は[architecture.md](architecture.md)・[insights.md](insights.md)参照）。frontendのみ、ログイン（Authorization Code + PKCE）を簡易ログイン（ROPCのHTTPエンドポイント化）で代用している（[ADR 0024](adr/0024-frontend-edge-proxy-and-simplified-login.md)）。
 
 ## frontend（BFF）
 

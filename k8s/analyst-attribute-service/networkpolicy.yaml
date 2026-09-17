@@ -1,5 +1,6 @@
 # ADR 0018。委任チェーンの終端(表3)のため、呼び出し元はaccount-serviceのみ許可する。
-# egressはKeycloakのJWKS取得(mTLS)のみ(他のどこも呼ばない)。
+# egressはKeycloakのJWKS取得(mTLS)と、自身のPostgresデータベース(ADR 0008・0026、appコンテナが
+# Envoyを介さず直接接続する)のみ。
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -28,3 +29,62 @@ spec:
       ports:
         - protocol: TCP
           port: 8443
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+# ADR 0018の実装漏れの修正(k8s/keycloak/networkpolicy.yamlのkeycloak-db-initと同じパターン):
+# 接続元(db-init Job)側にも自分自身のegress許可ポリシーが要る。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: analyst-attribute-service-db-init
+  namespace: gekko
+spec:
+  podSelector:
+    matchLabels:
+      app: analyst-attribute-service-db-init
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+# ADR 0018の実装漏れの修正(k8s/keycloak/networkpolicy.yamlのkeycloak-test-fixturesと同じパターン):
+# 表6のテストアナリスト属性投入Job(seed-job.yaml)自身のegress許可。initContainer(resolve-subs)は
+# edge-proxy経由でKeycloak UUIDを解決し、mainコンテナ(seed)はpostgresへUPSERTする(ADR 0026)。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: analyst-attribute-service-seed
+  namespace: gekko
+spec:
+  podSelector:
+    matchLabels:
+      app: analyst-attribute-service-seed
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: edge-proxy
+      ports:
+        - protocol: TCP
+          port: 80
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: 5432

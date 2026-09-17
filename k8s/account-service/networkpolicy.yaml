@@ -1,6 +1,7 @@
 # ADR 0018。呼び出し元(fraud-mcp-server・fraud-detection-engine・frontend(ADR 0024))からの
 # ingressと、KeycloakのJWKS取得(mTLS)・analyst-attribute-serviceへのToken Exchange委任(表3。
-# ADR 0019/0020のパターンを最初から適用)へのegressを許可する。
+# ADR 0019/0020のパターンを最初から適用)・自身のPostgresデータベース(ADR 0008・0026、appコンテナが
+# Envoyを介さず直接接続する。Keycloakと同じパターン)へのegressを許可する。
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -42,3 +43,33 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+# ADR 0018の実装漏れの修正(k8s/keycloak/networkpolicy.yamlのkeycloak-db-initと同じパターン):
+# default-denyはPod単位でingress/egress双方に適用されるため、接続元(db-init Job)側にも
+# 自分自身のegress許可ポリシーが要る(宛先postgres側のingress許可だけでは不十分)。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: account-service-db-init
+  namespace: gekko
+spec:
+  podSelector:
+    matchLabels:
+      app: account-service-db-init
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: 5432

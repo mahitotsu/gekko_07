@@ -1,5 +1,5 @@
 # fraud-mcp-serverの最小スタブ(1ホップ先行検証用。本実装はPython/FastMCP、ADR 0007)。
-# account-service-stub(k8s/account-service/app-configmap.yaml)と同一の最小起動時ロジック
+# 他のスタブ(frontend/app-configmap.yaml等)と同一の最小起動時ロジック
 # (loopback限定bind・接続元loopback再チェック・合言葉ヘッダー検証)。このホップの検証では
 # fraud-mcp-server自身への着信(ingress)は使わないが、Pod構成の一貫性と将来のingress検証の
 # ために同居させる。
