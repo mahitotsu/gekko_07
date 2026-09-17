@@ -71,6 +71,11 @@ data:
                           - san_type: URI
                             matcher:
                               exact: "spiffe://gekko.internal/ns/gekko/sa/default/edge-proxy"
+                          # ADR 0023: fraud-agentのtoken-exchangeサイドカーが自身でKeycloakへ
+                          # 直接mTLS接続する(fraud-mcp-server/fraud-detection-engineと同じ理由)。
+                          - san_type: URI
+                            matcher:
+                              exact: "spiffe://gekko.internal/ns/gekko/sa/default/fraud-agent"
                       validation_context_sds_secret_config:
                         name: "ROOTCA"
                         sds_config:

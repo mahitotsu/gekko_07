@@ -1,36 +1,39 @@
-# fraud-mcp-serverの最小スタブDeployment(1ホップ先行検証用。ADR 0002/0009/0010)。
-# hostAliasesで"account-service"を127.0.0.1へ静的にマッピングし、アプリが実サービス名・実APIパスで
-# 普通にHTTPリクエストを組み立てるだけで、同一Pod内のEnvoy(egress)が横取りする(ADR 0010)。
+# fraud-agentの最小スタブDeployment(frontend→fraud-agent→fraud-mcp-serverホップ検証用。
+# ADR 0002/0009/0010/0023)。Service名・ラベルは本実装と同じ"fraud-agent"にする(ADR 0010 MUST:
+# Keycloakクライアントid=K8s Service名=audience名を常に同一の文字列にする)。
+# Deployment名は"fraud-agent-stub"とし、本実装完成時にこのDeploymentごと差し替える。
 #
-# ADR 0019：Token Exchange実行主体を共有のext-authz-serviceからこのPod内の
-# token-exchangeサイドカーへ移した。"keycloak"も127.0.0.1へマッピングし、
-# token-exchangeサイドカー自身のKeycloak向けリクエストも同一Envoyのegressリスナーで
-# mTLS化される(k8s/ext-authz/deployment.yamlが持っていたのと同じhostAliasesパターン)。
+# Pod構成はinitContainer(合言葉生成)＋app＋Envoy＋token-exchangeの4者(account-service
+# (architecture.md §3)と同型。ADR 0019/0020のパターンをtoken-exchangeサイドカーとして
+# 最初から適用)。
 #
-# ADR 0023：fraud-agent→fraud-mcp-serverホップの実装にあわせてEnvoyへingressリスナーを
-# 追加した(用意済みだったapp-configmap.yamlをようやく使う)。fraud-mcp-serverはaccount-service
-# に続き、ingress/egress両方を持つサービスになった。
+# hostAliasesで"fraud-mcp-server"・"keycloak"を127.0.0.1へ静的にマッピングし、
+# egressリスナー(fraud-agent-envoy ConfigMap参照)へappからのリクエストとtoken-exchange
+# サイドカー自身のKeycloak向けリクエストを横取りさせる(account-service/fraud-mcp-serverと
+# 同じADR 0010/0019パターン)。
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: fraud-mcp-server-stub
+  name: fraud-agent-stub
   namespace: gekko
   labels:
-    app: fraud-mcp-server
+    app: fraud-agent
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: fraud-mcp-server
+      app: fraud-agent
   template:
     metadata:
       labels:
-        app: fraud-mcp-server
+        app: fraud-agent
     spec:
       hostAliases:
         - ip: "127.0.0.1"
-          hostnames: ["account-service", "keycloak"]
+          hostnames: ["fraud-mcp-server", "keycloak"]
       initContainers:
+        # ADR 0009 §2③:Pod内合言葉。initContainerの完了がメインコンテナ起動前に保証されるため、
+        # 「先に生成、後で両方が読む」がレースコンディションなく書ける。
         - name: handshake-init
           image: busybox:1.36
           command:
@@ -46,7 +49,7 @@ spec:
           command: ["python3", "/scripts/app.py"]
           env:
             - name: APP_BIND_HOST
-              value: "127.0.0.1"
+              value: "127.0.0.1" # ADR 0009 主対策①:Pod外から直接到達不能にする
             - name: APP_PORT
               value: "9000"
             - name: HANDSHAKE_TOKEN_FILE
@@ -73,7 +76,6 @@ spec:
               export HANDSHAKE_TOKEN="$(cat /handshake/token)"
               exec envoy -c /etc/envoy/envoy.yaml
           ports:
-            # ADR 0023:ingressリスナー(fraud-agentからの着信)。
             - name: http
               containerPort: 8080
           volumeMounts:
@@ -95,15 +97,18 @@ spec:
             limits:
               cpu: "300m"
               memory: "128Mi"
-        # ADR 0019: Token Exchange実行主体。envoyコンテナと同じくWorkload API UDSソケットへ
-        # アクセスする(JWT-SVID取得のため)。SPIRE registration entryもenvoyコンテナと並んで
-        # このコンテナ名をselectorに持つ(k8s/spire/entries-configmap.yaml参照)。
+        # frontend→fraud-agent→fraud-mcp-serverのToken Exchange実行主体。envoyコンテナと
+        # 同じくWorkload API UDSソケットへアクセスする(JWT-SVID取得のため)。SPIRE registration
+        # entryもenvoyコンテナと並んでこのコンテナ名をselectorに持つ(k8s/spire/entries-configmap.yaml
+        # 参照。ADR 0019/0020/0021と同じパターン)。
         - name: token-exchange
           image: python:3.12-alpine
           command: ["python3", "/scripts/app.py"]
           env:
             - name: CLIENT_ID
-              value: "fraud-mcp-server"
+              value: "fraud-agent"
+            - name: FIXED_SCOPE
+              value: "account:read"
             - name: JWT_SVID_AUDIENCE
               value: "http://localhost:3000/realms/gekko"
             - name: LISTEN_HOST
@@ -120,9 +125,8 @@ spec:
               mountPath: /run/spire/sockets
               readOnly: true
             # Kubernetes ImageVolume(1.33+ Beta)でspire-agentイメージから`spire-agent`
-            # CLIバイナリだけを読み取り専用マウントする。distroless系イメージでシェルが
-            # 無くコピーもできないため(実機確認済み)、grpcio等の新規Python依存を増やさずに
-            # 済むこの方式を採用した(ADR 0019)。
+            # CLIバイナリだけを読み取り専用マウントする(ADR 0019と同じ理由。distroless系
+            # イメージでシェルが無くコピーもできないため)。
             - name: spire-agent-bin
               mountPath: /spire-bin
               readOnly: true
@@ -136,19 +140,19 @@ spec:
       volumes:
         - name: app-script
           configMap:
-            name: fraud-mcp-server-stub-app
+            name: fraud-agent-stub-app
         - name: token-exchange-app-script
           configMap:
-            name: fraud-mcp-server-token-exchange-app
+            name: fraud-agent-token-exchange-app
         - name: envoy-config
           configMap:
-            name: fraud-mcp-server-envoy
+            name: fraud-agent-envoy
         - name: handshake
           emptyDir: {}
+        - name: spire-agent-bin
+          image:
+            reference: ghcr.io/spiffe/spire-agent:1.15.3
         - name: spire-agent-socket
           hostPath:
             path: /run/spire/sockets
             type: Directory
-        - name: spire-agent-bin
-          image:
-            reference: ghcr.io/spiffe/spire-agent:1.15.3

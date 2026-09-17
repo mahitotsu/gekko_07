@@ -4,7 +4,7 @@
 
 ## Token Exchange / Envoyサイドカー
 
-- **frontend方向への横展開**：呼び出し元自身のPod内サイドカー化＋SPIRE発行JWT-SVIDクライアント認証というパターン（[ADR 0019](adr/0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md)/[0020](adr/0020-fraud-detection-engine-identity-gap-and-client-credentials-federated-jwt.md)/[0021](adr/0021-account-service-analyst-attribute-service-spiffe-jwt-svid.md)）を、frontend→account-service/fraud-agent、fraud-agent→fraud-mcp-serverへ横展開する（frontend自体が未実装のため未着手）
+- **frontend方向への横展開（残り）**：呼び出し元自身のPod内サイドカー化＋SPIRE発行JWT-SVIDクライアント認証というパターン（[ADR 0019](adr/0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md)/[0020](adr/0020-fraud-detection-engine-identity-gap-and-client-credentials-federated-jwt.md)/[0021](adr/0021-account-service-analyst-attribute-service-spiffe-jwt-svid.md)）を、frontend→account-service・frontend→fraud-agentへ横展開する（frontend自体が未実装のため未着手）。fraud-agent→fraud-mcp-serverは[ADR 0023](adr/0023-fraud-agent-fraud-mcp-server-hop.md)で解消済みだが、fraud-agent自身のingress側（frontend→fraud-agentのmTLS/JWT検証）はfrontendが実際に呼び出すまで実機検証できていない（ADR 0023参照）
 - **frontendのdirectAccessGrantsEnabled一時許可の後始末**：[k8s/keycloak/test-fixtures-job.yaml](../k8s/keycloak/test-fixtures-job.yaml)は、フロントエンド未実装でもブラウザなしでログインし1ホップ先行検証を行うため、`frontend`クライアントの`directAccessGrantsEnabled`を一時的にtrueにしている。frontend実装時に、自動テストで使い続けるか、Authorization Code + PKCEのみに戻すかを判断する
 - **合言葉ヘッダー名・env var名の確定**：1ホップ先行検証でヘッダー名`x-gekko-handshake`・env var名`HANDSHAKE_TOKEN_FILE`を採用し、Python実装のスタブ間で統一した（[k8s/account-service/app-configmap.yaml](../k8s/account-service/app-configmap.yaml)等）。Java/TypeScript/Rust/Go等、他言語での本実装時にも同じ命名を踏襲する
 - **Unixドメインソケット化の再検討**：[ADR 0009](adr/0009-envoy-ingress-responsibility-and-bypass-prevention.md)でTCP loopback+合言葉方式を採用しUnixドメインソケット化は見送ったが、「同一Pod内でアプリが侵害された場合」まで守る要求が出てきたら再検討する

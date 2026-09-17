@@ -198,7 +198,7 @@ data:
         {
           "clientId": "fraud-agent",
           "name": "fraud-agent",
-          "description": "AIエージェント本体。frontendから受け取ったトークン（aud=fraud-agent）を自身でfraud-mcp-server宛てに再exchangeする（ADR 0014）",
+          "description": "AIエージェント本体。frontendから受け取ったトークン（aud=fraud-agent）を自身でfraud-mcp-server宛てに再exchangeする（ADR 0014・0023）",
           "enabled": true,
           "protocol": "openid-connect",
           "publicClient": false,
@@ -208,8 +208,11 @@ data:
           "serviceAccountsEnabled": false,
           "authorizationServicesEnabled": false,
           "fullScopeAllowed": false,
+          "clientAuthenticatorType": "federated-jwt",
           "attributes": {
-            "standard.token.exchange.enabled": "true"
+            "standard.token.exchange.enabled": "true",
+            "jwt.credential.issuer": "spire-gekko",
+            "jwt.credential.sub": "spiffe://gekko.internal/ns/gekko/sa/default/fraud-agent"
           },
           "defaultClientScopes": [],
           "optionalClientScopes": ["account:read"]

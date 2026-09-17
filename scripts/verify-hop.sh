@@ -20,6 +20,14 @@
 # account-service自身のegress Envoy(ext_authzによるToken Exchange、JWT-SVIDクライアント認証)を
 # 経由してanalyst-attribute-serviceへ委任する。account-service宛てGETリクエスト(ステップ3a)を
 # 起点に、account-serviceのapp自身がこの委任を行う
+#
+# パターン④(Token Exchange、fraud-agent→fraud-mcp-server。ADR 0023)：
+# frontend/fraud-agentは両方未実装のため、frontend→fraud-agentのingress側(mTLS+jwt_authn+
+# rbac+合言葉)を経由する実呼び出し元がまだ存在せず、このホップの前半はfrontend実装まで
+# 実機検証できない(ADR 0014 Consequences)。後半(fraud-agent→fraud-mcp-server)は、
+# fraud-agent-stub Pod内のappコンテナへingressを経由せず直接Authorizationヘッダー付きで
+# リクエストし、アプリの転送ロジック(→fraud-agent自身のegress Envoy→fraud-mcp-serverの
+# ingress、いずれもADR 0023で新規実装)をトリガーすることで実機検証する
 set -euo pipefail
 
 NAMESPACE=gekko
@@ -158,6 +166,76 @@ call_account_service_no_auth POST /accounts/123/freeze
 echo "==> 5b.(異常系)fraud-detection-engine egress Envoy経由でaccount-serviceのGET(account:read)を叩く(account:freezeしか持たないため拒否されるはず)"
 call_account_service_no_auth GET /accounts/123/transactions || true
 
+echo "==> 15. frontendがfraud-agent宛てにToken Exchange(scope=account:read)(フロントエンド未実装のため代用。ADR 0023)"
+FRAUD_AGENT_TOKEN=$(curl -s -X POST "$KC/realms/gekko/protocol/openid-connect/token" \
+  -d grant_type=urn:ietf:params:oauth:grant-type:token-exchange \
+  -d client_id=frontend \
+  -d client_secret="$FRONTEND_CLIENT_SECRET" \
+  -d subject_token="$LOGIN_TOKEN" \
+  -d subject_token_type=urn:ietf:params:oauth:token-type:access_token \
+  -d audience=fraud-agent \
+  -d scope=account:read | jq -r .access_token)
+if [ "$FRAUD_AGENT_TOKEN" = "null" ] || [ -z "$FRAUD_AGENT_TOKEN" ]; then
+  echo "fraud-agent宛てトークンの取得に失敗しました" >&2
+  exit 1
+fi
+
+FRAUD_AGENT_POD=$(newest_pod fraud-agent)
+FRAUD_AGENT_HANDSHAKE=$(kubectl -n "$NAMESPACE" exec "$FRAUD_AGENT_POD" -c app -- cat /handshake/token)
+
+echo "==> 16. fraud-agent-stub Pod内のappへ直接(frontendが未実装のためingressは経由しない)Authorization付きでリクエストし、"
+echo "     fraud-agent自身のegress Envoy(Token Exchange)→fraud-mcp-serverのingress(いずれもADR 0023で新規実装)への転送を確認"
+FRAUD_AGENT_RESPONSE=$(kubectl -n "$NAMESPACE" exec "$FRAUD_AGENT_POD" -c app -- env \
+  TOKEN="$FRAUD_AGENT_TOKEN" HANDSHAKE="$FRAUD_AGENT_HANDSHAKE" \
+  python3 -c '
+import os, urllib.error, urllib.request
+req = urllib.request.Request(
+    "http://127.0.0.1:9000/chat",
+    method="POST",
+    data=b"{}",
+    headers={
+        "Authorization": "Bearer " + os.environ["TOKEN"],
+        "x-gekko-handshake": os.environ["HANDSHAKE"],
+    },
+)
+try:
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        print(resp.status)
+        print(resp.read().decode())
+except urllib.error.HTTPError as e:
+    print(e.code)
+    print(e.read().decode())
+')
+echo "$FRAUD_AGENT_RESPONSE"
+if echo "$FRAUD_AGENT_RESPONSE" | grep -q '"fraud_mcp_server": {"status": 200'; then
+  echo "==> 16'. fraud-agent→fraud-mcp-serverへの委任(ADR 0023)を確認(期待通り)"
+else
+  echo "警告:fraud-agent経由でfraud-mcp-serverへ到達できませんでした" >&2
+fi
+
+echo "==> 16.(異常系)fraud-agentのappポートへPod外から直接到達できないことを確認(ADR 0009主対策①と同じ考え方)"
+FRAUD_AGENT_POD_IP=$(kubectl -n "$NAMESPACE" get pod "$FRAUD_AGENT_POD" -o jsonpath='{.status.podIP}')
+kubectl -n "$NAMESPACE" run verify-hop-fraud-agent-bypass-check --rm -i --restart=Never \
+  --image=curlimages/curl:8.10.1 --command -- \
+  curl -s -o /dev/null -w 'direct app port HTTP status: %{http_code}\n' \
+  --max-time 5 "http://${FRAUD_AGENT_POD_IP}:9000/chat" || \
+  echo "direct app port unreachable(期待通り。ADR 0009主対策①と同じ考え方)"
+
+echo "==> 16.(異常系)fraud-agentのtoken-exchangeサイドカーのポート(9002)にPod外から直接到達できないことを確認(ADR 0023)"
+kubectl -n "$NAMESPACE" run verify-hop-fraud-agent-token-exchange-bypass-check --rm -i --restart=Never \
+  --image=curlimages/curl:8.10.1 --command -- \
+  curl -s -o /dev/null -w 'direct app port HTTP status: %{http_code}\n' \
+  --max-time 5 "http://${FRAUD_AGENT_POD_IP}:9002/" || \
+  echo "direct app port unreachable(期待通り。ADR 0009主対策①と同じ考え方)"
+
+echo "==> 16.(異常系)fraud-mcp-serverのappポートへPod外から直接到達できないことを確認(ADR 0023でingress活性化)"
+FRAUD_MCP_POD_IP2=$(kubectl -n "$NAMESPACE" get pod "$FRAUD_MCP_POD" -o jsonpath='{.status.podIP}')
+kubectl -n "$NAMESPACE" run verify-hop-fraud-mcp-server-bypass-check --rm -i --restart=Never \
+  --image=curlimages/curl:8.10.1 --command -- \
+  curl -s -o /dev/null -w 'direct app port HTTP status: %{http_code}\n' \
+  --max-time 5 "http://${FRAUD_MCP_POD_IP2}:9000/" || \
+  echo "direct app port unreachable(期待通り。ADR 0009主対策①と同じ考え方)"
+
 # SPIRE mTLS(ADR 0012/0014。fraud-mcp-server・fraud-detection-engine両方からaccount-serviceへの
 # 全ホップがmTLS必須)。3a/3b/5は既にfraud-mcp-server/fraud-detection-engineのegress Envoy
 # (account_service_upstreamクラスタ)経由でaccount-serviceを叩いており、そのクラスタには
@@ -240,6 +318,20 @@ ext_authz_ssl_handshake_check_cluster() {
     || echo "警告:ssl.handshakeカウンタが検出できませんでした(統計名が異なる可能性。config_dumpで要確認)" >&2
 }
 
+# ADR 0023:cluster名を指定できる版(fraud-agentのegress→fraud-mcp-serverクラスタの確認用。
+# keycloak_upstream固定のext_authz_ssl_handshake_check_clusterとは別クラスタを見る必要があるため)。
+ssl_handshake_check_named_cluster() {
+  local pod="$1" label="$2" cluster="$3"
+  echo "==> 16. ${label}のEnvoy管理ポート(:9901)でTLSハンドシェイクが実際に発生したことを確認(ADR 0023)"
+  kubectl -n "$NAMESPACE" exec "$pod" -c envoy -- bash -c "
+    exec 3<>/dev/tcp/127.0.0.1/9901
+    printf 'GET /stats HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3
+    cat <&3
+  " | grep -E "cluster\.${cluster}\.ssl\.handshake: [1-9]" \
+    && echo "mTLSハンドシェイク成功を確認(期待通り)" \
+    || echo "警告:ssl.handshakeカウンタが検出できませんでした(統計名が異なる可能性。config_dumpで要確認)" >&2
+}
+
 KEYCLOAK_POD=$(newest_pod keycloak)
 EDGE_PROXY_POD=$(newest_pod edge-proxy)
 
@@ -252,6 +344,13 @@ ext_authz_ssl_handshake_check_cluster "$ACCOUNT_POD" "account-service(token-exch
 # listener側ではなくcluster側のssl.handshake統計を見る(他3者はinboundがmTLS必須なので
 # listener側で検出できる。ADR 0017)。
 ext_authz_ssl_handshake_check_cluster "$EDGE_PROXY_POD" "edge-proxy"
+
+# ADR 0023:fraud-agent→fraud-mcp-serverホップ。fraud-agentのegress(fraud_mcp_server_upstream
+# クラスタ)とfraud-mcp-serverのingress(新設listener)の両方でmTLSが実際に発生したことを確認する。
+# fraud-agent自身のingress(frontend→fraud-agent)は、ステップ16がingressを経由しない直接呼び出し
+# のため、ここでは確認しない(frontend実装まで検証できない。ADR 0014 Consequences)。
+ssl_handshake_check_named_cluster "$FRAUD_AGENT_POD" "fraud-agent(token-exchangeサイドカー、ADR 0023)" "fraud_mcp_server_upstream"
+ext_authz_ssl_handshake_check "$FRAUD_MCP_POD" "fraud-mcp-server(ingress、ADR 0023で活性化)"
 
 echo "==> 9. fraud-mcp-serverのtoken-exchangeサイドカーのポート(9002)にPod外から直接到達できないことを確認(ADR 0009主対策①と同じ考え方。ADR 0019)"
 FRAUD_MCP_POD_IP=$(kubectl -n "$NAMESPACE" get pod "$FRAUD_MCP_POD" -o jsonpath='{.status.podIP}')
@@ -315,5 +414,19 @@ kubectl -n "$NAMESPACE" run verify-hop-netpol-analyst-check --rm -i --restart=Ne
   curl -s -o /dev/null -w 'direct analyst-attribute-service reach: %{http_code}\n' \
   --max-time 5 "http://analyst-attribute-service:8080/" || \
   echo "analyst-attribute-serviceへの到達不可(期待通り。ADR 0018)"
+
+echo "==> 14.(異常系)NetworkPolicy適用後、素のPodからfraud-agentに直接到達できないことを確認(ADR 0018/0023:frontend以外はDENY)"
+kubectl -n "$NAMESPACE" run verify-hop-netpol-fraud-agent-check --rm -i --restart=Never \
+  --image=curlimages/curl:8.10.1 --command -- \
+  curl -s -o /dev/null -w 'direct fraud-agent reach: %{http_code}\n' \
+  --max-time 5 "http://fraud-agent:8080/" || \
+  echo "fraud-agentへの到達不可(期待通り。ADR 0018/0023)"
+
+echo "==> 14.(異常系)NetworkPolicy適用後、素のPodからfraud-mcp-serverに直接到達できないことを確認(ADR 0018/0023:fraud-agent以外はDENY)"
+kubectl -n "$NAMESPACE" run verify-hop-netpol-fraud-mcp-server-check --rm -i --restart=Never \
+  --image=curlimages/curl:8.10.1 --command -- \
+  curl -s -o /dev/null -w 'direct fraud-mcp-server reach: %{http_code}\n' \
+  --max-time 5 "http://fraud-mcp-server:8080/" || \
+  echo "fraud-mcp-serverへの到達不可(期待通り。ADR 0018/0023)"
 
 echo "==> 検証完了"

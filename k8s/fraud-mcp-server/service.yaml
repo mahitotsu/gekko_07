@@ -1,0 +1,15 @@
+# ADR 0023:fraud-agent→fraud-mcp-serverホップの実装にあわせて新規作成した(それまでfraud-mcp-server
+# にはKubernetes Service自体が存在しなかった。呼び出し元が無かったため)。Envoyのリスナーポートのみを
+# 公開する。アプリ(127.0.0.1:9000)は一切公開しない(ADR 0009 主対策①)。
+apiVersion: v1
+kind: Service
+metadata:
+  name: fraud-mcp-server
+  namespace: gekko
+spec:
+  selector:
+    app: fraud-mcp-server
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

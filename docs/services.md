@@ -4,7 +4,7 @@
 
 各サービスの技術スタックは意図的に統一しない（多言語構成の理由は[requirements.md](requirements.md)「背景（なぜサイドカーへ切り出すか）」参照：Token Exchangeをサイドカーへ切り出す価値は、実装言語がバラバラな構成でこそ際立つ）。個々の選定理由は[ADR 0007](adr/0007-per-service-language-selection.md)を参照。
 
-以下のサービス本実装はいずれも未着手（設計段階）。ただしaccount-service・fraud-mcp-server・fraud-detection-engineは、Envoy/ext_authzによるToken Exchange・SPIFFE/SPIRE mTLSの実機検証用スタブとして存在する（本実装とは別物。詳細は[architecture.md](architecture.md)・[insights.md](insights.md)参照）。
+以下のサービス本実装はいずれも未着手（設計段階）。ただしaccount-service・fraud-mcp-server・fraud-detection-engine・analyst-attribute-service・fraud-agentは、Envoy/ext_authzによるToken Exchange・SPIFFE/SPIRE mTLSの実機検証用スタブとして存在する（本実装とは別物。詳細は[architecture.md](architecture.md)・[insights.md](insights.md)参照）。
 
 ## frontend（BFF）
 

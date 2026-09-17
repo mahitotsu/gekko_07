@@ -181,16 +181,20 @@ deploy-verify-hop:
 	@# 自身のPod内サイドカーへ置き換えた。
 	kubectl apply -f k8s/analyst-attribute-service/app-configmap.yaml -f k8s/analyst-attribute-service/envoy-configmap.yaml -f k8s/analyst-attribute-service/deployment.yaml -f k8s/analyst-attribute-service/service.yaml
 	kubectl apply -f k8s/account-service/app-configmap.yaml -f k8s/account-service/token-exchange-app-configmap.yaml -f k8s/account-service/envoy-configmap.yaml -f k8s/account-service/deployment.yaml -f k8s/account-service/service.yaml
-	kubectl apply -f k8s/fraud-mcp-server/app-configmap.yaml -f k8s/fraud-mcp-server/token-exchange-app-configmap.yaml -f k8s/fraud-mcp-server/envoy-configmap.yaml -f k8s/fraud-mcp-server/deployment.yaml
+	kubectl apply -f k8s/fraud-mcp-server/app-configmap.yaml -f k8s/fraud-mcp-server/token-exchange-app-configmap.yaml -f k8s/fraud-mcp-server/envoy-configmap.yaml -f k8s/fraud-mcp-server/deployment.yaml -f k8s/fraud-mcp-server/service.yaml
 	kubectl apply -f k8s/fraud-detection-engine/client-credentials-app-configmap.yaml -f k8s/fraud-detection-engine/envoy-configmap.yaml -f k8s/fraud-detection-engine/deployment.yaml
+	@# ADR 0023:frontend→fraud-agent→fraud-mcp-serverホップ検証用(frontend未実装のため、
+	@# frontend側の代役はverify-hop.shがKeycloakへ直接行う)。
+	kubectl apply -f k8s/fraud-agent/app-configmap.yaml -f k8s/fraud-agent/token-exchange-app-configmap.yaml -f k8s/fraud-agent/envoy-configmap.yaml -f k8s/fraud-agent/deployment.yaml -f k8s/fraud-agent/service.yaml
 	@# EnvoyはConfigMapの静的bootstrap設定を起動時に1度だけ読み込み、変更をホットリロードしない
 	@# （Keycloak realmの--import-realmと同種の落とし穴。insights.md参照）。ConfigMap更新が
 	@# 既存Podへ確実に反映されるよう、スタブは常に再起動する（いずれも状態を持たないため無害）
-	kubectl -n $(NAMESPACE) rollout restart deployment/analyst-attribute-service-stub deployment/account-service-stub deployment/fraud-mcp-server-stub deployment/fraud-detection-engine-stub
+	kubectl -n $(NAMESPACE) rollout restart deployment/analyst-attribute-service-stub deployment/account-service-stub deployment/fraud-mcp-server-stub deployment/fraud-detection-engine-stub deployment/fraud-agent-stub
 	kubectl -n $(NAMESPACE) rollout status deployment/analyst-attribute-service-stub --timeout=120s
 	kubectl -n $(NAMESPACE) rollout status deployment/account-service-stub --timeout=120s
 	kubectl -n $(NAMESPACE) rollout status deployment/fraud-mcp-server-stub --timeout=120s
 	kubectl -n $(NAMESPACE) rollout status deployment/fraud-detection-engine-stub --timeout=120s
+	kubectl -n $(NAMESPACE) rollout status deployment/fraud-agent-stub --timeout=120s
 
 # scripts/verify-hop.shを実行する（deploy-verify-hop実行済み前提）
 verify-hop:
@@ -200,8 +204,9 @@ verify-hop:
 # 前提コンポーネントになった(ADR 0016)ため、ここでは削除しない。Keycloak+SPIREを残したまま
 # スタブだけ入れ替えられるようにする)
 undeploy-verify-hop:
+	kubectl delete -f k8s/fraud-agent/service.yaml -f k8s/fraud-agent/deployment.yaml -f k8s/fraud-agent/envoy-configmap.yaml -f k8s/fraud-agent/token-exchange-app-configmap.yaml -f k8s/fraud-agent/app-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/fraud-detection-engine/deployment.yaml -f k8s/fraud-detection-engine/envoy-configmap.yaml -f k8s/fraud-detection-engine/client-credentials-app-configmap.yaml --ignore-not-found
-	kubectl delete -f k8s/fraud-mcp-server/deployment.yaml -f k8s/fraud-mcp-server/envoy-configmap.yaml -f k8s/fraud-mcp-server/token-exchange-app-configmap.yaml -f k8s/fraud-mcp-server/app-configmap.yaml --ignore-not-found
+	kubectl delete -f k8s/fraud-mcp-server/service.yaml -f k8s/fraud-mcp-server/deployment.yaml -f k8s/fraud-mcp-server/envoy-configmap.yaml -f k8s/fraud-mcp-server/token-exchange-app-configmap.yaml -f k8s/fraud-mcp-server/app-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/account-service/service.yaml -f k8s/account-service/deployment.yaml -f k8s/account-service/envoy-configmap.yaml -f k8s/account-service/token-exchange-app-configmap.yaml -f k8s/account-service/app-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/analyst-attribute-service/service.yaml -f k8s/analyst-attribute-service/deployment.yaml -f k8s/analyst-attribute-service/envoy-configmap.yaml -f k8s/analyst-attribute-service/app-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/keycloak/test-fixtures-job.yaml -f k8s/keycloak/test-fixtures-configmap.yaml --ignore-not-found
@@ -253,14 +258,16 @@ deploy-network-policy:
 	kubectl apply -f k8s/postgres/networkpolicy.yaml -f k8s/keycloak/networkpolicy.yaml \
 		-f k8s/edge-proxy/networkpolicy.yaml \
 		-f k8s/account-service/networkpolicy.yaml -f k8s/fraud-mcp-server/networkpolicy.yaml \
-		-f k8s/fraud-detection-engine/networkpolicy.yaml -f k8s/analyst-attribute-service/networkpolicy.yaml
+		-f k8s/fraud-detection-engine/networkpolicy.yaml -f k8s/analyst-attribute-service/networkpolicy.yaml \
+		-f k8s/fraud-agent/networkpolicy.yaml
 
 # NetworkPolicy一式を削除する
 undeploy-network-policy:
 	kubectl delete -f k8s/postgres/networkpolicy.yaml -f k8s/keycloak/networkpolicy.yaml \
 		-f k8s/edge-proxy/networkpolicy.yaml \
 		-f k8s/account-service/networkpolicy.yaml -f k8s/fraud-mcp-server/networkpolicy.yaml \
-		-f k8s/fraud-detection-engine/networkpolicy.yaml -f k8s/analyst-attribute-service/networkpolicy.yaml --ignore-not-found
+		-f k8s/fraud-detection-engine/networkpolicy.yaml -f k8s/analyst-attribute-service/networkpolicy.yaml \
+		-f k8s/fraud-agent/networkpolicy.yaml --ignore-not-found
 	kubectl delete -f k8s/network-policy/default-deny.yaml -f k8s/network-policy/allow-dns.yaml --ignore-not-found
 
 # クラスタのコンテナを停止する（状態は保持したまま。再開はstartで）

@@ -1,0 +1,38 @@
+# ADR 0018/0023。呼び出し元(frontend。未実装のため現状はverify-hop.shがROPCで代用)からの
+# ingressと、KeycloakのJWKS取得(mTLS)・fraud-mcp-serverへのToken Exchange委任(ADR 0023の
+# パターンを最初から適用)へのegressを許可する。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: fraud-agent
+  namespace: gekko
+spec:
+  podSelector:
+    matchLabels:
+      app: fraud-agent
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: frontend
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: keycloak
+      ports:
+        - protocol: TCP
+          port: 8443
+    - to:
+        - podSelector:
+            matchLabels:
+              app: fraud-mcp-server
+      ports:
+        - protocol: TCP
+          port: 8080
