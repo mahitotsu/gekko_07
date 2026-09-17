@@ -132,12 +132,13 @@ fraud-detection-engineの client_credentials トークン(scope=account:freeze)
 
 ## 8. 監査
 
-[access-control-requirements.md](access-control-requirements.md) BR8（事後追跡可能性）を満たすため、トークンの`jti`（発行識別子）と`audience`の組を突合キーとする方式に加え、AIの提案と人間の確定を紐付けるための`proposal_id`を導入する。
+[access-control-requirements.md](access-control-requirements.md) BR8（事後追跡可能性）を満たすため、監査ログ集約基盤（Grafana Alloy + `grafana/otel-lgtm`、[ADR 0025](adr/0025-audit-log-aggregation.md)）でEnvoyアクセスログ・Keycloakイベントログを集約し、以下の相関キーで事後の再構成を可能にする。
 
-- account-serviceは提案の記録（propose）時に`proposal_id`を発行し、`sub`・`jti`・根拠データとともに記録する
-- 凍結解除の実行（unfreeze）時は、確定に使われた`proposal_id`（存在する場合）と、その時の`sub`・`jti`を記録する
-- これにより「どの提案が、誰によって、どのトークンで確定されたか」を事後に再構成できる
-- OpenTelemetryトレース・Keycloakイベントログとの統合方式は実装時に決定（backlog.md参照）
+- **`sessionId`**（Keycloakのログインセッションid）：委任チェーン1インスタンスの相関キー。同一のfrontendログインセッションに由来する全ホップのToken Exchangeイベントは同じ`sessionId`を持つ（実機確認済み。insights.md参照）。`sub`単体では同一アナリストの複数の並行操作（別タブでの別操作等）を区別できないため、これを主キーとする
+- **`sub`/`userId`/`username`**：誰が。委任チェーン全体で元のアナリストのまま維持される（Impersonation方式）。client_credentialsグラント（fraud-detection-engineの自動凍結処理）には`sessionId`自体が存在せず、`sub`はその処理自身のサービスアカウントになる（BR7と整合）
+- **`token_id`（jti）/`scope`/`audience`**：各ホップで何をしたか。ホップごとに新しいトークンが発行されるため、`jti`はホップごとに変わる
+
+集約先はKeycloakのイベントログ（`eventsEnabled`、`TOKEN_EXCHANGE`/`LOGIN`等。`userId`/`username`/`sessionId`/`token_id`/`scope`/`audience`/`subject_token_client_id`を含む）を主軸とし、全ホップのEnvoyアクセスログ（`x-auth-sub`/`x-auth-scope`/`x-auth-jti`）を補助的に併用する。`proposal_id`（AIの提案と人間の確定を紐付けるための識別子）自体のaccount-service側実装（DB永続化）は、account-serviceの本実装（ADR 0007）まで持ち越しており未着手。
 
 ## 9. 既知の制約・未決定事項
 

@@ -1,0 +1,7 @@
+# 監査ログ集約基盤(Alloy+otel-lgtm)のnamespace(ADR 0025)。gekko(アプリnamespace)・
+# spire(IDコントロールプレーン)とは分離する。spireと異なりhostNetwork/hostPID等の
+# 特権は不要なため、NetworkPolicy default-denyの対象外にはせず、gekkoと同様に適用する。
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: observability

@@ -66,6 +66,16 @@ spec:
               value: "true"
             - name: KC_HEALTH_ENABLED
               value: "true"
+            # ADR 0025: 監査ログ集約。eventsListeners(realm-configmap.yaml)が出力する
+            # イベントログを含め、標準出力をJSON化してk8s/observability/のAlloyが
+            # 構造化ログとしてそのまま取り込めるようにする。
+            - name: KC_LOG_CONSOLE_OUTPUT
+              value: "json"
+            # jboss-loggingイベントリスナーは成功イベントをDEBUGレベル、エラーイベントを
+            # WARNレベルで出力する仕様のため、org.keycloak.eventsカテゴリだけDEBUGにしないと
+            # 成功したTOKEN_EXCHANGE/LOGIN等(BR8の監査対象そのもの)が握りつぶされる(実機で確認)。
+            - name: KC_LOG_LEVEL
+              value: "INFO,org.keycloak.events:DEBUG"
             # ADR 0017/0022: appをPod外から直接到達不能にする(ADR 0009と同じ考え方)。
             # KC_HTTP_MANAGEMENT_HOSTが無いと--http-hostを継承してmgmt(9000)も同じ
             # 127.0.0.1になる(これが望む挙動。ADR 0022でexecプローブ化したため明示不要になったが、

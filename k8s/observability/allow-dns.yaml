@@ -1,0 +1,24 @@
+# observability namespace内のPodに、サービス名解決(otel-lgtm.observability.svc.cluster.local等)に
+# 必要なkube-system/kube-dnsへのegressを許可する(k8s/network-policy/allow-dns.yamlと同型。ADR 0025)。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: observability
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

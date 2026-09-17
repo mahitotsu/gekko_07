@@ -1,0 +1,32 @@
+# AlloyのServiceAccount/RBAC(ADR 0025)。
+# pods/namespaces get,list,watch: discovery.kubernetesでPodのラベル(namespace/pod/container名)を
+# 取得し、hostPathで読むログファイルパスと突き合わせるために必要(k8s/spire/agent-account.yamlの
+# ClusterRoleパターンと同型)。ログの中身自体はKubernetes APIではなくhostPath経由のファイル読み取り
+# のため、pods/logは不要。
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: alloy
+  namespace: observability
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: alloy
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "namespaces"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: alloy
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: alloy
+subjects:
+  - kind: ServiceAccount
+    name: alloy
+    namespace: observability

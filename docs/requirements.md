@@ -29,7 +29,7 @@ AIエージェントに実行系の操作まで許してしまうと、エージ
 
 ## 委任チェーンの事後監査
 
-「AIが何を根拠に何を提案したか」と「人間がいつ・どのトークンで確定したか」を事後に区別して追跡できることを要件とする（[access-control-requirements.md](access-control-requirements.md) BR8）。トークンの`jti`（発行識別子）と`audience`の組を突合キーとする方式に加え、AIの提案と人間の確定を紐付ける`proposal_id`を導入する（詳細は[architecture.md](architecture.md) §8）。
+「AIが何を根拠に何を提案したか」と「人間がいつ・どのトークンで確定したか」を事後に区別して追跡できることを要件とする（[access-control-requirements.md](access-control-requirements.md) BR8）。監査ログ集約基盤（[ADR 0025](adr/0025-audit-log-aggregation.md)）で、Keycloakのログインセッションid（`sessionId`）を委任チェーン1インスタンスの相関キーとし、`sub`/`jti`（発行識別子）を組み合わせて事後に再構成する（詳細は[architecture.md](architecture.md) §8）。AIの提案と人間の確定を紐付ける`proposal_id`のaccount-service側実装は、account-serviceの本実装まで持ち越している。
 
 ## 業務ロジックのリアリティ水準
 

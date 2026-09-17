@@ -6,9 +6,18 @@
 # 各クライアントのdefaultClientScopesは空にしている。profile/email/roles等のKeycloak標準
 # client scopeは管理コンソールでrealmを新規作成した場合にのみ自動生成される組み込みscopeで、
 # --import-realmでの直接importでは生成されない（参照すると"doesn't exist. Ignoring"警告に
-# なるだけで実害はないが、実機確認済みの事実として記録する）。そのためログイントークンには
-# 現状sub等のコアclaimのみが載る。プロフィール表示等でpreferred_username等が必要になったら、
-# その時点でclientScopesに明示的に定義を追加する。
+# なるだけで実害はないが、実機確認済みの事実として記録する）。プロフィール表示等で
+# preferred_username等が必要になったら、その時点でclientScopesに明示的に定義を追加する。
+#
+# ADR 0025の監査ログ集約作業で判明:上記の想定と異なり、`sub`もコアclaim扱いでは自動的に
+# access tokenへ乗らない（Keycloak 26.7.0で実機確認。この実現象は"basic"スコープ等の
+# 組み込みscope欠如とは無関係で、admin-cli(masterrealm、標準scope完備)でも同様に欠落する
+# ため、realm importの構成に依存しないKeycloak側の挙動と判断した）。frontendクライアントの
+# ROPCログイン(`/login`)で発行されるアクセストークンに限り、`subject-claim`という
+# 明示的なdedicated protocol mapper(oidc-usermodel-property-mapper、user.attribute=id→
+# claim.name=sub)を追加してこれを補っている。Token Exchange(委任チェーンの②③④ホップ)は
+# このマッパーを追加する前から`sub`を正しく引き継いでいたため(実機確認済み)、frontend以外の
+# クライアントには同じマッパーを追加していない。
 #
 # clientScope/clientのdescriptionはKeycloakのDB上VARCHAR(255)相当の列に格納されるため、
 # 255文字を超えると--import-realm自体が"ERROR: value too long for type character
@@ -25,6 +34,8 @@ data:
       "realm": "gekko",
       "enabled": true,
       "displayName": "gekko - 不正検知・口座凍結解除サンプル",
+      "eventsEnabled": true,
+      "eventsListeners": ["jboss-logging"],
       "clientScopes": [
         {
           "name": "account:read",
@@ -194,6 +205,20 @@ data:
                 "included.client.audience": "frontend",
                 "id.token.claim": "false",
                 "access.token.claim": "true"
+              }
+            },
+            {
+              "name": "subject-claim",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-usermodel-property-mapper",
+              "consentRequired": false,
+              "config": {
+                "user.attribute": "id",
+                "claim.name": "sub",
+                "jsonType.label": "String",
+                "id.token.claim": "false",
+                "access.token.claim": "true",
+                "userinfo.token.claim": "false"
               }
             }
           ]

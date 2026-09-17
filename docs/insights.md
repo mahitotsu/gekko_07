@@ -318,3 +318,75 @@ federation {
 **対応**：今回は範囲外として是正しなかった（Client Policies導入は既存の設計判断を覆すため、行うなら独立したADRが必要）。ただし今回、verify-hop.sh自身がこの抜け道（frontendを名乗って直接fraud-mcp-server宛てexchangeする）を使っていたことに気づき、frontend→fraud-agent→fraud-mcp-serverの実チェーン（各サービス自身のtoken-exchangeサイドカーを経由）に置き換えて解消した。全クライアントの実装（サイドカーのSCOPE_RULES）は正しいaudienceしか要求しないため、現状はリスクが顕在化していない。
 
 **実際に通った検証**：`client_credentials`グラントでは`{"error":"unauthorized_client","error_description":"Client not enabled to retrieve service account"}`（=クライアント認証自体は成功、fraud-mcp-serverの`serviceAccountsEnabled: false`が理由でグラント自体が拒否されただけ）。既存のverify-hop.sh同様の2段階委任（frontendでログイン→frontendがfraud-mcp-server宛てにToken Exchange→そのDELEGATED_TOKENをsubject_tokenにfraud-mcp-server自身がaccount-service宛てにToken Exchange、ただし`client_secret`の代わりに`client_assertion_type=...jwt-spiffe`＋`client_assertion=<JWT-SVID>`を使用）を実行したところ、**HTTP 200でaccount-service向けアクセストークンが発行された**。RFC 8705が不成立と判明した際の懸念（Keycloakネイティブpreview機能が実際に機能するか）は、この実クラスタでの成功により解消したと判断できる。
+
+## 監査ログ集約（ADR 0025）
+
+### Grafana Alloyの設定言語（River）の行コメントは`//`であり、`#`ではない
+
+**症状**：`k8s/observability/alloy-configmap.yaml`の`config.alloy`内にYAML/shell感覚で`#`コメントを書いたところ、Alloy起動時に`illegal character U+30FB '・'`等、コメント以降の全角文字を含む行が軒並み構文エラーになり、`could not perform the initial load successfully`でクラッシュループした。
+
+**原因**：AlloyのRiver構文はHCL系で、行コメントは`//`。`#`は単なる不正なトークンとして扱われ、それ以降の行がコメントとして無視されない。
+
+**対応**：`config.alloy`ブロック内のコメントを全て`//`に置き換えた（`config.alloy: |`より外側、ConfigMap自体のYAMLコメントは`#`のままでよい。両者が同じファイルに混在する点に注意）。
+
+### `discovery.relabel`のreplacementの`$N`は、regexのキャプチャグループであってsource_labelsの各要素ではない
+
+**症状**：Podのログファイルパス（`/var/log/pods/<namespace>_<podname>_<uid>/<container>/*.log`）を組み立てるために、`source_labels = [namespace, podname, uid, container]`を`separator: "/"`で連結し、`replacement: "/var/log/pods/*$1_$2_$3/*$4/*.log"`のように「4つの要素に$1〜$4がそれぞれ対応する」と誤解して書いたところ、`discovery.relabel`の絞り込み（`action: keep`）自体は正しく機能する一方、後段の`local.file_match`が全namespace・全コンテナのログファイルを拾ってしまった。
+
+**原因**：`replacement`の`$N`はPrometheus/Alloyのrelabelingにおける「`regex`フィールドの正規表現キャプチャグループ」を指す。`regex`を明示的に指定しない場合、既定値`(.*)`が連結後の文字列**全体**を単一の`$1`として捕捉するため、`$2`以降は常に空文字列になる。結果として生成される`__path__`が想定と異なる壊れたグロブパターンになり、意図せず広い範囲にマッチしていた。
+
+**対応**：Grafanaの公式サンプルと同じ手法へ変更した。`source_labels = [pod_uid, container_name]`のみを`separator: "/"`で連結し、`replacement: "/var/log/pods/*$1/*.log"`とする（`$1`は連結後の文字列全体＝`"<uid>/<container>"`）。kubeletのディレクトリ名`<namespace>_<podname>_<uid>`は先頭に`*`グロブを置くことで吸収し、末尾に来るUID（グローバルに一意）と`/<container>/*.log`だけで十分に一意な絞り込みになる。namespace/containerでの事前フィルタ（`action: keep`）と組み合わせて実機で意図通りの絞り込みを確認済み。
+
+### grafana/otel-lgtmの実際の内部構成（イメージ調査で確認）
+
+`grafana/otel-lgtm:0.33.0`（`docker pull`でローカル検証。DockerfileのEXPOSEは3000/3200/4040/4317/4318/9090のみ）は、Grafana・Loki・Prometheus・Tempo・Pyroscope・OTel Collectorの6プロセスを`/otel-lgtm/run-all.sh`が一括起動する単一コンテナ。今回の用途（Loki+Grafanaのみ）ではPrometheus/Tempo/Pyroscope/OTel Collectorは起動するが未使用（個別無効化の方法は未調査）。
+
+Lokiは`http_listen_port: 3100`（`/otel-lgtm/loki-config.yaml`）で待ち受けているが、Dockerfile上のEXPOSEには含まれない。EXPOSEはドキュメント目的でありK8s Serviceは任意のリスニングポートを対象にできるため、`targetPort: 3100`を明示すれば問題なく到達できる（実機確認済み。Grafana自身のデータソース定義`grafana-datasources.yaml`も`http://127.0.0.1:3100`を参照している）。
+
+### Keycloakの`jboss-logging`イベントリスナーは、成功イベントをDEBUGレベル・エラーイベントをWARNレベルで出力する
+
+**症状**：`eventsEnabled: true`・`eventsListeners: ["jboss-logging"]`を設定しただけでは、実際にログへ出力されるのは`TOKEN_EXCHANGE_ERROR`のような失敗系イベントのみで、成功した`LOGIN`・`TOKEN_EXCHANGE`は一切出力されなかった（`org.keycloak.events`ロガーの出力を`kubectl logs`で直接確認して判明）。BR8が本来必要とするのは「誰が実行したか」＝成功した操作の記録であり、エラーだけでは監査要件を満たせない。
+
+**原因**：Keycloakの既定ログレベルはINFOだが、`jboss-logging`イベントリスナーは成功イベントをDEBUGレベルで、エラーイベントをWARNレベルでログに出す実装になっている（ルートロガーの既定INFOでは前者が握りつぶされる）。
+
+**対応**：`k8s/keycloak/deployment.yaml`に`KC_LOG_LEVEL: "INFO,org.keycloak.events:DEBUG"`を追加し、`org.keycloak.events`カテゴリだけDEBUGへ引き上げた。この変更はKeycloakのQuarkusビルド設定に影響するため、Pod再起動直後は`Quarkus augmentation`の再実行で通常より起動が遅くなる（実機で70秒以上かかった。`rollout status`のtimeoutを短く設定していると誤って失敗扱いにするので注意）。
+
+### アクセストークンに`sub`クレームが乗らない（Keycloak 26.7.0、原因未特定・dedicated mapperで回避）
+
+**症状**：frontendの`/login`（ROPC）で発行されたアクセストークンをデコードすると、`sub`クレームが存在しない（`azp`/`sid`/`jti`等はある）。この状態はrealm importの構成（defaultClientScopesが空、`--import-realm`で標準scopeが生成されない等）とは無関係で、**masterrealmの組み込みクライアント`admin-cli`（標準scope完備、client_secret認証）でも同様に`sub`が欠落する**ことを実機で確認した。`client.use.lightweight.access.token.enabled`をクライアント属性で明示的に`false`にしても症状は変わらず、`scope=openid`を明示的に要求してもアクセストークン自体には影響しない（同時に発行されるID Tokenには`sub`が乗る）ため、根本原因はこの2つのどちらでもないと判断した（Keycloak 26.7.0自体の挙動である可能性が高いが、未特定のまま）。
+
+一方、Token Exchange（委任チェーンの②③④ホップ）で発行されるトークンは、このマッパーを追加する前から`sub`を正しく引き継いでいた（実機確認済み）。つまり影響範囲はfrontendの生ログイントークン（および、それを直接subject_tokenにする以降の全ホップ）に限られていた。
+
+**対応**：frontendクライアントの`protocolMappers`に、`oidc-usermodel-property-mapper`（`user.attribute: id`→`claim.name: sub`）の明示的なdedicated mapperを追加した（`aud`クレームの欠落を補った既存の`audience-self`マッパーと同じ手法）。追加後、frontendの生ログイントークンにも`sub`が正しく乗り、それをsubject_tokenとする以降の全ホップ（frontend→account-service/fraud-agent直接exchangeを含む）でも`sub`が一貫して伝播することを`scripts/verify-hop.sh`で実機確認した。frontend以外のクライアントには追加していない（Token Exchange側は元々問題が無かったため）。
+
+### Token ExchangeイベントログのsessionIdが、委任チェーン1インスタンスの相関キーになる
+
+`type="TOKEN_EXCHANGE"`イベントには`sessionId`（Keycloakのログインセッションid）が含まれ、**同一ログインセッション内で発生した全ホップのToken Exchangeイベントで同じ値になる**ことを実機確認した（frontend→fraud-agent、frontend→fraud-mcp-server、account-service→analyst-attribute-service等、1回のfrontend操作に由来する全イベントが同一`sessionId`を持つ）。`sub`/`userId`だけでは「誰か」しか分からず、同一アナリストの複数の並行操作（別タブでの別操作等）を区別できないため、委任チェーン1インスタンスの再構成には`sessionId`を主キーとし、`sub`/`userId`/`username`（誰が）・`token_id`/`scope`/`audience`（各ホップで何をしたか）を組み合わせる設計とした（architecture.md §8参照）。client_credentialsグラント（fraud-detection-engineの自動凍結処理）には`sessionId`自体が存在せず、これはBR7（アナリストの代理ではない）の設計とも整合する。
+
+### edge-proxyの`/admin/`パスがKeycloakではなくfrontendへ誤配送される（ADR 0024の実装漏れ）
+
+**症状**：Keycloakのrealmを再import後、`k8s/keycloak/test-fixtures-job.yaml`のkcadm.shが`SERVER=http://edge-proxy...`経由で`/admin/realms/gekko/users`等を呼ぶと、一貫して`401 Unauthorized`になった。edge-proxy自身のアクセスログ（ADR 0025で追加）を見ると、この呼び出しの実際の宛先（`upstream_host`）はKeycloakではなく**frontendのService IP**だった。
+
+**原因**：ADR 0024でedge-proxyのroute_configを`/realms/`(Keycloak)と`/`(frontend、catch-all)に分割した際、コメントには「kcadm.sh等はKeycloak Pod内へkubectl execで直接到達するため対象外」と書かれていたが、実際にはtest-fixtures-configmap.yamlのkcadm.shがedge-proxy経由で`/admin/`配下を叩いており、この想定は誤りだった。`/admin/`はcatch-allの`/`ルートにマッチしてfrontendへ配送され、frontendのjwt_authnまたはアプリ自体が401を返していた。
+
+**対応**：`k8s/edge-proxy/envoy-configmap.yaml`のroute_configに`{match: {prefix: "/admin/"}, route: {cluster: keycloak_upstream}}`を`/realms/`ルートの次に追加した。ADR 0025の監査ログ集約作業（realm再import）で偶然発覚したが、ADR 0024自体のバグであり新規ADRは起こさず、このADRのコミットで一緒に是正した。
+
+### k3d(kube-router)のNetworkPolicyは、KubernetesのAPIサーバー(`kubernetes` Service)宛てのegressをClusterIPではなくDNAT後の実IPで評価する
+
+**症状**：Alloyの`discovery.kubernetes`（Podメタデータ取得用）に`kubernetes` ServiceのClusterIP（`10.43.0.1/32:443`）へのegressを許可するNetworkPolicyを追加しても、`observability` namespaceにdefault-denyを適用したままだと`discovery.kubernetes.pods`のtargetsが0件のまま変化しなくなった（RBAC＝ClusterRoleは正しく、`kubectl auth can-i`も許可を返す）。Alloy Pod内の`/proc/net/tcp`を見ると、APIサーバーへのTCP接続試行自体が一切記録されておらず（SYN_SENTすら無い）、NetworkPolicyがDROPしているというより経路自体が塞がれているように見えた。
+
+**原因**：`kubernetes` Service（selectorなしの特殊なService）は`ClusterIP=10.43.0.1:443`だが、実体（`kubectl get endpoints kubernetes`で確認できる）はk3dノード自身のIP:6443（例：`172.19.0.2:6443`）。k3dの既定CNIであるkube-routerは、NetworkPolicyをkube-proxyのDNAT**後**の宛先（＝ノードの実IP:6443）に対して評価するため、ClusterIP:443宛てのipBlockルールでは一致しない。NetworkPolicyを完全に外すと即座に解決した（Alloyが正常にPodを発見・tailを開始した）ことから、NetworkPolicyそのものが原因であることを切り分けた。
+
+**対応**：`k8s/observability/networkpolicy.yaml`のAlloy向けegressルールを、k3dノードのCIDR（`172.19.0.0/16`、edge-proxy（ADR 0004/0017）のingress例外と同じCIDR）宛て・ポート6443へのipBlockに変更した。他のNetworkPolicy（`k8s/network-policy/`・各サービスの`networkpolicy.yaml`）はいずれもPod間通信（podSelector）のみで完結しており、KubernetesのAPIサーバー自体にegressする必要があるコンポーネントはAlloyが最初だったため、この罠はこれまで顕在化していなかった。
+
+### k3d(containerd)のPodログは`/var/log/pods/<namespace>_<podname>_<uid>/<container>/<restart>.log`に標準CRI形式で実在する
+
+Alloyのhostpath収集方式（`/var/log/pods`をDaemonSetでマウント）が実際に機能するか未検証だった点について、k3dノードコンテナ内を直接確認し、標準的なkubelet/containerdのログレイアウト（`<timestamp> <stream> <F|P> <line>`のCRI形式）で存在することを確認した。Alloyの`stage.cri`でエンベロープを剥がすだけで中身（Envoyのjson_formatアクセスログ・Keycloakのjson出力）をそのまま扱える。
+
+### `k8s/keycloak/test-fixtures-configmap.yaml`のパスワード設定に再現性のある問題がある（未解決）
+
+**症状**：realm再import直後に`make deploy-verify-hop`（test-fixtures-job）を実行すると、ジョブ自体は正常終了する（"Created new user"まで到達する）が、そのユーザーで実際にログインすると`401 Unauthorized`になることがあった。Keycloak側でkcadmから`set-password`を打ち直す（`.secrets/yamada-analyst-password`と同じ値を明示的に再設定する）と直った。
+
+**原因**：未特定。Secret（`yamada-analyst`）の値と`.secrets/yamada-analyst-password`ファイルの内容は一致しており、生成される認証情報（argon2ハッシュ）自体は存在するため、fixtures.sh側のcreate-user時のパスワード設定手順（インライン`credentials`指定か、Keycloak側の何らかのタイミング要因か）に問題がある可能性がある。
+
+**対応**：今回は範囲外として深追いしなかった（ADR 0025の監査ログ集約とは無関係な既存スクリプトの問題）。backlog.mdに未解決事項として記録する。

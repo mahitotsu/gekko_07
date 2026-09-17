@@ -1,0 +1,87 @@
+# Alloyの設定(River構文、ADR 0025)。gekko namespace内のenvoy/keycloakコンテナのログのみを
+# hostPath(/var/log/pods、kubeletがcontainerd経由で書き出す標準CRIフォーマット。k3dで実機確認済み)
+# から収集し、CRIエンベロープを剥がしてotel-lgtmのLoki(3100)へpushする。
+#
+# sub/jti等の値はLokiのラベル(ストリームラベル)にはしない(値ごとに別ストリームになり、
+# カーディナリティが際限なく増えるLokiのアンチパターンになるため)。namespace/pod/containerだけを
+# ラベルにし、sub/jti/scopeでの絞り込みはクエリ時のLogQLライン文字列/JSONパース(`| json`)で行う。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alloy-config
+  namespace: observability
+data:
+  config.alloy: |
+    discovery.kubernetes "pods" {
+      role = "pod"
+    }
+
+    discovery.relabel "audit_logs" {
+      targets = discovery.kubernetes.pods.targets
+
+      rule {
+        source_labels = ["__meta_kubernetes_namespace"]
+        target_label  = "namespace"
+      }
+
+      rule {
+        source_labels = ["__meta_kubernetes_pod_name"]
+        target_label  = "pod"
+      }
+
+      rule {
+        source_labels = ["__meta_kubernetes_pod_container_name"]
+        target_label  = "container"
+      }
+
+      // 監査対象はgekko namespaceのenvoy/keycloakコンテナのみ(access_logはenvoyコンテナへ、
+      // eventsListenersの出力はkeycloakコンテナ自身の標準出力へ、それぞれADR 0025で追加した)。
+      rule {
+        source_labels = ["__meta_kubernetes_namespace"]
+        regex         = "gekko"
+        action        = "keep"
+      }
+
+      rule {
+        source_labels = ["__meta_kubernetes_pod_container_name"]
+        regex         = "envoy|keycloak"
+        action        = "keep"
+      }
+
+      // $1は「regexの捕捉グループ」であって「source_labelsの各要素」ではないため、regexを
+      // 指定しない場合デフォルトの(.*)がsource_labels連結後の文字列全体を$1として捕捉する。
+      // pod名を含めて手動でパスを組み立てようとすると$2以降が空文字列になり壊れるため、
+      // 一意な値であるpod UIDだけを使い、namespace_podname_の部分は`*`で吸収させる
+      // (kubeletのディレクトリ名は"<namespace>_<podname>_<uid>"で、UIDは末尾に来るため
+      // "*<uid>"で末尾一致すれば十分。実機で確認済み)。
+      rule {
+        source_labels = ["__meta_kubernetes_pod_uid", "__meta_kubernetes_pod_container_name"]
+        separator     = "/"
+        target_label  = "__path__"
+        replacement   = "/var/log/pods/*$1/*.log"
+      }
+    }
+
+    local.file_match "audit_logs" {
+      path_targets = discovery.relabel.audit_logs.output
+    }
+
+    loki.source.file "audit_logs" {
+      targets    = local.file_match.audit_logs.targets
+      forward_to = [loki.process.audit_logs.receiver]
+    }
+
+    loki.process "audit_logs" {
+      // kubeletが書き出すCRI標準フォーマット("<timestamp> <stream> <F|P> <line>")の
+      // エンベロープを剥がし、中身(envoyのjson_formatアクセスログ・keycloakのJSON行)をそのまま
+      // ログ本文として扱う。sub/jti等の個別フィールド抽出はクエリ時に行う(上記コメント参照)。
+      stage.cri {}
+
+      forward_to = [loki.write.otel_lgtm.receiver]
+    }
+
+    loki.write "otel_lgtm" {
+      endpoint {
+        url = "http://otel-lgtm.observability.svc.cluster.local:3100/loki/api/v1/push"
+      }
+    }

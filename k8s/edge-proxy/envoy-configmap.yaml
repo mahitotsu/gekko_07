@@ -3,12 +3,17 @@
 # k8s/ext-authz/envoy-configmap.yamlの同名クラスタと同一構成(呼び出し元が異なるだけ)。
 #
 # ADR 0024:frontend実装にあわせてroute_configをパスベースで分割した。`/realms/`配下(Keycloakの
-# OIDCエンドポイント。ROPC/Token Exchange/将来のAuthorization Codeフローのいずれも配下)は
-# keycloak_upstreamへ、それ以外は新設のfrontend_upstreamへ。`/realms/`ルートを先に置く必要がある
-# (Envoyのroute matchは列挙順で最初にマッチしたものが勝つため、後段の catch-all "/" より前)。
-# 現状edge-proxy経由の呼び出しは`/realms/...`(kcadm.sh等は Keycloak Pod内へkubectl execで直接
-# 到達するため対象外)とfrontendの2系統のみで、他のKeycloakパス(`/admin/`等)はedge-proxyを
-# 経由していないため、この分割は既存動作に影響しない。
+# OIDCエンドポイント。ROPC/Token Exchange/将来のAuthorization Codeフローのいずれも配下)と
+# `/admin/`配下(Keycloak Admin REST API)はkeycloak_upstreamへ、それ以外は新設のfrontend_upstreamへ。
+# keycloak向けルートを先に置く必要がある(Envoyのroute matchは列挙順で最初にマッチしたものが勝つため、
+# 後段のcatch-all "/"より前)。
+#
+# `/admin/`は当初「kcadm.sh等はKeycloak Pod内へkubectl execで直接到達するため対象外」としていたが、
+# 実際にはk8s/keycloak/test-fixtures-configmap.yamlのkcadm.shがSERVER=edge-proxy経由で
+# `/admin/realms/gekko/users`等を叩いており、frontendへの誤配送(401)で失敗することが実機で
+# 判明した(ADR 0025の監査ログ集約作業でrealmを再importした際に発覚)。ADR 0024の想定漏れの
+# 是正であり、edge-proxyの役割自体(Keycloakへの非mTLS外部窓口)は変わらないため新規ADRは
+# 起こさず、この場でコメントとroute_configを修正する。
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -33,6 +38,23 @@ data:
                   typed_config:
                     "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
                     stat_prefix: ingress_http
+                    # 監査ログ集約(ADR 0025)。edge-proxyはjwt_authnを持たない(認証前の
+                    # Keycloak/frontendへの単純な経路分割のみ)ため、sub/scope/jtiは空文字列に
+                    # なる。HTTPレベルの疎通記録としてのみ使う(相関キーは持たない)。
+                    access_log:
+                      - name: envoy.access_loggers.stdout
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                          log_format:
+                            json_format:
+                              time: "%START_TIME%"
+                              method: "%REQ(:METHOD)%"
+                              path: "%REQ(:PATH)%"
+                              response_code: "%RESPONSE_CODE%"
+                              sub: "%REQ(x-auth-sub)%"
+                              scope: "%REQ(x-auth-scope)%"
+                              jti: "%REQ(x-auth-jti)%"
+                              upstream_host: "%UPSTREAM_HOST%"
                     route_config:
                       name: local_route
                       virtual_hosts:
@@ -40,6 +62,8 @@ data:
                           domains: ["*"]
                           routes:
                             - match: { prefix: "/realms/" }
+                              route: { cluster: keycloak_upstream }
+                            - match: { prefix: "/admin/" }
                               route: { cluster: keycloak_upstream }
                             - match: { prefix: "/" }
                               route: { cluster: frontend_upstream }

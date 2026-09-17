@@ -35,8 +35,9 @@ fraud-mcp-server・fraud-detection-engine・account-service・analyst-attribute-
 
 ## 監査
 
-- **`proposal_id`とOpenTelemetryトレース・Keycloakイベントログの統合方式**：architecture.md §8で要件のみ決めた。監査ツールを別途作るか、突合方法の詳細は未定
-- **サンプリング率を下げた場合の`trace_id`保持**：サンプリング率を1.0未満に下げた状態でも`sampled=false`のリクエストのtrace_idがログに残ることを実機で確認する必要がある（未検証）
+- **`proposal_id`のaccount-service側実装（DB永続化）**：[ADR 0025](adr/0025-audit-log-aggregation.md)でログ集約基盤（`sessionId`/`sub`/`jti`による相関）は完成したが、`proposal_id`自体はaccount-serviceが本実装（ADR 0007、Java/Spring Boot）に着手するまで未着手のまま。実装時に、提案（propose）記録時の発行とunfreeze時の突合をどう永続化するか決める
+- **otel-lgtmの同梱コンポーネント（Prometheus/Tempo/Pyroscope/OTel Collector）を無効化できるか**：ADR 0025で採用した`grafana/otel-lgtm`はGrafana+Lokiのみ使う想定だが、残り4コンポーネントも起動している。個別に無効化できるかは未調査（動くが未使用として許容している）
+- **`k8s/keycloak/test-fixtures-job.yaml`のパスワード設定の再現性問題**：realm再import直後にジョブを実行すると、作成直後のユーザーでログインが401になることがある（kcadmでset-passwordを打ち直すと直る）。原因未特定（[insights.md](insights.md)参照）
 
 ## データストア
 

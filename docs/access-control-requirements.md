@@ -61,4 +61,4 @@
 | BR5 | [access-control-design.md](access-control-design.md) 表1・表2（`account:unfreeze`スコープがfraud-mcp-server/fraud-agentに割り当てられない） |
 | BR6 | [access-control-design.md](access-control-design.md) 表2（`account:unfreeze`はアナリストのログイントークンのみが保有） |
 | BR7 | [access-control-design.md](access-control-design.md) 表4（fraud-detection-engineのclient_credentialsアクセス。業務属性チェックなし） |
-| BR8 | [architecture.md](architecture.md) §8（`proposal_id`による紐付け） |
+| BR8 | [architecture.md](architecture.md) §8（`sessionId`/`sub`/`jti`による相関、[ADR 0025](adr/0025-audit-log-aggregation.md)） |

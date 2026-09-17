@@ -99,6 +99,24 @@ data:
                   typed_config:
                     "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
                     stat_prefix: ingress_http
+                    # 監査ログ集約(ADR 0025)。sub/scope/jtiはjwt_authnがこのリクエストに
+                    # 実ヘッダーとして注入済み(claim_to_headers)のため、access_logからも
+                    # %REQ(...)%でそのまま参照できる。標準出力(StdoutAccessLog)に出し、
+                    # k8s/observability/のAlloyがhostPath経由でtailしてLokiへ集約する。
+                    access_log:
+                      - name: envoy.access_loggers.stdout
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                          log_format:
+                            json_format:
+                              time: "%START_TIME%"
+                              method: "%REQ(:METHOD)%"
+                              path: "%REQ(:PATH)%"
+                              response_code: "%RESPONSE_CODE%"
+                              sub: "%REQ(x-auth-sub)%"
+                              scope: "%REQ(x-auth-scope)%"
+                              jti: "%REQ(x-auth-jti)%"
+                              upstream_host: "%UPSTREAM_HOST%"
                     route_config:
                       name: local_route
                       virtual_hosts:
@@ -214,6 +232,23 @@ data:
                   typed_config:
                     "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
                     stat_prefix: egress_http
+                    # 監査ログ集約(ADR 0025)。egress側にjwt_authnは無いため、appがx-auth-*を
+                    # 転送しない限りsub/scope/jtiは空文字列になる(Token Exchange自体の相関は
+                    # Keycloakのイベントログ側で追う。architecture.md §8参照)。
+                    access_log:
+                      - name: envoy.access_loggers.stdout
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                          log_format:
+                            json_format:
+                              time: "%START_TIME%"
+                              method: "%REQ(:METHOD)%"
+                              path: "%REQ(:PATH)%"
+                              response_code: "%RESPONSE_CODE%"
+                              sub: "%REQ(x-auth-sub)%"
+                              scope: "%REQ(x-auth-scope)%"
+                              jti: "%REQ(x-auth-jti)%"
+                              upstream_host: "%UPSTREAM_HOST%"
                     route_config:
                       name: egress_route
                       virtual_hosts:

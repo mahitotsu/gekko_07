@@ -51,7 +51,7 @@ SPIRE_BUNDLE_ENDPOINT_CERT_DUMMY := $(shell mkdir -p $(SECRETS_DIR) && \
 	    -addext "subjectAltName=DNS:spire-server.spire.svc.cluster.local,DNS:spire-server" \
 	    >/dev/null 2>&1 ) )
 
-.PHONY: up down stop start status clean deploy undeploy keycloak-forward keycloak-reimport-realm deploy-verify-hop undeploy-verify-hop verify-hop deploy-spire undeploy-spire deploy-network-policy undeploy-network-policy
+.PHONY: up down stop start status clean deploy undeploy keycloak-forward keycloak-reimport-realm deploy-verify-hop undeploy-verify-hop verify-hop deploy-spire undeploy-spire deploy-network-policy undeploy-network-policy deploy-observability undeploy-observability grafana-forward verify-observability
 
 # -------------------------
 # クラスタ操作
@@ -117,6 +117,7 @@ deploy:
 	kubectl -n $(NAMESPACE) rollout status deployment/keycloak --timeout=180s
 	kubectl apply -f k8s/edge-proxy/envoy-configmap.yaml -f k8s/edge-proxy/deployment.yaml -f k8s/edge-proxy/service.yaml
 	kubectl -n $(NAMESPACE) rollout status deployment/edge-proxy --timeout=120s
+	$(MAKE) deploy-observability
 	$(MAKE) deploy-network-policy
 	@echo "---"
 	@echo "Keycloak admin username: admin"
@@ -135,12 +136,18 @@ undeploy:
 	kubectl delete pvc -n $(NAMESPACE) -l app=postgres --ignore-not-found
 	kubectl delete secret keycloak-admin postgres-superuser keycloak-db -n $(NAMESPACE) --ignore-not-found
 	kubectl delete -f k8s/keycloak/namespace.yaml --ignore-not-found
+	$(MAKE) undeploy-observability
 	$(MAKE) undeploy-spire
 
 # ホストのlocalhost:3000をKeycloakへport-forwardする（ADR 0004・0017。edge-proxy経由。
 # フォアグラウンドで動き続けるプロセス）
 keycloak-forward:
 	kubectl -n $(NAMESPACE) port-forward svc/edge-proxy 3000:80
+
+# ホストのlocalhost:3000をGrafana(otel-lgtm、ADR 0025)へport-forwardする。keycloak-forwardと
+# ローカルポートが競合するため同時には使えない(必要なら片方のローカルポート番号を変えて実行する)
+grafana-forward:
+	kubectl -n observability port-forward svc/otel-lgtm 3000:3000
 
 # realm-configmap.yaml変更後にKeycloakへ反映させる（insights.md参照）。--import-realmは
 # データディレクトリが空の初回起動時のみ有効なため、Postgresへ永続化した状態で
@@ -252,6 +259,35 @@ undeploy-spire:
 	kubectl delete -f k8s/spire/namespace.yaml --ignore-not-found
 
 # -------------------------
+# 監査ログ集約（ADR 0025。Alloy+otel-lgtmでEnvoyアクセスログ・Keycloakイベントログを集約する）
+# -------------------------
+# gekko/spireとは別のobservability namespaceに置く。deploy-spireの後・deploy-network-policyの前に
+# 呼ぶ（Envoy/Keycloakのaccess_log/eventsListeners出力を後からAlloyが拾えれば十分なため、
+# 呼び出し順序自体に強い依存はない）。
+
+# Alloy（収集・転送）+ otel-lgtm（Loki+Grafana+OTel Collector一体型）をデプロイする
+deploy-observability:
+	kubectl apply -f k8s/observability/namespace.yaml
+	kubectl apply -f k8s/observability/alloy-account.yaml -f k8s/observability/alloy-configmap.yaml
+	kubectl apply -f k8s/observability/otel-lgtm-deployment.yaml -f k8s/observability/otel-lgtm-service.yaml
+	kubectl -n observability rollout status deployment/otel-lgtm --timeout=180s
+	kubectl apply -f k8s/observability/alloy-daemonset.yaml
+	kubectl -n observability rollout status daemonset/alloy --timeout=120s
+	kubectl apply -f k8s/observability/default-deny.yaml -f k8s/observability/allow-dns.yaml -f k8s/observability/networkpolicy.yaml
+
+# 監査ログ集約基盤一式を削除する（observability namespaceごと削除）
+undeploy-observability:
+	kubectl delete -f k8s/observability/networkpolicy.yaml -f k8s/observability/allow-dns.yaml -f k8s/observability/default-deny.yaml --ignore-not-found
+	kubectl delete -f k8s/observability/alloy-daemonset.yaml --ignore-not-found
+	kubectl delete -f k8s/observability/otel-lgtm-service.yaml -f k8s/observability/otel-lgtm-deployment.yaml --ignore-not-found
+	kubectl delete -f k8s/observability/alloy-configmap.yaml -f k8s/observability/alloy-account.yaml --ignore-not-found
+	kubectl delete -f k8s/observability/namespace.yaml --ignore-not-found
+
+# scripts/verify-observability.shを実行する（deploy-observability・deploy-verify-hop実行済み前提）
+verify-observability:
+	./scripts/verify-observability.sh
+
+# -------------------------
 # NetworkPolicy（ADR 0018。gekko namespace全体のL3/4 default-deny）
 # -------------------------
 # 全サービスのPod/Serviceが既に存在する状態で適用する前提（podSelectorが参照する
@@ -289,6 +325,10 @@ status:
 	@echo "---"
 	@kubectl get nodes 2>/dev/null || echo "(cluster not reachable)"
 	@echo "---"
+	@kubectl get namespaces 2>/dev/null || echo "(cluster not reachable)"
+	@echo "---"
 	@kubectl -n $(NAMESPACE) get deployments,services,pods 2>/dev/null || echo "(namespace '$(NAMESPACE)' not reachable)"
 	@echo "---"
 	@kubectl -n spire get statefulsets,daemonsets,services,pods 2>/dev/null || echo "(namespace 'spire' not reachable)"
+	@echo "---"
+	@kubectl -n observability get deployments,daemonsets,services,pods 2>/dev/null || echo "(namespace 'observability' not reachable)"

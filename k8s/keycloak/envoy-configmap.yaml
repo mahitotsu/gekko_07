@@ -97,6 +97,23 @@ data:
                   typed_config:
                     "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
                     stat_prefix: ingress_http
+                    # 監査ログ集約(ADR 0025)。このEnvoyはjwt_authn/rbac/luaを持たない純mTLS
+                    # 中継のため、sub/scope/jtiは空文字列になる(相関キーは持たない。実際の
+                    # Keycloak監査はeventsListeners、k8s/keycloak/realm-configmap.yaml参照)。
+                    access_log:
+                      - name: envoy.access_loggers.stdout
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                          log_format:
+                            json_format:
+                              time: "%START_TIME%"
+                              method: "%REQ(:METHOD)%"
+                              path: "%REQ(:PATH)%"
+                              response_code: "%RESPONSE_CODE%"
+                              sub: "%REQ(x-auth-sub)%"
+                              scope: "%REQ(x-auth-scope)%"
+                              jti: "%REQ(x-auth-jti)%"
+                              upstream_host: "%UPSTREAM_HOST%"
                     route_config:
                       name: local_route
                       virtual_hosts:

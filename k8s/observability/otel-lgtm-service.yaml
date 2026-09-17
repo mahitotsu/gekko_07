@@ -1,0 +1,17 @@
+# Grafana UI(3000、人手参照用、make grafana-forward)とLoki push/query API(3100、Alloyからのpush・
+# verify-observability.shからのクエリ用)を公開する(ADR 0025)。
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-lgtm
+  namespace: observability
+spec:
+  selector:
+    app: otel-lgtm
+  ports:
+    - name: grafana
+      port: 3000
+      targetPort: grafana
+    - name: loki
+      port: 3100
+      targetPort: loki

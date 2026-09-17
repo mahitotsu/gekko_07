@@ -1,0 +1,54 @@
+# Alloy本体(ADR 0025)。hostPath(/var/log/pods、読み取り専用)でkubeletのログディレクトリを
+# 参照するのみで、spire-agentと異なりhostPID/hostNetworkは不要(ワークロード属性解決を伴わない
+# 単純なファイル読み取りのため)。
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: alloy
+  namespace: observability
+  labels:
+    app: alloy
+spec:
+  selector:
+    matchLabels:
+      app: alloy
+  template:
+    metadata:
+      labels:
+        app: alloy
+    spec:
+      serviceAccountName: alloy
+      containers:
+        - name: alloy
+          image: grafana/alloy:v1.19.2
+          args:
+            - run
+            - /etc/alloy/config.alloy
+            - --storage.path=/var/lib/alloy/data
+          volumeMounts:
+            - name: alloy-config
+              mountPath: /etc/alloy/config.alloy
+              subPath: config.alloy
+              readOnly: true
+            - name: pod-logs
+              mountPath: /var/log/pods
+              readOnly: true
+            - name: alloy-data
+              mountPath: /var/lib/alloy/data
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "300m"
+              memory: "256Mi"
+      volumes:
+        - name: alloy-config
+          configMap:
+            name: alloy-config
+        - name: pod-logs
+          hostPath:
+            path: /var/log/pods
+            type: Directory
+        - name: alloy-data
+          emptyDir: {}
