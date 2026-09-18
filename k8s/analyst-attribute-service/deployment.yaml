@@ -3,7 +3,8 @@
 # Keycloakクライアントid=K8s Service名=audience名を常に同一の文字列にする)。
 #
 # Pod構成はinitContainer(合言葉生成)＋app＋Envoyの3者(architecture.md §3)。
-# 委任チェーンの終端のため、account-serviceと異なりhostAliases・egressリスナーは持たない。
+# 委任チェーンの終端のため、account-service→analyst-attribute-service向けのようなegress
+# (Token Exchange委任等)は持たない。ADR 0028でPostgres向けegressのみ追加した。
 #
 # appコンテナのイメージはservices/analyst-attribute-service/をMakefileの
 # build-analyst-attribute-serviceターゲットでビルドし、`k3d image import`でクラスタへ持ち込む
@@ -25,6 +26,11 @@ spec:
       labels:
         app: analyst-attribute-service
     spec:
+      # ADR 0028: "postgres"を127.0.0.1へ横取りし、自身のEnvoyのegressリスナーへ誘導する
+      # (account-serviceと同じADR 0010パターン)。
+      hostAliases:
+        - ip: "127.0.0.1"
+          hostnames: ["postgres"]
       initContainers:
         # ADR 0009 §2③:Pod内合言葉。initContainerの完了がメインコンテナ起動前に保証されるため、
         # 「先に生成、後で両方が読む」がレースコンディションなく書ける。

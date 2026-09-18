@@ -1,4 +1,9 @@
 # db-init-configmap.yamlのスクリプトを実行する1回限りのJob(k8s/keycloak/db-init-job.yamlと同一パターン)。
+#
+# ADR 0028: Envoyサイドカーをネイティブsidecarコンテナ(initContainersにrestartPolicy: Always。
+# 1.29+でGA)として追加した。db-initコンテナが終了すればkubeletが自動的にこのサイドカーも
+# 終了させるため、Job自身の完了検知は妨げない。init.shの接続待機リトライループ(既存。
+# db-init-configmap.yaml参照)が、サイドカー起動直後のSDS配信待ちにもそのまま効く。
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -13,6 +18,28 @@ spec:
         app: account-service-db-init
     spec:
       restartPolicy: Never
+      hostAliases:
+        - ip: "127.0.0.1"
+          hostnames: ["postgres"]
+      initContainers:
+        - name: envoy
+          restartPolicy: Always
+          image: envoyproxy/envoy:v1.31.5
+          command: ["envoy", "-c", "/etc/envoy/envoy.yaml"]
+          volumeMounts:
+            - name: envoy-config
+              mountPath: /etc/envoy
+              readOnly: true
+            - name: spire-agent-socket
+              mountPath: /run/spire/sockets
+              readOnly: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "300m"
+              memory: "128Mi"
       containers:
         - name: db-init
           image: postgres:17.11
@@ -37,3 +64,10 @@ spec:
           configMap:
             name: account-service-db-init
             defaultMode: 0755
+        - name: envoy-config
+          configMap:
+            name: account-service-db-init-envoy
+        - name: spire-agent-socket
+          hostPath:
+            path: /run/spire/sockets
+            type: Directory

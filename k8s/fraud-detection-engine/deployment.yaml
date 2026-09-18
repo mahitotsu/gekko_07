@@ -34,7 +34,7 @@ spec:
     spec:
       hostAliases:
         - ip: "127.0.0.1"
-          hostnames: ["account-service", "keycloak"]
+          hostnames: ["account-service", "keycloak", "postgres"] # ADR 0028: postgresを追加
       containers:
         - name: app
           image: gekko07/fraud-detection-engine:local

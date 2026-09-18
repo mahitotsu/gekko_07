@@ -292,6 +292,18 @@ data:
                       - name: envoy.filters.http.router
                         typed_config:
                           "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+        # ADR 0028: Postgres向けegress(hostAliasesで"postgres"を127.0.0.1へ横取り)。
+        # PostgresはHTTPではないため、tcp_proxyフィルタのみの独立listenerにする。
+        - name: postgres-egress
+          address:
+            socket_address: { address: 127.0.0.1, port_value: 5432 }
+          filter_chains:
+            - filters:
+                - name: envoy.filters.network.tcp_proxy
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
+                    stat_prefix: postgres_tcp
+                    cluster: postgres_upstream
       clusters:
         - name: app_upstream
           type: STATIC
@@ -476,3 +488,45 @@ data:
                   - endpoint:
                       address:
                         socket_address: { address: keycloak.gekko.svc.cluster.local, port_value: 8443 }
+        # ADR 0028: Postgresの mTLS終端Envoy(6432)へSPIRE発行のSVIDでmTLS接続する。
+        - name: postgres_upstream
+          type: STRICT_DNS
+          lb_policy: ROUND_ROBIN
+          transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+              common_tls_context:
+                tls_certificate_sds_secret_configs:
+                  - name: "default"
+                    sds_config:
+                      resource_api_version: V3
+                      api_config_source:
+                        api_type: GRPC
+                        transport_api_version: V3
+                        grpc_services:
+                          - envoy_grpc:
+                              cluster_name: spire_agent
+                combined_validation_context:
+                  default_validation_context:
+                    match_typed_subject_alt_names:
+                      - san_type: URI
+                        matcher:
+                          exact: "spiffe://gekko.internal/ns/gekko/sa/default/postgres"
+                  validation_context_sds_secret_config:
+                    name: "ROOTCA"
+                    sds_config:
+                      resource_api_version: V3
+                      api_config_source:
+                        api_type: GRPC
+                        transport_api_version: V3
+                        grpc_services:
+                          - envoy_grpc:
+                              cluster_name: spire_agent
+          load_assignment:
+            cluster_name: postgres_upstream
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address: { address: postgres.gekko.svc.cluster.local, port_value: 6432 }

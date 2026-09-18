@@ -1,5 +1,10 @@
-# ADR 0018・0026・0027。接続元(実行中の本体+db-init Job)からのみ許可する。
+# ADR 0018・0026・0027・0028。接続元(実行中の本体+db-init/seed Job)からのみ許可する。
 # postgres自身は外向き接続をしないためegressは制御不要。
+#
+# ADR 0028で常駐4サービス・db-init/seed Jobの全9者がmTLS終端Envoyサイドカーの6432経由に
+# 切り替えたため(Jobは当初スコープ外としていたが後日埋めた)、Postgres本体の5432へ直接到達できる
+# Podは存在しなくなった。5432へのingressルール自体を廃止した(postgresコンテナ自身は引き続き
+# 5432で待ち受けるが、NetworkPolicyのdefault-denyにより他Podからの直接到達は遮断される)。
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -18,16 +23,19 @@ spec:
               app: keycloak
         - podSelector:
             matchLabels:
-              app: keycloak-db-init
-        - podSelector:
-            matchLabels:
               app: account-service
         - podSelector:
             matchLabels:
-              app: account-service-db-init
+              app: analyst-attribute-service
         - podSelector:
             matchLabels:
-              app: analyst-attribute-service
+              app: fraud-detection-engine
+        - podSelector:
+            matchLabels:
+              app: keycloak-db-init
+        - podSelector:
+            matchLabels:
+              app: account-service-db-init
         - podSelector:
             matchLabels:
               app: analyst-attribute-service-db-init
@@ -36,10 +44,7 @@ spec:
               app: analyst-attribute-service-seed
         - podSelector:
             matchLabels:
-              app: fraud-detection-engine
-        - podSelector:
-            matchLabels:
               app: fraud-detection-engine-db-init
       ports:
         - protocol: TCP
-          port: 5432
+          port: 6432

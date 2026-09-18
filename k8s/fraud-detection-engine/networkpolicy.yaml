@@ -2,8 +2,9 @@
 # 無いため、Egressのみ制御する(ingressはdefault-denyのまま)。ADR 0020でclient_credentials
 # トークン取得実行主体を自身のPod内サイドカーへ移したため、ext-authz-service-ccへの
 # egressをKeycloakへのegressに置き換えた(ADR 0019のfraud-mcp-serverと同じ変更)。
-# ADR 0027:自身のPostgresデータベースへのegressを追加した(appコンテナがEnvoyを介さず直接
-# 接続する。account-service/analyst-attribute-serviceと同じパターン)。
+# ADR 0027:自身のPostgresデータベースへのegressを追加した(account-service/
+# analyst-attribute-serviceと同じパターン)。ADR 0028で自身のEnvoyサイドカー経由のmTLS接続に
+# 切り替えたため、宛先ポートはpostgresのmTLS終端Envoy(6432)。
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -36,11 +37,12 @@ spec:
               app: postgres
       ports:
         - protocol: TCP
-          port: 5432
+          port: 6432
 ---
 # ADR 0027:insights.mdに記録済みの実装漏れパターン(default-denyはPod単位でingress/egress
 # 双方に適用されるため、接続元(db-init Job)側にも自分自身のegress許可ポリシーが要る)を
-# account-service/analyst-attribute-serviceと同じ形で最初から適用する。
+# account-service/analyst-attribute-serviceと同じ形で最初から適用する。ADR 0028で自身のEnvoy
+# サイドカー経由のmTLS接続に切り替えたため、宛先ポートはpostgresのmTLS終端Envoy(6432)。
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -59,4 +61,4 @@ spec:
               app: postgres
       ports:
         - protocol: TCP
-          port: 5432
+          port: 6432

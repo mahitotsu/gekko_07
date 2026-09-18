@@ -40,6 +40,11 @@ spec:
       labels:
         app: keycloak
     spec:
+      # ADR 0028: "postgres"を127.0.0.1へ横取りし、KC_DB_URLの接続先を自身のEnvoyの
+      # egressリスナー(keycloak-envoy ConfigMap)へ誘導する(account-serviceと同じADR 0010パターン)。
+      hostAliases:
+        - ip: "127.0.0.1"
+          hostnames: ["postgres"]
       containers:
         - name: keycloak
           image: quay.io/keycloak/keycloak:26.7.0

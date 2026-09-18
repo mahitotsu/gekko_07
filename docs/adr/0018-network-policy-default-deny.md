@@ -1,6 +1,6 @@
 # ADR 0018: gekko namespaceにNetworkPolicyでL3/4のdefault-denyを導入する
 
-- **Status**: Partially superseded by [0022](0022-keycloak-mgmt-probe-exec.md)（Keycloakのhttp-mgmt:9000に対する`ipBlock`ベースのingress許可ルールは0022で撤廃された。Postgres等、他の許可ルールの決定は有効なまま）
+- **Status**: Partially superseded by [0022](0022-keycloak-mgmt-probe-exec.md)（Keycloakのhttp-mgmt:9000に対する`ipBlock`ベースのingress許可ルールは0022で撤廃された）・[0028](0028-postgres-mtls-tcp-proxy.md)（「共有PostgresインスタンスはmTLS適用対象外」という前提を0028が覆し、常駐4サービスの接続はEnvoyのmTLS配下に移した。db-init/seed JobはNetworkPolicyのみで保護する現状維持）。その他の許可ルールの決定は有効なまま
 - **Date**: 2026-09-16
 
 ## Context

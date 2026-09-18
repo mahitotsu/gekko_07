@@ -2,6 +2,12 @@
 # 表6のテストアナリスト属性はKeycloakユーザーのUUID確定後にしか投入できないため、
 # make deploy-verify-hop側(テストフィクスチャの一部)に置く。account-service/analyst-attribute-
 # service本体はmake deploy側(base track)で既にデプロイ済みであることが前提(ADR 0026)。
+#
+# ADR 0028: Envoyサイドカーをネイティブsidecarコンテナ(initContainersにrestartPolicy: Always。
+# 1.29+でGA)として追加した。seedコンテナが終了すればkubeletが自動的にこのサイドカーも
+# 終了させるため、Job自身の完了検知は妨げない(resolve-subsはedge-proxy向けで無関係のため
+# 変更不要)。seed.shの接続待機リトライループ(既存。seed-configmap.yaml参照)が、サイドカー
+# 起動直後のSDS配信待ちにもそのまま効く。
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -16,7 +22,28 @@ spec:
         app: analyst-attribute-service-seed
     spec:
       restartPolicy: Never
+      hostAliases:
+        - ip: "127.0.0.1"
+          hostnames: ["postgres"]
       initContainers:
+        - name: envoy
+          restartPolicy: Always
+          image: envoyproxy/envoy:v1.31.5
+          command: ["envoy", "-c", "/etc/envoy/envoy.yaml"]
+          volumeMounts:
+            - name: envoy-config
+              mountPath: /etc/envoy
+              readOnly: true
+            - name: spire-agent-socket
+              mountPath: /run/spire/sockets
+              readOnly: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "300m"
+              memory: "128Mi"
         - name: resolve-subs
           image: quay.io/keycloak/keycloak:26.7.0
           command: ["/bin/bash", "/scripts/resolve.sh"]
@@ -56,3 +83,10 @@ spec:
             defaultMode: 0755
         - name: shared
           emptyDir: {}
+        - name: envoy-config
+          configMap:
+            name: analyst-attribute-service-db-init-envoy
+        - name: spire-agent-socket
+          hostPath:
+            path: /run/spire/sockets
+            type: Directory

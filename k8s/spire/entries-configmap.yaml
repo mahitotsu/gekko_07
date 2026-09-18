@@ -173,4 +173,30 @@ data:
       -selector k8s:pod-label:app:edge-proxy \
       -selector k8s:container-name:envoy
 
+    # ADR 0028: 常駐4サービス(keycloak/account-service/analyst-attribute-service/
+    # fraud-detection-engine)からのmTLS接続を終端するサイドカー。他エントリと同じく
+    # envoyコンテナのみをselectorに持つ(postgresコンテナ自体は秘密鍵に一切触れない)。
+    echo "==> postgres entry (envoy container only)"
+    create_if_missing "spiffe://${TRUST_DOMAIN}/ns/gekko/sa/default/postgres" \
+      -parentID "$NODE_ALIAS_ID" \
+      -spiffeID "spiffe://${TRUST_DOMAIN}/ns/gekko/sa/default/postgres" \
+      -selector k8s:ns:gekko \
+      -selector k8s:sa:default \
+      -selector k8s:pod-label:app:postgres \
+      -selector k8s:container-name:envoy
+
+    # ADR 0028: db-init/seed Job(1回限りの初期化Job)群。ネイティブsidecarコンテナとして
+    # 動くenvoyコンテナのみをselectorに持つ(当初スコープ外としていたが後日埋めた)。
+    for job in keycloak-db-init account-service-db-init analyst-attribute-service-db-init \
+      analyst-attribute-service-seed fraud-detection-engine-db-init; do
+      echo "==> ${job} entry (envoy container only)"
+      create_if_missing "spiffe://${TRUST_DOMAIN}/ns/gekko/sa/default/${job}" \
+        -parentID "$NODE_ALIAS_ID" \
+        -spiffeID "spiffe://${TRUST_DOMAIN}/ns/gekko/sa/default/${job}" \
+        -selector k8s:ns:gekko \
+        -selector k8s:sa:default \
+        -selector k8s:pod-label:app:${job} \
+        -selector k8s:container-name:envoy
+    done
+
     echo "==> registration entries done"

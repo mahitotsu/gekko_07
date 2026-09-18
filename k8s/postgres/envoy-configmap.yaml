@@ -1,0 +1,125 @@
+# Postgres用Envoyサイドカー設定(ADR 0028)。keycloak-envoyのingress-mtlsパターン(ADR 0016/0017)と
+# 同じDownstreamTlsContextだが、PostgresはHTTPではなくワイヤプロトコルが生のTCPのため、
+# http_connection_managerではなくenvoy.filters.network.tcp_proxyを使う(Envoy公式の
+# "Double proxy (with mTLS encryption)"サンドボックスと同じ構成。protocol専用フィルタである
+# postgres_proxyはSQL統計等の観測用でmTLSには無関係のため不採用。ADR 0028参照)。
+#
+# 6432(このリスナー)は以下9者専用のmTLS必須経路(いずれも自身のEnvoyサイドカーから発信):
+# - keycloak / account-service / analyst-attribute-service / fraud-detection-engine (常駐4サービス)
+# - keycloak-db-init / account-service-db-init / analyst-attribute-service-db-init /
+#   analyst-attribute-service-seed / fraud-detection-engine-db-init (1回限りの初期化Job。
+#   ネイティブsidecarコンテナでEnvoyを持つ。ADR 0028で当初スコープ外としていたが後日埋めた)
+# 全呼び出し元がmTLS化されたため、Postgres本体の5432への平文ingressルートは無くなった
+# (postgresコンテナ自身は引き続き5432で待ち受けるが、他Podからの直接到達はNetworkPolicyで
+# 遮断される。k8s/postgres/networkpolicy.yaml参照)。
+#
+# Postgres本体の待受設定(listen_addresses等)は一切変更しない。このEnvoyは同一Pod内の
+# 127.0.0.1:5432(実Postgres)へ平文でtcp_proxyするだけの中継。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-envoy
+  namespace: gekko
+data:
+  envoy.yaml: |
+    admin:
+      address:
+        socket_address: { address: 127.0.0.1, port_value: 9901 }
+    # SDS(SPIRE Agent Workload API)はxDSプロトコルの一種であり、DiscoveryRequestにnode識別子が
+    # 要る(ADR 0012の実機検証で判明)。
+    node:
+      id: postgres-envoy
+      cluster: postgres
+    static_resources:
+      listeners:
+        - name: ingress-mtls
+          address:
+            socket_address: { address: 0.0.0.0, port_value: 6432 }
+          filter_chains:
+            - transport_socket:
+                name: envoy.transport_sockets.tls
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+                  require_client_certificate: true
+                  common_tls_context:
+                    tls_certificate_sds_secret_configs:
+                      - name: "default"
+                        sds_config:
+                          resource_api_version: V3
+                          api_config_source:
+                            api_type: GRPC
+                            transport_api_version: V3
+                            grpc_services:
+                              - envoy_grpc:
+                                  cluster_name: spire_agent
+                    combined_validation_context:
+                      default_validation_context:
+                        match_typed_subject_alt_names:
+                          - san_type: URI
+                            matcher:
+                              exact: "spiffe://gekko.internal/ns/gekko/sa/default/keycloak"
+                          - san_type: URI
+                            matcher:
+                              exact: "spiffe://gekko.internal/ns/gekko/sa/default/account-service"
+                          - san_type: URI
+                            matcher:
+                              exact: "spiffe://gekko.internal/ns/gekko/sa/default/analyst-attribute-service"
+                          - san_type: URI
+                            matcher:
+                              exact: "spiffe://gekko.internal/ns/gekko/sa/default/fraud-detection-engine"
+                          - san_type: URI
+                            matcher:
+                              exact: "spiffe://gekko.internal/ns/gekko/sa/default/keycloak-db-init"
+                          - san_type: URI
+                            matcher:
+                              exact: "spiffe://gekko.internal/ns/gekko/sa/default/account-service-db-init"
+                          - san_type: URI
+                            matcher:
+                              exact: "spiffe://gekko.internal/ns/gekko/sa/default/analyst-attribute-service-db-init"
+                          - san_type: URI
+                            matcher:
+                              exact: "spiffe://gekko.internal/ns/gekko/sa/default/analyst-attribute-service-seed"
+                          - san_type: URI
+                            matcher:
+                              exact: "spiffe://gekko.internal/ns/gekko/sa/default/fraud-detection-engine-db-init"
+                      validation_context_sds_secret_config:
+                        # "ROOTCA"はSPIRE Agent SDSの既定マジック名(default_bundle_name)。ADR 0012参照。
+                        name: "ROOTCA"
+                        sds_config:
+                          resource_api_version: V3
+                          api_config_source:
+                            api_type: GRPC
+                            transport_api_version: V3
+                            grpc_services:
+                              - envoy_grpc:
+                                  cluster_name: spire_agent
+              filters:
+                - name: envoy.filters.network.tcp_proxy
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
+                    stat_prefix: postgres_tcp
+                    cluster: postgres_app
+      clusters:
+        # 同一Pod内の実Postgres(5432)へ平文で転送する。mTLS終端はこのEnvoyで完結しており、
+        # Pod内loopback越えは同一ネットワーク名前空間のため平文でよい。
+        - name: postgres_app
+          type: STATIC
+          lb_policy: ROUND_ROBIN
+          load_assignment:
+            cluster_name: postgres_app
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address: { address: 127.0.0.1, port_value: 5432 }
+        # SPIRE Agent Workload API(UDS)へのSDSチャネル(ADR 0012)。
+        - name: spire_agent
+          connect_timeout: 0.25s
+          http2_protocol_options: {}
+          load_assignment:
+            cluster_name: spire_agent
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        pipe: { path: /run/spire/sockets/agent.sock }

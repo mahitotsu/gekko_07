@@ -133,13 +133,26 @@ deploy:
 	$(call upsert_secret,keycloak-admin,--from-literal=username=admin --from-literal=password=$(KEYCLOAK_ADMIN_PASSWORD))
 	$(call upsert_secret,postgres-superuser,--from-literal=password=$(POSTGRES_SUPERUSER_PASSWORD))
 	$(call upsert_secret,keycloak-db,--from-literal=username=keycloak --from-literal=password=$(KEYCLOAK_DB_PASSWORD))
-	kubectl apply -f k8s/postgres/statefulset.yaml -f k8s/postgres/service.yaml
+	@# ADR 0028:postgres StatefulSet自身がEnvoyサイドカー(SPIRE Agent Workload APIソケットに
+	@# 依存)を持つようになったため、deploy-spireをpostgresより前倒しした(旧順序ではpostgres起動
+	@# 時にspire-agentがまだ存在せず、EnvoyがSDS接続をリトライし続ける不要な待ち時間が生じるため)。
+	$(MAKE) deploy-spire
+	kubectl apply -f k8s/postgres/envoy-configmap.yaml -f k8s/postgres/statefulset.yaml -f k8s/postgres/service.yaml
 	kubectl -n $(NAMESPACE) rollout status statefulset/postgres --timeout=180s
+	@# insights.mdに記録済みの実装漏れパターンの新しい現れ方：deploy-network-policyはdeploy末尾
+	@# でしか呼ばれないため、default-denyが既に有効な(過去のmake deployで作成済みの)クラスタに
+	@# 新しいサービスを再デプロイすると、更新後のNetworkPolicy(接続元・宛先双方)がまだ反映されて
+	@# おらず、readiness待ちでタイムアウトする恐れがある。ADR 0028でkeycloak/account-service/
+	@# analyst-attribute-service/fraud-detection-engineがpostgres接続にEnvoy経由の新しいポート
+	@# (6432)を使うようになったため、この5つのNetworkPolicyは各Deploymentより前に前倒しして適用する。
+	@# default-deny自体が無いまっさらなクラスタでは許可ルールが単に無害な先行適用になるだけ。
+	kubectl apply -f k8s/postgres/networkpolicy.yaml -f k8s/keycloak/networkpolicy.yaml \
+		-f k8s/account-service/networkpolicy.yaml -f k8s/analyst-attribute-service/networkpolicy.yaml \
+		-f k8s/fraud-detection-engine/networkpolicy.yaml
 	@# JobのPod specは不変なので、再実行するにはいったん削除してから作り直す（冪等なスクリプトなので安全）
 	kubectl delete job keycloak-db-init -n $(NAMESPACE) --ignore-not-found
-	kubectl apply -f k8s/keycloak/db-init-configmap.yaml -f k8s/keycloak/db-init-job.yaml
+	kubectl apply -f k8s/keycloak/db-init-configmap.yaml -f k8s/keycloak/db-init-envoy-configmap.yaml -f k8s/keycloak/db-init-job.yaml
 	kubectl -n $(NAMESPACE) wait --for=condition=complete job/keycloak-db-init --timeout=60s
-	$(MAKE) deploy-spire
 	@# KeycloakがSPIRE Serverのbundle endpoint(ADR 0019)をHTTPSで検証するためのtruststore。
 	@# spire-bundle-endpoint.crtの秘密鍵は含めない(検証側は証明書のみで足りる)
 	kubectl create secret generic spire-bundle-endpoint-ca -n $(NAMESPACE) \
@@ -151,18 +164,13 @@ deploy:
 	$(call upsert_secret,account-service-db,--from-literal=username=account_service --from-literal=password=$(ACCOUNT_SERVICE_DB_PASSWORD))
 	$(call upsert_secret,analyst-attribute-service-db,--from-literal=username=analyst_attribute_service --from-literal=password=$(ANALYST_ATTRIBUTE_SERVICE_DB_PASSWORD))
 	$(call upsert_secret,fraud-detection-engine-db,--from-literal=username=fraud_detection_engine --from-literal=password=$(FRAUD_DETECTION_ENGINE_DB_PASSWORD))
-	@# insights.mdに記録済みの実装漏れパターンの新しい現れ方：deploy-network-policyはdeploy末尾
-	@# でしか呼ばれないため、default-denyが既に有効な(過去のmake deployで作成済みの)クラスタに
-	@# 新しいサービスのdb-init Jobを初めて追加すると、そのJob自身のegress許可(接続元)・
-	@# postgres側のingress許可(宛先)のいずれもまだ存在せず即座にconnection refusedで失敗する
-	@# (Jobのbackoff Limitを使い切って終わる)。default-deny自体が無いまっさらなクラスタでは
-	@# 許可ルールが単に無害な先行適用になるだけなので、この2つのNetworkPolicyだけはdb-init Job
-	@# より前に前倒しして適用する。
-	kubectl apply -f k8s/postgres/networkpolicy.yaml -f k8s/fraud-detection-engine/networkpolicy.yaml
+	@# account-service/analyst-attribute-service/fraud-detection-engineのNetworkPolicy
+	@# (db-init Job自身のegress許可を含む。ADR 0018の実装漏れパターン)は上で既に前倒し適用済み
+	@# (ADR 0028)。
 	kubectl delete job account-service-db-init analyst-attribute-service-db-init fraud-detection-engine-db-init -n $(NAMESPACE) --ignore-not-found
-	kubectl apply -f k8s/account-service/db-init-configmap.yaml -f k8s/account-service/db-init-job.yaml
-	kubectl apply -f k8s/analyst-attribute-service/db-init-configmap.yaml -f k8s/analyst-attribute-service/db-init-job.yaml
-	kubectl apply -f k8s/fraud-detection-engine/db-init-configmap.yaml -f k8s/fraud-detection-engine/db-init-job.yaml
+	kubectl apply -f k8s/account-service/db-init-configmap.yaml -f k8s/account-service/db-init-envoy-configmap.yaml -f k8s/account-service/db-init-job.yaml
+	kubectl apply -f k8s/analyst-attribute-service/db-init-configmap.yaml -f k8s/analyst-attribute-service/db-init-envoy-configmap.yaml -f k8s/analyst-attribute-service/db-init-job.yaml
+	kubectl apply -f k8s/fraud-detection-engine/db-init-configmap.yaml -f k8s/fraud-detection-engine/db-init-envoy-configmap.yaml -f k8s/fraud-detection-engine/db-init-job.yaml
 	kubectl -n $(NAMESPACE) wait --for=condition=complete job/account-service-db-init --timeout=60s
 	kubectl -n $(NAMESPACE) wait --for=condition=complete job/analyst-attribute-service-db-init --timeout=60s
 	kubectl -n $(NAMESPACE) wait --for=condition=complete job/fraud-detection-engine-db-init --timeout=60s
@@ -190,16 +198,16 @@ deploy:
 undeploy:
 	$(MAKE) undeploy-network-policy
 	kubectl delete -f k8s/account-service/service.yaml -f k8s/account-service/deployment.yaml -f k8s/account-service/envoy-configmap.yaml -f k8s/account-service/token-exchange-app-configmap.yaml --ignore-not-found
-	kubectl delete -f k8s/account-service/db-init-job.yaml -f k8s/account-service/db-init-configmap.yaml --ignore-not-found
+	kubectl delete -f k8s/account-service/db-init-job.yaml -f k8s/account-service/db-init-envoy-configmap.yaml -f k8s/account-service/db-init-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/analyst-attribute-service/service.yaml -f k8s/analyst-attribute-service/deployment.yaml -f k8s/analyst-attribute-service/envoy-configmap.yaml --ignore-not-found
-	kubectl delete -f k8s/analyst-attribute-service/db-init-job.yaml -f k8s/analyst-attribute-service/db-init-configmap.yaml --ignore-not-found
+	kubectl delete -f k8s/analyst-attribute-service/db-init-job.yaml -f k8s/analyst-attribute-service/db-init-envoy-configmap.yaml -f k8s/analyst-attribute-service/db-init-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/fraud-detection-engine/deployment.yaml -f k8s/fraud-detection-engine/envoy-configmap.yaml -f k8s/fraud-detection-engine/client-credentials-app-configmap.yaml --ignore-not-found
-	kubectl delete -f k8s/fraud-detection-engine/db-init-job.yaml -f k8s/fraud-detection-engine/db-init-configmap.yaml --ignore-not-found
+	kubectl delete -f k8s/fraud-detection-engine/db-init-job.yaml -f k8s/fraud-detection-engine/db-init-envoy-configmap.yaml -f k8s/fraud-detection-engine/db-init-configmap.yaml --ignore-not-found
 	kubectl delete secret account-service-db analyst-attribute-service-db fraud-detection-engine-db -n $(NAMESPACE) --ignore-not-found
 	kubectl delete -f k8s/edge-proxy/service.yaml -f k8s/edge-proxy/deployment.yaml -f k8s/edge-proxy/envoy-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/keycloak/service.yaml -f k8s/keycloak/deployment.yaml -f k8s/keycloak/envoy-configmap.yaml -f k8s/keycloak/realm-configmap.yaml --ignore-not-found
-	kubectl delete -f k8s/keycloak/db-init-job.yaml -f k8s/keycloak/db-init-configmap.yaml --ignore-not-found
-	kubectl delete -f k8s/postgres/service.yaml -f k8s/postgres/statefulset.yaml --ignore-not-found
+	kubectl delete -f k8s/keycloak/db-init-job.yaml -f k8s/keycloak/db-init-envoy-configmap.yaml -f k8s/keycloak/db-init-configmap.yaml --ignore-not-found
+	kubectl delete -f k8s/postgres/service.yaml -f k8s/postgres/statefulset.yaml -f k8s/postgres/envoy-configmap.yaml --ignore-not-found
 	kubectl delete pvc -n $(NAMESPACE) -l app=postgres --ignore-not-found
 	kubectl delete secret keycloak-admin postgres-superuser keycloak-db -n $(NAMESPACE) --ignore-not-found
 	kubectl delete -f k8s/keycloak/namespace.yaml --ignore-not-found

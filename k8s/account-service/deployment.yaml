@@ -33,7 +33,7 @@ spec:
     spec:
       hostAliases:
         - ip: "127.0.0.1"
-          hostnames: ["analyst-attribute-service", "keycloak"]
+          hostnames: ["analyst-attribute-service", "keycloak", "postgres"] # ADR 0028: postgresを追加
       initContainers:
         # ADR 0009 §2③:Pod内合言葉。initContainerの完了がメインコンテナ起動前に保証されるため、
         # 「先に生成、後で両方が読む」がレースコンディションなく書ける。

@@ -52,7 +52,7 @@ spec:
               app: postgres
       ports:
         - protocol: TCP
-          port: 5432
+          port: 6432 # ADR 0028: 自身のEnvoyがmTLS終端Envoy(postgres)へ接続するポート
     - to:
         - namespaceSelector:
             matchLabels:
@@ -67,7 +67,8 @@ spec:
 # ADR 0018の実装漏れの修正:default-denyはPod単位でingress/egress双方に適用されるため、
 # 接続元(この場合keycloak-db-init Job)側にも自分自身のegress許可ポリシーが要る
 # (宛先postgres側のingress許可だけでは不十分。実機で「postgres側は許可済みなのに
-# connection refusedになる」という形で発覚した)。
+# connection refusedになる」という形で発覚した)。ADR 0028で自身のEnvoyサイドカー経由の
+# mTLS接続に切り替えたため、宛先ポートはpostgresのmTLS終端Envoy(6432)。
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -86,7 +87,7 @@ spec:
               app: postgres
       ports:
         - protocol: TCP
-          port: 5432
+          port: 6432
 ---
 # 上と同じ実装漏れの修正(keycloak-test-fixtures Job→edge-proxy)。
 apiVersion: networking.k8s.io/v1

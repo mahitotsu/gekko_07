@@ -5,6 +5,11 @@
 # 各サービスが自分のDB・ロールを作る責務を持ち、そのプロビジョニング処理は各サービス自身の
 # ディレクトリに置く（例：k8s/keycloak/db-init-job.yaml）。新しいサービスを追加する際も
 # このファイルを触る必要はない。
+#
+# ADR 0028：常駐4サービス(keycloak/account-service/analyst-attribute-service/
+# fraud-detection-engine)からの接続をmTLS化するEnvoyサイドカーを追加した(6432でmTLS終端、
+# 127.0.0.1:5432の実Postgresへ平文tcp_proxy)。postgresコンテナ自身の待受設定は無変更。
+# db-init/seed Jobはスコープ外で、引き続き5432へ直接平文接続する。
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -61,6 +66,39 @@ spec:
               command: ["pg_isready", "-U", "postgres"]
             initialDelaySeconds: 10
             periodSeconds: 10
+        # ADR 0028: 常駐4サービスからのmTLS接続を終端するサイドカー。秘密鍵に触れるのは
+        # このコンテナのみ(他サービスと同じ原則。SPIRE registration entryもenvoyコンテナのみを
+        # selectorに持つ。k8s/spire/entries-configmap.yaml参照)。
+        - name: envoy
+          image: envoyproxy/envoy:v1.31.5
+          command: ["envoy", "-c", "/etc/envoy/envoy.yaml"]
+          ports:
+            - name: postgres-mtls
+              containerPort: 6432
+          volumeMounts:
+            - name: envoy-config
+              mountPath: /etc/envoy
+              readOnly: true
+            # SPIRE Agent Workload API(UDS)ソケット(ADR 0012/0028)。postgresコンテナは
+            # マウントしない(秘密鍵に触れるのはEnvoyのみ)。
+            - name: spire-agent-socket
+              mountPath: /run/spire/sockets
+              readOnly: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "300m"
+              memory: "128Mi"
+      volumes:
+        - name: envoy-config
+          configMap:
+            name: postgres-envoy
+        - name: spire-agent-socket
+          hostPath:
+            path: /run/spire/sockets
+            type: Directory
   volumeClaimTemplates:
     - metadata:
         name: data

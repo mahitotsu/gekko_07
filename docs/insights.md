@@ -406,3 +406,19 @@ Alloyのhostpath収集方式（`/var/log/pods`をDaemonSetでマウント）が�
 **原因**：未特定。Secret（`yamada-analyst`）の値と`.secrets/yamada-analyst-password`ファイルの内容は一致しており、生成される認証情報（argon2ハッシュ）自体は存在するため、fixtures.sh側のcreate-user時のパスワード設定手順（インライン`credentials`指定か、Keycloak側の何らかのタイミング要因か）に問題がある可能性がある。
 
 **対応**：今回は範囲外として深追いしなかった（ADR 0025の監査ログ集約とは無関係な既存スクリプトの問題）。backlog.mdに未解決事項として記録する。
+
+## Postgres mTLS（ADR 0028）
+
+### 長時間稼働Podの静的Envoy bootstrap設定は、ConfigMapを更新しただけでは再読み込みされない
+
+**症状**：`k8s/postgres/envoy-configmap.yaml`のmTLS許可SAN一覧にdb-init/seed Job用の5エントリを追加し`kubectl apply`したが、その後db-init Jobから接続すると`psql: error: connection to server at "postgres" (127.0.0.1), port 5432 failed: server closed the connection unexpectedly`で失敗した（Job側は接続待機リトライを使い切って終了）。
+
+**原因**：Envoyの`envoy.yaml`（`node`/`static_resources`を含むbootstrap設定）はxDS経由の動的設定と異なり、プロセスが起動時に一度だけ読み込むファイルであり、マウント元ConfigMapの内容が更新されても実行中のEnvoyプロセスには反映されない（kubeletはConfigMapボリュームの中身自体は同期するが、それを読みに行くかどうかはアプリ側の実装次第）。postgres StatefulSetは今回`k8s/postgres/statefulset.yaml`（Podテンプレート）自体を変更していなかったため、`kubectl apply`では既存のpostgres-0 Podが再作成されず、古いSAN一覧を積んだままのEnvoyプロセスが動き続けていた。account-service等の常駐アプリでは、Envoy設定変更が大抵`hostAliases`等のPodテンプレート変更と同時に起きるため、この罠はこれまで顕在化していなかった。
+
+**対応**：`kubectl -n gekko delete pod postgres-0`でPodを再作成し（StatefulSetなので自動的に作り直される。PVCは保持される）、Envoy admin API（`/config_dump?resource=static_listeners`）で新しいSAN一覧が実際に読み込まれたことを確認した。今後postgres-envoy ConfigMapの内容だけを変更する場合（Podテンプレート自体の変更を伴わない場合）は、同様に手動でpostgres-0を再作成する必要がある。
+
+### Kubernetesネイティブsidecarコンテナ（`initContainers`の`restartPolicy: Always`）はJobと問題なく組み合わせられた
+
+**症状（想定していたリスク）**：Jobの`psql`スクリプトは1回きりの実行であり、Envoyサイドカーが起動直後でSDS証明書配信・TCPリスニングが完了していないタイミングで接続を試みる競合を懸念していた。
+
+**確認結果**：既存の接続待機リトライループ（`for i in $(seq 1 10); do $PSQL ...; sleep 1; done`。NetworkPolicy反映待ちのために元々存在していた）がこの競合にもそのまま対応し、新しいstartupProbe等の追加は不要だった。またメインコンテナ（`db-init`/`seed`）が終了すると、kubeletが`restartPolicy: Always`のEnvoyサイドカーへ自動的にSIGTERMを送り、Job自体も正常にCompletedへ遷移することを実機で複数パターン（単一initContainer構成・`resolve-subs`と共存する2 initContainers構成）確認した。

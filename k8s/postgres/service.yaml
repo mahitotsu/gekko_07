@@ -1,3 +1,6 @@
+# ADR 0028: 全呼び出し元(常駐4サービス・db-init/seed Job)がmTLS終端Envoyサイドカー
+# (postgres-envoy ConfigMap)経由の6432に統一されたため、実Postgres直結の5432ポートは
+# 削除した(手動デバッグ用のkubectl port-forwardはServiceを経由しないため影響なし)。
 apiVersion: v1
 kind: Service
 metadata:
@@ -7,6 +10,6 @@ spec:
   selector:
     app: postgres
   ports:
-    - name: postgres
-      port: 5432
-      targetPort: postgres
+    - name: postgres-mtls
+      port: 6432
+      targetPort: postgres-mtls
