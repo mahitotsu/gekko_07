@@ -422,3 +422,37 @@ Alloyのhostpath収集方式（`/var/log/pods`をDaemonSetでマウント）が�
 **症状（想定していたリスク）**：Jobの`psql`スクリプトは1回きりの実行であり、Envoyサイドカーが起動直後でSDS証明書配信・TCPリスニングが完了していないタイミングで接続を試みる競合を懸念していた。
 
 **確認結果**：既存の接続待機リトライループ（`for i in $(seq 1 10); do $PSQL ...; sleep 1; done`。NetworkPolicy反映待ちのために元々存在していた）がこの競合にもそのまま対応し、新しいstartupProbe等の追加は不要だった。またメインコンテナ（`db-init`/`seed`）が終了すると、kubeletが`restartPolicy: Always`のEnvoyサイドカーへ自動的にSIGTERMを送り、Job自体も正常にCompletedへ遷移することを実機で複数パターン（単一initContainer構成・`resolve-subs`と共存する2 initContainers構成）確認した。
+
+## fraud-mcp-server本実装（Python/FastMCP、ADR 0029）
+
+### FastMCPのStreamable HTTPアプリを他のStarletteアプリへマウントする際、`lifespan`を明示的に共有しないとセッションが機能しない
+
+**症状**：`mcp.http_app()`が返すASGIアプリを素の`Starlette(routes=[...])`に`Mount("/", app=mcp_app)`で組み込んだだけでは、外側のStarletteアプリ自体のlifespanイベントに`mcp_app`のセッションマネージャーの起動処理が含まれない（FastMCPのStreamable HTTP transportはセッション管理に内部でstartup/shutdownフックを使う）。
+
+**原因**：ASGIの`Mount`はサブアプリのルーティングを委譲するだけで、lifespanイベントを自動的に合成しない。FastMCP自身のドキュメント・実装例でも「外側のアプリ作成時に`lifespan=mcp_app.lifespan`を明示的に渡す」ことが前提になっている。
+
+**対応**：`services/fraud-mcp-server/app.py`で`mcp_app = mcp.http_app(path="/mcp")`を作り、`Starlette(routes=[...], lifespan=mcp_app.lifespan)`として外側のアプリを作成してから`asgi_app.mount("/", mcp_app)`する構成にした。この構成で`initialize`→`notifications/initialized`→`tools/list`→`tools/call`の一連のMCPセッションが実機（ローカルDocker実行、後にk3dクラスタ内）で正常に動作することを確認した。
+
+### `get_http_headers()`/`get_http_request()`はcontextvarベースで、Envoy ingressが転送する`Authorization`ヘッダーをツール関数内から素直に読める
+
+`fastmcp.server.dependencies.get_http_headers(include={"authorization"})`は例外を投げずに空dictを返す安全なAPIで、`@mcp.tool`関数の中からEnvoy ingress(`jwt_authn`の`forward: true`で保持された元のAuthorizationヘッダー)をそのまま読み取り、account-serviceへの呼び出しにも転送できることを確認した（`services/fraud-mcp-server/app.py`の`_delegated_authorization`）。アプリ自身はToken Exchangeを一切行わず、受け取ったヘッダーを右から左へ転送するだけでよい（account-serviceの`AnalystAttributeClient.java`と同型のパターンがPython/FastMCPでも成立する）。
+
+### 合言葉ヘッダー検証ミドルウェアはStarletteの`BaseHTTPMiddleware`ではなく素のASGIミドルウェアで実装する
+
+**症状**：ADR 0009 §2の多層防御（接続元loopback再チェック・合言葉ヘッダー検証）を他サービスと同じ形で移植する際、最初`starlette.middleware.base.BaseHTTPMiddleware`を使う案を検討した。
+
+**原因**：`BaseHTTPMiddleware`はレスポンスを内部でバッファする実装になっており、MCP Streamable HTTP transportが使うSSE（Server-Sent Events）ストリーミングレスポンスと相性が悪いことが知られている（Starletteの既知の制限）。
+
+**対応**：`class HandshakeMiddleware`を素のASGIミドルウェア（`__call__(self, scope, receive, send)`を直接実装する形）として書き、`app(scope, receive, send)`をそのまま委譲する構成にした。実機確認（`tools/list`・`tools/call`のSSEレスポンスを含む）でストリーミングが問題なく通ることを確認した。
+
+### MCPエンドポイントの実パスは`mcp.http_app(path="/mcp")`で明示指定し、`/mcp`に確定した
+
+FastMCPは`http_app()`の`path`引数でマウントパスを指定できる。fraud-mcp-serverでは`/mcp`を明示指定した（Envoy ingress側は`prefix: "/"`のワイルドカードルートのため、パス自体はEnvoy設定に影響しない。将来fraud-agentの本実装がMCPクライアントとしてこのURLを組み立てる際は`http://fraud-mcp-server/mcp`を使う）。
+
+### `python:3.12-slim`ベースの実行イメージでも、`kubectl exec`での即興`python3 -c`呼び出しはそのまま機能する
+
+fraud-detection-engine本実装（ADR 0027）ではRustの静的バイナリ化によりコンテナ内のシェル・curlが失われ、`scripts/verify-hop.sh`の手動リクエスト組み立て箇所を診断用ループバックAPIへ置き換える対応が必要になった。fraud-mcp-serverは同じく「スタブのPythonスクリプトから本実装イメージへ」の置き換えだが、実行イメージが`python:3.12-slim`（distrolessではない）であるため`python3`バイナリ自体はそのまま残っており、`scripts/verify-hop.sh`の既存ステップ（`kubectl exec -c app -- python3 -c '...'`でaccount-serviceへ手動HTTPリクエストを送る箇所）は無変更で動作した（実機確認済み）。
+
+### fraud-agent-stubの疎通確認先を`/healthz`に切り替えた
+
+fraud-agent-stub（`k8s/fraud-agent/app-configmap.yaml`）は元々fraud-mcp-serverのスタブ実装（素のGETに任意のJSONを返す）への疎通確認として`http://fraud-mcp-server/`へ素のGETを送っていた。fraud-mcp-server本実装後、MCPプロトコル外の素のGETは`/mcp`エンドポイントでは200を返さない（FastMCP Streamable HTTPは`initialize`から始まる正規のJSON-RPCセッションを要求する）ため、`scripts/verify-hop.sh`のstep 7（`"fraud_mcp_server": {"status": 200`を期待するアサーション）が壊れる。fraud-agent自体は本実装のスコープ外のため、`FRAUD_MCP_SERVER_URL`の既定値を`http://fraud-mcp-server/healthz`に変更するだけで対応した（`app.py`に追加した`/healthz`はEnvoy ingressの同じscope検証(`account:read`)配下にある単純な200固定エンドポイント）。実機確認済み。

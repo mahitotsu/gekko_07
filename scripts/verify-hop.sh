@@ -14,7 +14,7 @@
 # 1. account-service向けのaccount:readトークンを、frontend→fraud-agent→fraud-mcp-serverの
 #    実チェーン(各サービス自身のtoken-exchangeサイドカーへ、Envoyが送るのと同じ形で直接
 #    リクエストする)経由で取得する
-# 2. そのトークンを持ってfraud-mcp-server-stub Pod内からaccount-serviceを叩き、
+# 2. そのトークンを持ってfraud-mcp-server Pod内からaccount-serviceを叩き、
 #    Envoy egress(ext_authzによるToken Exchange)→Envoy ingress(jwt_authn/rbac/合言葉)→
 #    account-serviceアプリ(本実装)、という経路全体が正しく動くことを確認する
 # 3. account-serviceのアプリポートにPod外から直接到達できないことを確認する(ADR 0009主対策①)

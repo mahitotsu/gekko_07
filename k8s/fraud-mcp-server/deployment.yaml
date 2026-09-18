@@ -1,4 +1,4 @@
-# fraud-mcp-serverの最小スタブDeployment(1ホップ先行検証用。ADR 0002/0009/0010)。
+# fraud-mcp-serverの本実装Deployment(Python/FastMCP。ADR 0002/0007/0009/0010/0029)。
 # hostAliasesで"account-service"を127.0.0.1へ静的にマッピングし、アプリが実サービス名・実APIパスで
 # 普通にHTTPリクエストを組み立てるだけで、同一Pod内のEnvoy(egress)が横取りする(ADR 0010)。
 #
@@ -8,12 +8,16 @@
 # mTLS化される(k8s/ext-authz/deployment.yamlが持っていたのと同じhostAliasesパターン)。
 #
 # ADR 0023：fraud-agent→fraud-mcp-serverホップの実装にあわせてEnvoyへingressリスナーを
-# 追加した(用意済みだったapp-configmap.yamlをようやく使う)。fraud-mcp-serverはaccount-service
-# に続き、ingress/egress両方を持つサービスになった。
+# 追加した。fraud-mcp-serverはaccount-serviceに続き、ingress/egress両方を持つサービスになった。
+#
+# ADR 0029：appコンテナをPythonスタブ(ConfigMap embedded script)からservices/fraud-mcp-server/
+# のFastMCP本実装(Makefileのbuild-fraud-mcp-serverターゲットでビルドし`k3d image import`で
+# クラスタへ持ち込む)へ置き換えた。token-exchange/envoyサイドカーは無変更(account-service等の
+# 実装済みサービスと同じくConfigMap embedded scriptのまま)。
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: fraud-mcp-server-stub
+  name: fraud-mcp-server
   namespace: gekko
   labels:
     app: fraud-mcp-server
@@ -42,8 +46,8 @@ spec:
               mountPath: /handshake
       containers:
         - name: app
-          image: python:3.12-alpine
-          command: ["python3", "/scripts/app.py"]
+          image: gekko07/fraud-mcp-server:local
+          imagePullPolicy: IfNotPresent
           env:
             - name: APP_BIND_HOST
               value: "127.0.0.1"
@@ -51,10 +55,9 @@ spec:
               value: "9000"
             - name: HANDSHAKE_TOKEN_FILE
               value: "/handshake/token"
+            - name: ACCOUNT_SERVICE_URL
+              value: "http://account-service/"
           volumeMounts:
-            - name: app-script
-              mountPath: /scripts
-              readOnly: true
             - name: handshake
               mountPath: /handshake
               readOnly: true
@@ -134,9 +137,6 @@ spec:
               cpu: "200m"
               memory: "128Mi"
       volumes:
-        - name: app-script
-          configMap:
-            name: fraud-mcp-server-stub-app
         - name: token-exchange-app-script
           configMap:
             name: fraud-mcp-server-token-exchange-app

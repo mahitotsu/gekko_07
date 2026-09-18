@@ -29,8 +29,11 @@ data:
     APP_PORT = int(os.environ.get("APP_PORT", "9000"))
     HANDSHAKE_HEADER = os.environ.get("HANDSHAKE_HEADER_NAME", "x-gekko-handshake")
     HANDSHAKE_FILE = os.environ.get("HANDSHAKE_TOKEN_FILE", "/handshake/token")
+    # ADR 0029でfraud-mcp-serverが本実装(FastMCP)に置き換わり、MCPプロトコル外の素の
+    # GETは200を返さなくなったため、疎通確認用の/healthzを叩く(fraud-mcp-server自体は
+    # スコープ外。fraud-agent本体の実装ではない)。
     FRAUD_MCP_SERVER_URL = os.environ.get(
-        "FRAUD_MCP_SERVER_URL", "http://fraud-mcp-server/"
+        "FRAUD_MCP_SERVER_URL", "http://fraud-mcp-server/healthz"
     )
 
 

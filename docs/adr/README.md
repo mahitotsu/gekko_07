@@ -36,3 +36,4 @@
 | [0026](0026-account-service-analyst-attribute-service-implementation.md) | account-service・analyst-attribute-serviceを本実装し、ビルド・配布パイプラインを新設する | Partially superseded by 0027 |
 | [0027](0027-fraud-detection-engine-implementation.md) | fraud-detection-engineを本実装し、デモ用凍結データの発生源をaccount-serviceのシードから切り替える | Accepted |
 | [0028](0028-postgres-mtls-tcp-proxy.md) | 共有PostgresインスタンスへのアクセスをEnvoyのtcp_proxyでmTLS化する | Accepted |
+| [0029](0029-fraud-mcp-server-implementation.md) | fraud-mcp-serverを本実装し、account-serviceの読み取り・提案系機能をMCPツールとして公開する | Accepted |

@@ -4,7 +4,7 @@
 
 各サービスの技術スタックは意図的に統一しない（多言語構成の理由は[requirements.md](requirements.md)「背景（なぜサイドカーへ切り出すか）」参照：Token Exchangeをサイドカーへ切り出す価値は、実装言語がバラバラな構成でこそ際立つ）。個々の選定理由は[ADR 0007](adr/0007-per-service-language-selection.md)を参照。
 
-account-service・analyst-attribute-service（[ADR 0026](adr/0026-account-service-analyst-attribute-service-implementation.md)）・fraud-detection-engine（[ADR 0027](adr/0027-fraud-detection-engine-implementation.md)）は本実装済み。残るfraud-mcp-server・fraud-agent・frontendの本実装は未着手（設計段階）で、Envoy/ext_authzによるToken Exchange・SPIFFE/SPIRE mTLSの実機検証用スタブとして存在する（本実装とは別物。詳細は[architecture.md](architecture.md)・[insights.md](insights.md)参照）。frontendのみ、ログイン（Authorization Code + PKCE）を簡易ログイン（ROPCのHTTPエンドポイント化）で代用している（[ADR 0024](adr/0024-frontend-edge-proxy-and-simplified-login.md)）。
+account-service・analyst-attribute-service（[ADR 0026](adr/0026-account-service-analyst-attribute-service-implementation.md)）・fraud-detection-engine（[ADR 0027](adr/0027-fraud-detection-engine-implementation.md)）・fraud-mcp-server（[ADR 0029](adr/0029-fraud-mcp-server-implementation.md)）は本実装済み。残るfraud-agent・frontendの本実装は未着手（設計段階）で、Envoy/ext_authzによるToken Exchange・SPIFFE/SPIRE mTLSの実機検証用スタブとして存在する（本実装とは別物。詳細は[architecture.md](architecture.md)・[insights.md](insights.md)参照）。frontendのみ、ログイン（Authorization Code + PKCE）を簡易ログイン（ROPCのHTTPエンドポイント化）で代用している（[ADR 0024](adr/0024-frontend-edge-proxy-and-simplified-login.md)）。
 
 ## frontend（BFF）
 
@@ -26,12 +26,12 @@ account-service・analyst-attribute-service（[ADR 0026](adr/0026-account-servic
 - **連携相手**：frontend（Token Exchangeで得たトークンによる実呼び出しを受ける）、fraud-mcp-server（MCPクライアントとして）。Keycloakとは自身のEnvoyサイドカー経由でToken Exchangeを行う（受け取った`aud=fraud-agent`のトークンを`subject_token`に`audience=fraud-mcp-server, scope=account:read`で交換。アプリ本体はトークンを一切意識しない。[ADR 0002](adr/0002-token-exchange-in-envoy-sidecar.md)・[ADR 0014](adr/0014-fraud-agent-token-exchange.md)）
 - **技術スタック**：TypeScript / Claude Agent SDK（選定理由は[ADR 0007](adr/0007-per-service-language-selection.md)）
 
-## fraud-mcp-server
+## fraud-mcp-server（本実装済み。[ADR 0029](adr/0029-fraud-mcp-server-implementation.md)）
 
 - **存在意義**：account-serviceの読み取り・提案系機能をMCPツールとして公開する。AIエージェントとaccount-serviceの間に立ち、MCPプロトコルとREST/gRPCの変換を担う
 - **提供機能**：MCPツール`get_frozen_accounts`（凍結中口座とその凍結根拠の照会）、`get_account_history`（取引履歴照会）、`propose_unfreeze`（凍結解除案の記録）
 - **保有データ**：なし。account-serviceへの中継のみ
-- **連携相手**：fraud-agentからMCPで呼ばれる。account-serviceへToken Exchange（audience=account-service, scope=account:read/account:propose）を行った上で委任する
+- **連携相手**：fraud-agentからMCPで呼ばれる。account-serviceへは自身のEnvoy/token-exchangeサイドカー経由でToken Exchange（audience=account-service, scope=account:read/account:propose）を行った上で委任する（アプリ本体は受信した委任トークンをそのまま転送するだけで、Token Exchange自体は一切意識しない。[ADR 0002](adr/0002-token-exchange-in-envoy-sidecar.md)・[ADR 0019](adr/0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md)）
 - **技術スタック**：Python / FastMCP（選定理由は[ADR 0007](adr/0007-per-service-language-selection.md)）
 
 ## fraud-detection-engine（不正検知エンジン。本実装済み。[ADR 0027](adr/0027-fraud-detection-engine-implementation.md)）
