@@ -222,6 +222,14 @@
 
 **確認内容**：`podSelector: {}`で全Pod共通の1本のNetworkPolicy（`k8s/network-policy/allow-dns.yaml`）だけを追加し、個々のサービスのNetworkPolicyには一切DNS関連のegressルールを書いていない。この状態で`postgres`・`keycloak.gekko.svc.cluster.local`等、全てのService名前解決を伴う既存フローが問題なく成功した。namespaceラベル`kubernetes.io/metadata.name: kube-system`はKubernetes標準の自動付与ラベルで、k3d(v1.35系)でも別途手動付与する必要はなかった。
 
+### 新設したPostgres接続用Job（db-init/seed）は、宛先側の許可だけでは繋がらない。接続元Job自身のegress許可も要る（3回踏んだ）
+
+**症状**：`kubectl logs`で新設のJob（`*-db-init`・`*-seed`等）を見ると、宛先（postgres/edge-proxy）は既にingressを許可しているにもかかわらず`connection refused`で失敗する。宛先側のNetworkPolicyだけを見ると許可漏れが無いように見えるため原因箇所を誤認しやすい。
+
+**原因**：ADR 0018のdefault-denyは名前空間単位ではなくPod単位でingress/egress双方に適用される。宛先PodのingressルールでJobからの接続を許しても、接続元であるJob自身のPodにegress許可のNetworkPolicyが無ければそのPod自体が発信すら出来ない。新しいJobを追加するたびに「宛先側のingress」と「接続元側のegress」の両方を用意し忘れると再発する典型パターン。
+
+**対応**：初出は`k8s/keycloak/networkpolicy.yaml`（`keycloak-db-init` Job、ADR 0018時点でコメントとして記録）。[ADR 0026](adr/0026-account-service-analyst-attribute-service-implementation.md)でaccount-service/analyst-attribute-serviceのdb-init/seed Jobを新設した際に同じ症状を2度（`account-service-db-init`・`analyst-attribute-service-db-init`・`analyst-attribute-service-seed`の3 Job分)踏み、`k8s/account-service/networkpolicy.yaml`・`k8s/analyst-attribute-service/networkpolicy.yaml`にそれぞれ専用のegress許可ルールを追加して解消した。各k8s/*/networkpolicy.yamlに個別コメントとして残っていたためこのファイルに一元化して記録する。**今後、他サービス（fraud-mcp-server等）の本実装でPostgresやKeycloak等に接続するJob（db-init/seed/migration等）を新設する際は、宛先側のingress許可の有無だけでなく、Job自身（接続元）のegress許可を必ず併せて用意すること。**
+
 ## DPoP送信者拘束（fraud-mcp-server→account-serviceの1ホップ、ADR 0013。ADR 0015で撤去済み）
 
 **このセクションが指す実装（`k8s/dpop-verifier/`等）はADR 0015で撤去済み。** 以下は撤去前の実機検証で得た知見で、将来DPoPを再検討する際の参考として残す。
