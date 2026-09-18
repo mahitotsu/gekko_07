@@ -60,7 +60,7 @@ SPIRE_BUNDLE_ENDPOINT_CERT_DUMMY := $(shell mkdir -p $(SECRETS_DIR) && \
 	    -addext "subjectAltName=DNS:spire-server.spire.svc.cluster.local,DNS:spire-server" \
 	    >/dev/null 2>&1 ) )
 
-.PHONY: up down stop start status clean deploy undeploy keycloak-forward keycloak-reimport-realm deploy-verify-hop undeploy-verify-hop verify-hop deploy-spire undeploy-spire deploy-network-policy undeploy-network-policy deploy-observability undeploy-observability grafana-forward verify-observability build-account-service build-analyst-attribute-service build-fraud-detection-engine
+.PHONY: up down stop start status network-status clean deploy undeploy keycloak-forward keycloak-reimport-realm deploy-verify-hop undeploy-verify-hop verify-hop deploy-spire undeploy-spire deploy-network-policy undeploy-network-policy deploy-observability undeploy-observability grafana-forward verify-observability build-account-service build-analyst-attribute-service build-fraud-detection-engine
 
 # -------------------------
 # クラスタ操作
@@ -405,3 +405,9 @@ status:
 	@kubectl -n spire get statefulsets,daemonsets,services,pods 2>/dev/null || echo "(namespace 'spire' not reachable)"
 	@echo "--- observability ---"
 	@kubectl -n observability get deployments,daemonsets,services,pods 2>/dev/null || echo "(namespace 'observability' not reachable)"
+
+# ネットワーク構成を確認する。statusがコンテナの起動状況を見せるのに対し、こちらは
+# NetworkPolicy(通信許可、ADR 0018)とEnvoyサイドカーの実プロトコル(mTLS/plaintext、
+# SPIRE発行SPIFFE IDの許可・検証対象、ADR 0012/0015/0019/0020/0028)を突き合わせて表示する
+network-status:
+	@python3 scripts/network-status.py

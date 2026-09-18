@@ -22,6 +22,7 @@ OAuth 2.0 Token Exchange (RFC 8693) をEnvoyサイドカー（ext_authz）に実
 ```
 make up               # k3dクラスタを作成し、アプリ層一式をデプロイする（既に存在すれば作成をスキップ）
 make status            # クラスタ・ノード・アプリPodの状態確認
+make network-status     # NetworkPolicy(通信許可)とEnvoyサイドカーの実プロトコル(mTLS/plaintext)を突き合わせて確認
 make keycloak-forward   # localhost:3000 -> edge-proxy経由でKeycloakへport-forward（フォアグラウンドで動き続ける）
 make deploy             # アプリ層（Postgres・SPIRE・Keycloak・edge-proxy・account-service・analyst-attribute-service・監査ログ集約基盤・NetworkPolicy）を再デプロイ（クラスタは起動済み前提）
 make undeploy           # アプリ層だけを削除（クラスタは残す）
