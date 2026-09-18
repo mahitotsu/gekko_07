@@ -32,6 +32,11 @@ fraud-mcp-server・fraud-detection-engine・account-service・analyst-attribute-
 
 - **口座属性の拡張要否**：現状は地域(`region`)とティア(`standard`/`high-value`)の2軸のみ（access-control-design.md 表5）。実装を進める中でさらに軸が必要になるか要検討
 
+## fraud-detection-engine
+
+- **実際の取引イベントストリームとの連携**：[ADR 0027](adr/0027-fraud-detection-engine-implementation.md)で本実装した監視ループは、上流の取引イベント基盤が存在しないため観測シグナル（口座ID・発火ルール・スコア・理由）を起動時の固定シードで代用している。実際の取引ストリームと連携したくなった場合、BR7（fraud-detection-engineはaccount:readを持たない。access-control-design.md表4）とどう両立させるか（account-serviceからの何らかのイベント供給の形を取るのか等）を含めて再検討が必要
+- **スキャン間隔のチューニング**：既定5秒はデモの応答性優先の値であり実運用相当ではない。実運用を想定した値・可変間隔（負荷に応じた調整等）が必要になった場合に見直す
+
 ## 監査
 
 - **otel-lgtmの同梱コンポーネント（Prometheus/Tempo/Pyroscope/OTel Collector）を無効化できるか**：ADR 0025で採用した`grafana/otel-lgtm`はGrafana+Lokiのみ使う想定だが、残り4コンポーネントも起動している。個別に無効化できるかは未調査（動くが未使用として許容している）

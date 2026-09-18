@@ -4,7 +4,7 @@
 
 各サービスの技術スタックは意図的に統一しない（多言語構成の理由は[requirements.md](requirements.md)「背景（なぜサイドカーへ切り出すか）」参照：Token Exchangeをサイドカーへ切り出す価値は、実装言語がバラバラな構成でこそ際立つ）。個々の選定理由は[ADR 0007](adr/0007-per-service-language-selection.md)を参照。
 
-account-service・analyst-attribute-serviceは本実装済み（[ADR 0026](adr/0026-account-service-analyst-attribute-service-implementation.md)）。残るfraud-mcp-server・fraud-detection-engine・fraud-agent・frontendの本実装は未着手（設計段階）で、Envoy/ext_authzによるToken Exchange・SPIFFE/SPIRE mTLSの実機検証用スタブとして存在する（本実装とは別物。詳細は[architecture.md](architecture.md)・[insights.md](insights.md)参照）。frontendのみ、ログイン（Authorization Code + PKCE）を簡易ログイン（ROPCのHTTPエンドポイント化）で代用している（[ADR 0024](adr/0024-frontend-edge-proxy-and-simplified-login.md)）。
+account-service・analyst-attribute-service（[ADR 0026](adr/0026-account-service-analyst-attribute-service-implementation.md)）・fraud-detection-engine（[ADR 0027](adr/0027-fraud-detection-engine-implementation.md)）は本実装済み。残るfraud-mcp-server・fraud-agent・frontendの本実装は未着手（設計段階）で、Envoy/ext_authzによるToken Exchange・SPIFFE/SPIRE mTLSの実機検証用スタブとして存在する（本実装とは別物。詳細は[architecture.md](architecture.md)・[insights.md](insights.md)参照）。frontendのみ、ログイン（Authorization Code + PKCE）を簡易ログイン（ROPCのHTTPエンドポイント化）で代用している（[ADR 0024](adr/0024-frontend-edge-proxy-and-simplified-login.md)）。
 
 ## frontend（BFF）
 
@@ -34,13 +34,13 @@ account-service・analyst-attribute-serviceは本実装済み（[ADR 0026](adr/0
 - **連携相手**：fraud-agentからMCPで呼ばれる。account-serviceへToken Exchange（audience=account-service, scope=account:read/account:propose）を行った上で委任する
 - **技術スタック**：Python / FastMCP（選定理由は[ADR 0007](adr/0007-per-service-language-selection.md)）
 
-## fraud-detection-engine（不正検知エンジン）
+## fraud-detection-engine（不正検知エンジン。本実装済み。[ADR 0027](adr/0027-fraud-detection-engine-implementation.md)）
 
 - **存在意義**：取引パターンを監視し、疑わしい取引を検知した口座を自動的に凍結する。account-serviceが「MCPサーバー経由（AI）」だけでなく「通常のマイクロサービス」からも利用されることを示す対照項（[ADR 0011](adr/0011-scenario-ai-assisted-unfreeze.md)）
-- **提供機能**：取引パターンの監視、疑わしい口座の自動凍結。account-serviceへ機械間認証（client_credentials, scope=account:freeze）で凍結を依頼する。凍結時の判定根拠（発火した検知ルール・スコア等）をaccount-serviceに記録させる
-- **保有データ**：検知ルール・しきい値の設定（詳細は実装時に決定）。PostgreSQL（account-serviceと同一インスタンス内の別データベース。[ADR 0008](adr/0008-per-service-datastore-strategy.md)）
+- **提供機能**：ingressの受け口は持たず、バックグラウンドで一定間隔（既定5秒）ごとに自身が保有する観測シグナルを検知ルールのしきい値と照合し、該当する口座があればaccount-serviceへ機械間認証（client_credentials, scope=account:freeze）で凍結を依頼する。凍結時の判定根拠（発火した検知ルール・スコア等）をaccount-serviceに記録させる。実際の取引イベントストリームは存在しないため、観測シグナル自体は起動時に投入する固定シードで代用する（実運用ではここが実際の監視入力に置き換わる想定。backlog.md参照）
+- **保有データ**：検知ルール・しきい値の設定、観測シグナル（口座ID・発火ルール・スコア・理由）、凍結実行済みマーク（同じ口座を繰り返し凍結依頼しないための冪等性管理）。PostgreSQL（account-service・analyst-attribute-serviceと同一インスタンス内の別データベース。[ADR 0008](adr/0008-per-service-datastore-strategy.md)）
 - **連携相手**：account-serviceへ機械間認証で直接アクセスする。ユーザー委任チェーンには参加しない
-- **技術スタック**：Rust / Axum（選定理由は[ADR 0007](adr/0007-per-service-language-selection.md)）
+- **技術スタック**：Rust / Axum（選定理由は[ADR 0007](adr/0007-per-service-language-selection.md)。DBアクセスは`tokio-postgres`のみでORM・マイグレーションフレームワークは導入しない）
 
 ## account-service（今回の主役）
 

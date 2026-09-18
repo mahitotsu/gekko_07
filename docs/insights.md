@@ -230,6 +230,14 @@
 
 **対応**：初出は`k8s/keycloak/networkpolicy.yaml`（`keycloak-db-init` Job、ADR 0018時点でコメントとして記録）。[ADR 0026](adr/0026-account-service-analyst-attribute-service-implementation.md)でaccount-service/analyst-attribute-serviceのdb-init/seed Jobを新設した際に同じ症状を2度（`account-service-db-init`・`analyst-attribute-service-db-init`・`analyst-attribute-service-seed`の3 Job分)踏み、`k8s/account-service/networkpolicy.yaml`・`k8s/analyst-attribute-service/networkpolicy.yaml`にそれぞれ専用のegress許可ルールを追加して解消した。各k8s/*/networkpolicy.yamlに個別コメントとして残っていたためこのファイルに一元化して記録する。**今後、他サービス（fraud-mcp-server等）の本実装でPostgresやKeycloak等に接続するJob（db-init/seed/migration等）を新設する際は、宛先側のingress許可の有無だけでなく、Job自身（接続元）のegress許可を必ず併せて用意すること。**
 
+### 同じパターンの新しい現れ方：マニフェストに接続元Job自身のegress許可を最初から書いても、`make deploy`の実行順序次第では初回だけ間に合わない
+
+**症状**：[ADR 0027](adr/0027-fraud-detection-engine-implementation.md)でfraud-detection-engine-db-init Jobを新設した際、`k8s/fraud-detection-engine/networkpolicy.yaml`に接続元Job自身のegress許可ルールを（上記insightを踏まえて）最初から書いていたにもかかわらず、`make deploy`実行時に`connection refused`でJobがbackoffLimitを使い切って失敗した。
+
+**原因**：`make deploy`は`deploy-network-policy`（全サービスのNetworkPolicyを`kubectl apply`する）をターゲット末尾でしか呼ばない。default-deny自体が存在しないまっさらなクラスタでの初回`make deploy`ではこの順序は無害（Jobは事実上無制限のネットワークで動く）だが、**過去の`make deploy`で既にdefault-denyが有効になっているクラスタ**（`make down`していない開発中のクラスタ等）に新しいサービスのdb-init Jobを初めて追加すると、そのJob自身のegress許可はまだ`deploy-network-policy`が実行されておらず存在しないため、default-denyだけが先に効いてJobが即座に拒否される。宛先側・接続元側どちらのNetworkPolicyも正しく書けていても、単純に「まだ`kubectl apply`されていない」ために起きる、既存insightとは別種のタイミング問題。
+
+**対応**：`Makefile`の`deploy`ターゲットで、`k8s/postgres/networkpolicy.yaml`（宛先postgres側のingress許可。fraud-detection-engine・fraud-detection-engine-db-initからの着信を追加）と`k8s/fraud-detection-engine/networkpolicy.yaml`（接続元fraud-detection-engine本体・db-init Job自身のegress許可）の両方を、db-init Jobを`kubectl apply`する直前に前倒しで適用するようにした。片方だけ前倒ししても解決しない（実際に接続元側だけ先に直しても`connection refused`が再現し、postgres側のingress許可漏れが別途見つかった）。`deploy-network-policy`側の一括適用は冪等なので二重適用しても害はなく、末尾での適用はそのまま残してある。**今後、Postgres等に接続するJobを新設するサービスでは、接続元・宛先(postgres)双方のNetworkPolicyをdb-init Job適用より前に前倒しで適用することを検討すること**（account-service/analyst-attribute-serviceは、このクラスタでは初回追加時に同じ問題を踏んでいない可能性があるが、これは当時のクラスタがまだdefault-deny適用前だったなど環境依存の偶然であり、一般的には同じ問題を持つ）。
+
 ## DPoP送信者拘束（fraud-mcp-server→account-serviceの1ホップ、ADR 0013。ADR 0015で撤去済み）
 
 **このセクションが指す実装（`k8s/dpop-verifier/`等）はADR 0015で撤去済み。** 以下は撤去前の実機検証で得た知見で、将来DPoPを再検討する際の参考として残す。

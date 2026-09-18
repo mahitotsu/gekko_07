@@ -1,17 +1,24 @@
-# fraud-detection-engineの最小スタブDeployment(パターン②先行検証用。ADR 0002/0010)。
+# fraud-detection-engineの本実装Deployment(Rust/Axum。ADR 0002/0007/0009/0010/0020/0027)。
 # services.mdの通りfraud-detection-engineには着信(ingress)する経路が存在しない
-# (account-serviceへ機械間認証で直接アクセスするのみ)ため、fraud-mcp-server-stubと異なり
-# 合言葉initContainer・ingress用app.pyは持たない。appコンテナは検証コマンドを実行するための
-# 待機コンテナ(kubectl execの実行先)。
+# (account-serviceへ機械間認証で直接アクセスするのみ)ため、他の本実装サービスと異なり
+# 合言葉initContainer・ingress用Envoyリスナーは持たない。appコンテナは自身のPostgres
+# データベースに検知ルール・観測シグナルを持ち、バックグラウンドで定期的にスキャンして
+# account-serviceへ凍結を依頼する(UC0)。127.0.0.1:9000の診断用ループバックAPI
+# (GET /healthz・/detections)はセキュリティ境界外で、scripts/verify-hop.shがPod内から
+# `kubectl exec`で直接叩く用途にのみ使う。
 #
 # ADR 0020：client_credentialsトークン取得の実行主体を共有のext-authz-service-ccからこのPod内の
 # client-credentialsサイドカーへ移した(ADR 0019のfraud-mcp-serverと同じ是正パターン)。
 # "keycloak"も127.0.0.1へマッピングし、client-credentialsサイドカー自身のKeycloak向け
-# リクエストも同一EnvoyのegressリスナーでmTLS化される。
+# リクエストも同一Envoyのegressリスナーでmtls化される。
+#
+# appコンテナのイメージはservices/fraud-detection-engine/のCargoプロジェクトをMakefileの
+# build-fraud-detection-engineターゲットでビルドし、`k3d image import`でクラスタへ持ち込む
+# (レジストリは使わない。account-service/analyst-attribute-serviceと同じADR 0026のパターン)。
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: fraud-detection-engine-stub
+  name: fraud-detection-engine
   namespace: gekko
   labels:
     app: fraud-detection-engine
@@ -30,15 +37,38 @@ spec:
           hostnames: ["account-service", "keycloak"]
       containers:
         - name: app
-          image: python:3.12-alpine
-          command: ["sleep", "infinity"]
+          image: gekko07/fraud-detection-engine:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: APP_BIND_HOST
+              value: "127.0.0.1" # ADR 0009 主対策①と同じ考え方:Pod外から直接到達不能にする
+            - name: APP_PORT
+              value: "9000"
+            - name: ACCOUNT_SERVICE_URL
+              value: "http://account-service"
+            - name: SCAN_INTERVAL_SECONDS
+              value: "5"
+            - name: DB_HOST
+              value: "postgres"
+            - name: DB_NAME
+              value: "fraud_detection_engine"
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: fraud-detection-engine-db
+                  key: username
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: fraud-detection-engine-db
+                  key: password
           resources:
             requests:
               cpu: "20m"
               memory: "32Mi"
             limits:
-              cpu: "100m"
-              memory: "64Mi"
+              cpu: "200m"
+              memory: "128Mi"
         - name: envoy
           image: envoyproxy/envoy:v1.31.5
           command: ["envoy", "-c", "/etc/envoy/envoy.yaml"]

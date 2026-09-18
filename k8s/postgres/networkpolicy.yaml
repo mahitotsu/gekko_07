@@ -1,4 +1,4 @@
-# ADR 0018・0026。接続元(実行中の本体+db-init Job)からのみ許可する。
+# ADR 0018・0026・0027。接続元(実行中の本体+db-init Job)からのみ許可する。
 # postgres自身は外向き接続をしないためegressは制御不要。
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -34,6 +34,12 @@ spec:
         - podSelector:
             matchLabels:
               app: analyst-attribute-service-seed
+        - podSelector:
+            matchLabels:
+              app: fraud-detection-engine
+        - podSelector:
+            matchLabels:
+              app: fraud-detection-engine-db-init
       ports:
         - protocol: TCP
           port: 5432

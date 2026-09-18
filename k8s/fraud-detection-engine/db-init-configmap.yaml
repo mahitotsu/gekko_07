@@ -1,0 +1,44 @@
+# fraud-detection-engine自身のDB・ロールをプロビジョニングするスクリプト(k8s/account-service/
+# db-init-configmap.yamlと同一パターン。ADR 0008・0027)。共有Postgres StatefulSet(k8s/postgres/)は
+# fraud-detection-engineの存在を一切知らず、fraud-detection-engine側が自分のDB・ロールを自分で
+# (Postgresのsuperuser権限を借りて)作りに行く。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fraud-detection-engine-db-init
+  namespace: gekko
+data:
+  init.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    export PGPASSWORD="$POSTGRES_SUPERUSER_PASSWORD"
+    PSQL="psql -v ON_ERROR_STOP=1 -h postgres -U postgres -d postgres"
+
+    for i in $(seq 1 10); do
+      $PSQL -tAc "SELECT 1" >/dev/null 2>&1 && break
+      echo "postgresへの接続待機中($i/10)..."
+      sleep 1
+    done
+
+    $PSQL <<-EOSQL
+      DO
+      \$\$
+      BEGIN
+        IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'fraud_detection_engine') THEN
+          CREATE ROLE fraud_detection_engine WITH LOGIN PASSWORD '$FRAUD_DETECTION_ENGINE_DB_PASSWORD';
+        ELSE
+          ALTER ROLE fraud_detection_engine WITH LOGIN PASSWORD '$FRAUD_DETECTION_ENGINE_DB_PASSWORD';
+        END IF;
+      END
+      \$\$;
+    EOSQL
+
+    if ! $PSQL -tAc "SELECT 1 FROM pg_database WHERE datname = 'fraud_detection_engine'" | grep -q 1; then
+      $PSQL -c "CREATE DATABASE fraud_detection_engine OWNER fraud_detection_engine;"
+    fi
+
+    $PSQL -c "REVOKE CONNECT ON DATABASE fraud_detection_engine FROM PUBLIC;"
+    $PSQL -c "GRANT CONNECT ON DATABASE fraud_detection_engine TO fraud_detection_engine;"
+
+    echo "fraud_detection_engine role/database ready"

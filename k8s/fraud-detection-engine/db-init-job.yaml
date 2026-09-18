@@ -1,0 +1,40 @@
+# db-init-configmap.yamlのスクリプトを実行する1回限りのJob(k8s/account-service/db-init-job.yamlと
+# 同一パターン)。
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: fraud-detection-engine-db-init
+  namespace: gekko
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        app: fraud-detection-engine-db-init
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: db-init
+          image: postgres:17.11
+          command: ["/bin/bash", "/scripts/init.sh"]
+          env:
+            - name: POSTGRES_SUPERUSER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-superuser
+                  key: password
+            - name: FRAUD_DETECTION_ENGINE_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: fraud-detection-engine-db
+                  key: password
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: script
+          configMap:
+            name: fraud-detection-engine-db-init
+            defaultMode: 0755

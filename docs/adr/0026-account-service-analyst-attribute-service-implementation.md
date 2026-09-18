@@ -1,6 +1,6 @@
 # ADR 0026: account-service・analyst-attribute-serviceを本実装し、ビルド・配布パイプラインを新設する
 
-- **Status**: Accepted
+- **Status**: Partially superseded by [0027](0027-fraud-detection-engine-implementation.md)
 - **Date**: 2026-09-18
 
 ## Context
@@ -50,6 +50,7 @@ ADR 0007の「Go標準ライブラリ」方針を踏襲し、`net/http`（Go 1.2
 
 ## Consequences
 
+- **[0027](0027-fraud-detection-engine-implementation.md)により一部Superseded**：本ADRのFlyway `V2__seed.sql`は、fraud-detection-engineが未実装だったためデモ用の4口座を`frozen=TRUE`・`freeze_records`付きであらかじめ投入していた。fraud-detection-engineの本実装（ADR 0027）により、この凍結状態はfraud-detection-engine自身の自動検知・凍結実行で再現されるようになったため、V2の凍結シードは`V3__remove_demo_freeze_seed.sql`で取り消した（本ADRのV2本文自体は書き換えていない。歴史的経緯として保持）
 - `docs/backlog.md`の「`proposal_id`のaccount-service側実装（DB永続化）」を解消した
 - `docs/services.md`のaccount-service・analyst-attribute-serviceの記述を「未着手（設計段階）」から実装済みへ更新した
 - README.mdの「各サービスの実装（本実装）」チェックリストが2/6サービス完了に進んだ。残るfraud-mcp-server・fraud-detection-engine・fraud-agent・frontendは引き続きスタブのまま

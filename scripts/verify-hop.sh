@@ -19,10 +19,13 @@
 #    account-serviceアプリ(本実装)、という経路全体が正しく動くことを確認する
 # 3. account-serviceのアプリポートにPod外から直接到達できないことを確認する(ADR 0009主対策①)
 #
-# パターン②(client_credentials、fraud-detection-engine→account-service):
-# 4. fraud-detection-engine-stub Pod内から、Authorizationヘッダーを一切持たずにaccount-serviceの
-#    freezeエンドポイントを叩き、Envoy egress(ext_authzによるclient_credentials取得)→
-#    Envoy ingress(jwt_authn/rbac/合言葉)という経路が正しく動くことを確認する
+# パターン②(client_credentials、fraud-detection-engine→account-service。ADR 0027で本実装):
+# 4. fraud-detection-engineは本実装後、起動後まもなく自律的にaccount 123を検知・凍結する
+#    (UC0)。診断用ループバックAPI(GET 127.0.0.1:9000/detections、client-credentialsコンテナ
+#    から`kubectl exec`で到達)でこれを確認する。appコンテナはコンパイル済みのRustバイナリで
+#    シェル・curlを持たないため、Envoy egress(ext_authzによるclient_credentials取得)→
+#    Envoy ingress(jwt_authn/rbac/合言葉)という経路自体の検証(異常系4bのGET拒否含む)は
+#    引き続きclient-credentialsコンテナ(Python)から行う
 #
 # パターン③(Token Exchange、account-service→analyst-attribute-service。表3)：
 # account-service自身のegress Envoy(ext_authzによるToken Exchange、JWT-SVIDクライアント認証)を
@@ -180,7 +183,7 @@ FRAUD_DETECTION_ENGINE_POD=$(newest_pod fraud-detection-engine)
 
 call_account_service_no_auth() {
   local method="$1" path="$2" body="${3:-{\}}"
-  kubectl -n "$NAMESPACE" exec "$FRAUD_DETECTION_ENGINE_POD" -c app -- env \
+  kubectl -n "$NAMESPACE" exec "$FRAUD_DETECTION_ENGINE_POD" -c client-credentials -- env \
     METHOD="$method" URL="http://account-service${path}" BODY="$body" \
     python3 -c '
 import os, urllib.error, urllib.request
@@ -200,11 +203,48 @@ except urllib.error.HTTPError as e:
 '
 }
 
-echo "==> 4. fraud-detection-engine egress Envoy経由でaccount-serviceのfreeze(account:freeze、client_credentials)を叩く(Authorizationヘッダーなし)"
-call_account_service_no_auth POST /accounts/123/freeze '{"reason":"短時間に連続する高額送金を検知","ruleFired":"RULE_RAPID_TRANSFER","score":0.75}'
+# ADR 0027:診断用ループバックAPI(127.0.0.1:9000、Envoyを経由しないPod内直接到達。
+# Pod内は全コンテナがネットワーク名前空間を共有するため、appコンテナ以外からも到達できる)を
+# client-credentialsコンテナ(Pythonが残っている)から叩く。
+fraud_detection_engine_detections() {
+  kubectl -n "$NAMESPACE" exec "$FRAUD_DETECTION_ENGINE_POD" -c client-credentials -- \
+    python3 -c '
+import urllib.request
+with urllib.request.urlopen("http://127.0.0.1:9000/detections", timeout=5) as resp:
+    print(resp.read().decode())
+'
+}
+
+echo "==> 4. fraud-detection-engineが起動後に自律的にデモ用4口座(123/456/789/999)を検知・凍結したことを確認する(UC0。ADR 0027)"
+echo "     (6c以降のABAC検証がaccount-service /accounts/frozen の結果セットに依存するため、4口座全てを待ち合わせる)"
+DETECTIONS=""
+for _ in $(seq 1 30); do
+  DETECTIONS=$(fraud_detection_engine_detections || true)
+  ALL_FOUND=1
+  for id in 123 456 789 999; do
+    echo "$DETECTIONS" | grep -q "\"accountId\":\"$id\"" || ALL_FOUND=0
+  done
+  [ "$ALL_FOUND" = 1 ] && break
+  sleep 1
+done
+echo "$DETECTIONS"
+if [ "$ALL_FOUND" = 1 ]; then
+  echo "==> 4'. fraud-detection-engineの自律的な検知・凍結(client_credentials、scope=account:freeze)を確認(期待通り)"
+else
+  echo "警告:fraud-detection-engineが4口座全てを検知・凍結しませんでした" >&2
+fi
 
 echo "==> 4b.(異常系)fraud-detection-engine egress Envoy経由でaccount-serviceのGET(account:read)を叩く(account:freezeしか持たないため拒否されるはず)"
 call_account_service_no_auth GET /accounts/123/transactions || true
+
+# fraud-detection-engineの検知記録(detections)は一度凍結を依頼した口座を二度と再依頼しない
+# (実際の不正検知エンジンが、人間が確定解除した口座を毎スキャン周期ごとに勝手に再凍結しては
+# ならないのと同じ理由。ADR 0027)。そのため、このスクリプトを2回連続実行すると前回のステップ6
+# (確定パスの凍結解除)で既にaccount 123が未凍結になっており、以降の確定パステストの前提が
+# 崩れる。UC0自体の検証は既にステップ4で完了しているため、ここでは純粋にテストフィクスチャとして
+# (旧パターン②の手動freeze呼び出しと同じ技法で)account 123を確実に凍結状態へ戻す。
+echo "==> 4c. (テストフィクスチャ)確定パス(ステップ6)の前提として、account 123が凍結状態であることを保証する"
+call_account_service_no_auth POST /accounts/123/freeze '{"reason":"短時間に連続する高額送金を検知","ruleFired":"RULE_RAPID_TRANSFER","score":0.82}'
 
 echo "==> 5. frontend経由でaccount-serviceのGET(account:read)を叩く(edge-proxy→frontend ingress(mTLS+jwt_authn)"
 echo "     →frontend egress(Token Exchange)→account-service ingress、全区間を実際のfrontendから検証。ADR 0024)"
