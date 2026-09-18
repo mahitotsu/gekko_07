@@ -423,6 +423,14 @@ Alloyのhostpath収集方式（`/var/log/pods`をDaemonSetでマウント）が�
 
 **確認結果**：既存の接続待機リトライループ（`for i in $(seq 1 10); do $PSQL ...; sleep 1; done`。NetworkPolicy反映待ちのために元々存在していた）がこの競合にもそのまま対応し、新しいstartupProbe等の追加は不要だった。またメインコンテナ（`db-init`/`seed`）が終了すると、kubeletが`restartPolicy: Always`のEnvoyサイドカーへ自動的にSIGTERMを送り、Job自体も正常にCompletedへ遷移することを実機で複数パターン（単一initContainer構成・`resolve-subs`と共存する2 initContainers構成）確認した。
 
+### 常駐Deployment（Job以外）では同じ競合が実際にCrashLoopBackOffとして顕在化した
+
+**症状**：`make up`実行直後、account-service・analyst-attribute-serviceのappコンテナが数回（3〜4回）再起動してからようやく安定した。ログはいずれもPostgresへの接続失敗（account-service：FlywayのJDBC接続がEOFException、analyst-attribute-service：`context deadline exceeded`）。`make stop`→`make start`でノードが再起動した際にも同様の再起動が発生しうる。
+
+**原因**：account-service（Java/Spring Boot）・analyst-attribute-service（Go）のappコンテナは、同じPod内のEnvoyサイドカー（通常の`containers`。Job用のネイティブsidecarパターンは当時Deploymentには未適用）と並行して起動する。EnvoyがSPIRE Agent Workload APIからSDS経由で証明書配信を受け終える前にappが127.0.0.1:5432（Envoyのegressリスナー）へ接続を試みると失敗する。analyst-attribute-serviceはアプリ自身に30秒のリトライループ（`main.go`の`openDB`）を持っていたが、それでも複数回クラッシュした——1回の接続試行自体がハングすると、リトライループがあってもリトライ予算を1回で使い切ってしまうことがあるため、アプリ側のリトライだけでは不十分だと分かった。
+
+**対応**：db-init Jobで確認済みだったネイティブsidecarパターン（`initContainers`の`restartPolicy: Always`）を、keycloak・account-service・analyst-attribute-service・fraud-detection-engineの4常駐DeploymentのEnvoyにも適用し（[ADR 0028](adr/0028-postgres-mtls-tcp-proxy.md) Consequences追記）、その後ろに`wait-for-postgres`（`pg_isready`リトライループ）initContainerを追加してappコンテナの起動をPostgres疎通確認後まで遅らせた。適用後、`make up`直後・rollout直後とも再起動なしで安定することを実機で複数回確認した。Postgres接続を持たないfraud-mcp-server・fraud-agent・frontend、およびpostgres本体のEnvoyもネイティブsidecar化して構成を統一したが、これらはwait-for-X initContainerを追加する実害が無いため、起動順序ガードは追加していない（edge-proxyはEnvoy単体Podのため`containers`を空にできず対象外）。
+
 ## fraud-mcp-server本実装（Python/FastMCP、ADR 0029）
 
 ### FastMCPのStreamable HTTPアプリを他のStarletteアプリへマウントする際、`lifespan`を明示的に共有しないとセッションが機能しない

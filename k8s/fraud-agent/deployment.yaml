@@ -43,32 +43,12 @@ spec:
           volumeMounts:
             - name: handshake
               mountPath: /handshake
-      containers:
-        - name: app
-          image: python:3.12-alpine
-          command: ["python3", "/scripts/app.py"]
-          env:
-            - name: APP_BIND_HOST
-              value: "127.0.0.1" # ADR 0009 主対策①:Pod外から直接到達不能にする
-            - name: APP_PORT
-              value: "9000"
-            - name: HANDSHAKE_TOKEN_FILE
-              value: "/handshake/token"
-          volumeMounts:
-            - name: app-script
-              mountPath: /scripts
-              readOnly: true
-            - name: handshake
-              mountPath: /handshake
-              readOnly: true
-          resources:
-            requests:
-              cpu: "50m"
-              memory: "64Mi"
-            limits:
-              cpu: "200m"
-              memory: "128Mi"
+        # ネイティブsidecar(restartPolicy: Always。K8s 1.29+でGA、ADR 0028のdb-init Jobと同じ
+        # パターン)。fraud-agentはPostgresを持たないためwait-for-X initContainerは不要だが、
+        # account-service等と構成を揃えるため、通常のcontainersからここへ昇格した(Serviceの
+        # targetport(http)解決・NetworkPolicyのポートマッチングはcontainersと同様に機能する)。
         - name: envoy
+          restartPolicy: Always
           image: envoyproxy/envoy:v1.31.5
           command: ["/bin/sh", "-c"]
           args:
@@ -96,6 +76,31 @@ spec:
               memory: "64Mi"
             limits:
               cpu: "300m"
+              memory: "128Mi"
+      containers:
+        - name: app
+          image: python:3.12-alpine
+          command: ["python3", "/scripts/app.py"]
+          env:
+            - name: APP_BIND_HOST
+              value: "127.0.0.1" # ADR 0009 主対策①:Pod外から直接到達不能にする
+            - name: APP_PORT
+              value: "9000"
+            - name: HANDSHAKE_TOKEN_FILE
+              value: "/handshake/token"
+          volumeMounts:
+            - name: app-script
+              mountPath: /scripts
+              readOnly: true
+            - name: handshake
+              mountPath: /handshake
+              readOnly: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
               memory: "128Mi"
         # frontend→fraud-agent→fraud-mcp-serverのToken Exchange実行主体。envoyコンテナと
         # 同じくWorkload API UDSソケットへアクセスする(JWT-SVID取得のため)。SPIRE registration

@@ -3,7 +3,10 @@
 # Keycloakクライアントid=K8s Service名=audience名を常に同一の文字列にする)。
 #
 # Pod構成はinitContainer(合言葉生成)＋app＋Envoy＋token-exchangeの4者(architecture.md §3、
-# ADR 0019/0020のパターンをtoken-exchangeサイドカーとして最初から適用)。
+# ADR 0019/0020のパターンをtoken-exchangeサイドカーとして最初から適用)。EnvoyはADR 0028の
+# db-init Jobと同じネイティブsidecar(initContainers、restartPolicy: Always)として起動し、
+# その後ろのwait-for-postgres initContainerがPostgres疎通を確認してからapp/token-exchangeを
+# 起動する(appのDB接続失敗によるCrashLoopBackOffを避けるため)。
 #
 # hostAliasesで"analyst-attribute-service"・"keycloak"を127.0.0.1へ静的にマッピングし、表3
 # (account-service→analyst-attribute-service)向けのegressリスナー(account-service-envoy
@@ -46,6 +49,58 @@ spec:
           volumeMounts:
             - name: handshake
               mountPath: /handshake
+        # ネイティブsidecar(restartPolicy: Always。K8s 1.29+でGA、ADR 0028のdb-init Jobと同じ
+        # パターン)。appコンテナより先に(SPIRE Workload APIからSVIDのSDS配信を受けて)起動・待受
+        # させるため、通常のcontainersからここへ昇格した。appコンテナがEnvoyの起動完了前に
+        # 127.0.0.1:5432へ接続しに行きCrashLoopBackOffする実機不具合(起動時のみ、数回のリトライで
+        # 自然復旧するが再現性あり)への対策。Serviceのtargetport(http)解決・NetworkPolicyのポート
+        # マッチングはcontainersと同様に機能する。
+        - name: envoy
+          restartPolicy: Always
+          image: envoyproxy/envoy:v1.31.5
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              export HANDSHAKE_TOKEN="$(cat /handshake/token)"
+              exec envoy -c /etc/envoy/envoy.yaml
+          ports:
+            - name: http
+              containerPort: 8080
+          volumeMounts:
+            - name: envoy-config
+              mountPath: /etc/envoy
+              readOnly: true
+            - name: handshake
+              mountPath: /handshake
+              readOnly: true
+            # SPIRE Agent Workload API(UDS)ソケット(ADR 0012)。appコンテナはマウントしない
+            # (秘密鍵に触れるのはEnvoyのみ)。
+            - name: spire-agent-socket
+              mountPath: /run/spire/sockets
+              readOnly: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "300m"
+              memory: "128Mi"
+        # 上のenvoy sidecarは起動さえすれば(SDS配信完了前でも)次のinitContainerへ進んでしまうため、
+        # ここで実際にPostgres(Envoy egress→mTLS→postgres本体)への疎通が取れるまで待つ。
+        # account-service-db-init(k8s/account-service/db-init-configmap.yaml)と同じリトライループ。
+        - name: wait-for-postgres
+          image: postgres:17.11
+          command:
+            - bash
+            - -c
+            - |
+              for i in $(seq 1 30); do
+                pg_isready -h postgres -U postgres >/dev/null 2>&1 && exit 0
+                echo "postgres(Envoy mTLS経由)への接続待機中($i/30)..."
+                sleep 1
+              done
+              echo "postgresへの接続待機がタイムアウトしました" >&2
+              exit 1
       containers:
         - name: app
           image: gekko07/account-service:local
@@ -84,35 +139,6 @@ spec:
             limits:
               cpu: "500m"
               memory: "512Mi"
-        - name: envoy
-          image: envoyproxy/envoy:v1.31.5
-          command: ["/bin/sh", "-c"]
-          args:
-            - |
-              export HANDSHAKE_TOKEN="$(cat /handshake/token)"
-              exec envoy -c /etc/envoy/envoy.yaml
-          ports:
-            - name: http
-              containerPort: 8080
-          volumeMounts:
-            - name: envoy-config
-              mountPath: /etc/envoy
-              readOnly: true
-            - name: handshake
-              mountPath: /handshake
-              readOnly: true
-            # SPIRE Agent Workload API(UDS)ソケット(ADR 0012)。appコンテナはマウントしない
-            # (秘密鍵に触れるのはEnvoyのみ)。
-            - name: spire-agent-socket
-              mountPath: /run/spire/sockets
-              readOnly: true
-          resources:
-            requests:
-              cpu: "50m"
-              memory: "64Mi"
-            limits:
-              cpu: "300m"
-              memory: "128Mi"
         # 表3(account-service→analyst-attribute-service)のToken Exchange実行主体。envoyコンテナと
         # 同じくWorkload API UDSソケットへアクセスする(JWT-SVID取得のため)。SPIRE registration
         # entryもenvoyコンテナと並んでこのコンテナ名をselectorに持つ(k8s/spire/entries-configmap.yaml

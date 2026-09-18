@@ -336,7 +336,9 @@ deploy-spire:
 	@# entry showで存在確認してから作成するため、冪等に再実行できる）
 	kubectl delete job spire-entries -n spire --ignore-not-found
 	kubectl apply -f k8s/spire/entries-job.yaml
-	kubectl -n spire wait --for=condition=complete job/spire-entries --timeout=60s
+	@# 60sだと初回実行時（spire-server/agent起動直後でwait-for-spire-server initコンテナの
+	@# ポーリングに時間がかかる）に実測でタイムアウトする例があったため180sへ拡張
+	kubectl -n spire wait --for=condition=complete job/spire-entries --timeout=180s
 
 # SPIRE server/agent/registration entries一式を削除する（spire namespaceごと削除）
 undeploy-spire:

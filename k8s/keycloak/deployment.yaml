@@ -23,6 +23,10 @@
 # ADR 0019：`--features=spiffe,client-auth-federated`でKeycloakネイティブのSPIFFE
 # JWT-SVIDクライアント認証(Preview機能)を有効化する。KC_TRUSTSTORE_PATHSはSPIRE Serverの
 # bundle endpoint(ADR 0019、`k8s/spire/`)のTLS証明書を検証するためのtruststore。
+#
+# EnvoyはADR 0028のdb-init Jobと同じネイティブsidecar(initContainers、restartPolicy: Always)
+# として起動し、その後ろのwait-for-postgres initContainerがPostgres疎通を確認してから
+# keycloak本体を起動する(account-service/analyst-attribute-serviceと同じ実機不具合への対策)。
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -45,6 +49,53 @@ spec:
       hostAliases:
         - ip: "127.0.0.1"
           hostnames: ["postgres"]
+      initContainers:
+        # ネイティブsidecar(restartPolicy: Always。K8s 1.29+でGA、ADR 0028のdb-init Jobと同じ
+        # パターン)。keycloakコンテナより先に(SPIRE Workload APIからSVIDのSDS配信を受けて)
+        # 起動・待受させるため、通常のcontainersからここへ昇格した。account-service/
+        # analyst-attribute-serviceと同じ実機不具合(起動時のみ、appがEnvoy起動完了前に
+        # 127.0.0.1:5432へ接続しに行きCrashLoopBackOffする)への対策。keycloakは今回はたまたま
+        # 再現しなかったが、account-service/analyst-attribute-serviceと全く同じ構造(app+envoy
+        # 兄弟コンテナ、起動時にPostgresへ同期接続)を持つため同じリスクがある。
+        - name: envoy
+          restartPolicy: Always
+          image: envoyproxy/envoy:v1.31.5
+          command: ["envoy", "-c", "/etc/envoy/envoy.yaml"]
+          ports:
+            - name: https-mtls
+              containerPort: 8443
+          volumeMounts:
+            - name: envoy-config
+              mountPath: /etc/envoy
+              readOnly: true
+            # SPIRE Agent Workload API(UDS)ソケット(ADR 0012/0016)。keycloakコンテナは
+            # マウントしない(秘密鍵に触れるのはEnvoyのみ)。
+            - name: spire-agent-socket
+              mountPath: /run/spire/sockets
+              readOnly: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "300m"
+              memory: "128Mi"
+        # 上のenvoy sidecarは起動さえすれば(SDS配信完了前でも)次のinitContainerへ進んでしまうため、
+        # ここで実際にPostgres(Envoy egress→mTLS→postgres本体)への疎通が取れるまで待つ。
+        # keycloak-db-init(k8s/keycloak/db-init-configmap.yaml)と同じリトライループ。
+        - name: wait-for-postgres
+          image: postgres:17.11
+          command:
+            - bash
+            - -c
+            - |
+              for i in $(seq 1 30); do
+                pg_isready -h postgres -U postgres >/dev/null 2>&1 && exit 0
+                echo "postgres(Envoy mTLS経由)への接続待機中($i/30)..."
+                sleep 1
+              done
+              echo "postgresへの接続待機がタイムアウトしました" >&2
+              exit 1
       containers:
         - name: keycloak
           image: quay.io/keycloak/keycloak:26.7.0
@@ -165,28 +216,6 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 30
-        - name: envoy
-          image: envoyproxy/envoy:v1.31.5
-          command: ["envoy", "-c", "/etc/envoy/envoy.yaml"]
-          ports:
-            - name: https-mtls
-              containerPort: 8443
-          volumeMounts:
-            - name: envoy-config
-              mountPath: /etc/envoy
-              readOnly: true
-            # SPIRE Agent Workload API(UDS)ソケット(ADR 0012/0016)。keycloakコンテナは
-            # マウントしない(秘密鍵に触れるのはEnvoyのみ)。
-            - name: spire-agent-socket
-              mountPath: /run/spire/sockets
-              readOnly: true
-          resources:
-            requests:
-              cpu: "50m"
-              memory: "64Mi"
-            limits:
-              cpu: "300m"
-              memory: "128Mi"
       volumes:
         - name: realm-import
           configMap:
