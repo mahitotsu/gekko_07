@@ -80,9 +80,11 @@ data:
                           - san_type: URI
                             matcher:
                               exact: "spiffe://gekko.internal/ns/gekko/sa/default/fraud-agent"
-                          # ADR 0024: frontendのtoken-exchangeサイドカーが、簡易ログイン(ROPC)と
-                          # account-service/fraud-agent向けToken Exchangeの両方で自身でKeycloakへ
-                          # 直接mTLS接続する。
+                          # ADR 0024/0031: frontendのtoken-exchangeサイドカーが、ログイン
+                          # (認可コード→トークン交換)とaccount-service/fraud-agent向け
+                          # Token Exchangeの両方で自身でKeycloakへ直接mTLS接続する。frontend
+                          # アプリ本体のid_token検証用JWKS取得(server/utils/jwks.ts)もこの
+                          # 許可リストを経由する。
                           - san_type: URI
                             matcher:
                               exact: "spiffe://gekko.internal/ns/gekko/sa/default/frontend"

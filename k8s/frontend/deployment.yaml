@@ -1,17 +1,16 @@
-# frontendの最小スタブDeployment(edge-proxy配線・簡易ログイン検証用。ADR 0002/0009/0010/0024)。
-# Service名・ラベルは本実装と同じ"frontend"にする(ADR 0010 MUST:Keycloakクライアントid=
-# K8s Service名=audience名を常に同一の文字列にする)。Deployment名は"frontend-stub"とし、
-# 本実装(TypeScript/Nuxt.js)完成時にこのDeploymentごと差し替える。
+# frontendの本実装Deployment(TypeScript/Nuxt.js。ADR 0002/0007/0009/0010/0024/0031)。
+# 他の本実装サービス(fraud-agent-stub→fraud-agent等)が辿ったのと同じ昇格：Deployment名を
+# frontend-stub→frontendへリネームし、appコンテナのみビルド済みイメージへ置き換えた。
+# initContainers(handshake-init・envoyのネイティブsidecar)・token-exchangeサイドカーは
+# 構成は無変更(token-exchange側のロジックはADR 0031でROPC→Authorization Code+PKCEへ変更済み。
+# k8s/frontend/token-exchange-app-configmap.yaml参照)。
 #
-# Pod構成はinitContainer(合言葉生成)＋app＋Envoy＋token-exchangeの4者(account-service/
-# fraud-agentと同型)。hostAliasesで"account-service"・"fraud-agent"・"keycloak"を
-# 127.0.0.1へ静的にマッピングし、egressリスナー(frontend-envoy ConfigMap参照)へappからの
-# リクエストとtoken-exchangeサイドカー自身のKeycloak向けリクエスト(ログインのROPCも含む)を
-# 横取りさせる。
+# hostAliasesで"account-service"・"fraud-agent"・"keycloak"を127.0.0.1へマッピングする
+# (ADR 0024のegressパターン、無変更)。
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: frontend-stub
+  name: frontend
   namespace: gekko
   labels:
     app: frontend
@@ -76,33 +75,45 @@ spec:
               memory: "128Mi"
       containers:
         - name: app
-          image: python:3.12-alpine
-          command: ["python3", "/scripts/app.py"]
+          image: gekko07/frontend:local
+          imagePullPolicy: IfNotPresent
           env:
-            - name: APP_BIND_HOST
+            - name: HOST
               value: "127.0.0.1" # ADR 0009 主対策①:Pod外から直接到達不能にする
-            - name: APP_PORT
+            - name: PORT
               value: "9000"
             - name: HANDSHAKE_TOKEN_FILE
               value: "/handshake/token"
+            - name: TOKEN_EXCHANGE_URL
+              value: "http://127.0.0.1:9002"
+            - name: ACCOUNT_SERVICE_URL
+              value: "http://account-service"
+            - name: FRAUD_AGENT_URL
+              value: "http://fraud-agent"
+            # Authorization Code+PKCEのredirect_uri・Keycloak認可エンドポイントの組み立てに使う
+            # (ADR 0031)。token-exchangeサイドカーのJWT_SVID_AUDIENCEと同じlocalhost:3000前提
+            # (make keycloak-forwardでのport-forward先、ADR 0004)。
+            - name: EDGE_PROXY_BASE_URL
+              value: "http://localhost:3000"
+            - name: OIDC_ISSUER
+              value: "http://localhost:3000/realms/gekko"
+            - name: KEYCLOAK_JWKS_URL
+              value: "http://keycloak/realms/gekko/protocol/openid-connect/certs"
           volumeMounts:
-            - name: app-script
-              mountPath: /scripts
-              readOnly: true
             - name: handshake
               mountPath: /handshake
               readOnly: true
           resources:
             requests:
-              cpu: "50m"
-              memory: "64Mi"
+              cpu: "100m"
+              memory: "256Mi"
             limits:
-              cpu: "200m"
-              memory: "128Mi"
-        # ログイン(ROPC)とToken Exchangeの実行主体。envoyコンテナと同じくWorkload API UDS
-        # ソケットへアクセスする(JWT-SVID取得のため)。SPIRE registration entryもenvoyコンテナと
-        # 並んでこのコンテナ名をselectorに持つ(k8s/spire/entries-configmap.yaml参照。
-        # ADR 0019/0020/0021/0023と同じパターン)。
+              cpu: "500m"
+              memory: "512Mi"
+        # ログイン(認可コード→トークン交換)とToken Exchangeの実行主体。envoyコンテナと同じく
+        # Workload API UDSソケットへアクセスする(JWT-SVID取得のため)。SPIRE registration entry
+        # もenvoyコンテナと並んでこのコンテナ名をselectorに持つ(k8s/spire/entries-configmap.yaml
+        # 参照。ADR 0019/0020/0021/0023と同じパターン)。
         - name: token-exchange
           image: python:3.12-alpine
           command: ["python3", "/scripts/app.py"]
@@ -138,9 +149,6 @@ spec:
               cpu: "200m"
               memory: "128Mi"
       volumes:
-        - name: app-script
-          configMap:
-            name: frontend-stub-app
         - name: token-exchange-app-script
           configMap:
             name: frontend-token-exchange-app

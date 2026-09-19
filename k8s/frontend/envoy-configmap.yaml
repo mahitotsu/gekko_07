@@ -1,15 +1,19 @@
-# frontend ingress+egress側Envoy設定(edge-proxy配線・簡易ログイン検証用。ADR 0009/0024)。
+# frontend ingress+egress側Envoy設定(ADR 0009/0024/0031)。
 #
 # frontendは唯一、mTLSを持てない外部クライアント(ブラウザ)の代役を務める入口であり、他の
 # 内部サービス間ホップとはingressの形が異なる。呼び出し元は常にedge-proxy(mTLS、ブラウザの
 # 生トラフィックを中継するだけ)で、edge-proxyからのリクエスト自体にはKeycloak発行JWTが
-# 乗っていない(/loginはログイン前なので当然、それ以外もセッションはCookie相当の概念で
-# 保持する想定のため)。今回の簡易ログインでは、ログイン後の呼び出し(/accounts/... ・/chat)は
-# 呼び出し元(verify-hop.sh。将来のブラウザ相当)がログイントークンをAuthorizationヘッダーで
-# そのまま持ち回る形にしたため、jwt_authnは/login以外のパスにのみ要求する(mixed
-# requirement)。scopeによる差別化は行わない(ログイントークンはscopeをほとんど持たないため。
-# access-control-design.md参照)——実際の認可はaccount-service/fraud-agent側の受け側で行う。
-# そのためrbacフィルタは付けない。
+# 乗っていない(/loginはログイン前なので当然)。
+#
+# ADR 0031でjwt_authnフィルタを撤去した:本実装(Authorization Code + PKCE)ではログイン
+# セッションをアプリ層でAES-256-GCM暗号化したCookieに保持する(services.mdの「暗号化・
+# 署名付きCookie」要件)ため、Envoyは平文JWTを読めなくなった。従来のjwt_authnは
+# 「ログイン済みかどうか」の粗いゲートに過ぎず(scopeによる差別化は行わずrbacフィルタも
+# 元々付けていない。実際の認可はaccount-service/fraud-agent側の受け側で行う)、この役割は
+# frontendアプリ自身(server/middleware/1.auth.ts)がCookie復号＋exp確認で引き継いでいる。
+# ログイン時のid_token検証(署名・iss・aud・exp・nonce)もアプリ層(server/utils/jwks.ts)の
+# 責務であり、Envoyのjwt_authnが担っていた「リソースサーバー向けBearerトークン検証」より
+# 本来OIDCのRPが負うべき検証に忠実な形になっている。
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -67,9 +71,10 @@ data:
                   typed_config:
                     "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
                     stat_prefix: ingress_http
-                    # 監査ログ集約(ADR 0025)。sub/scope/jtiはjwt_authnがこのリクエストに
-                    # 実ヘッダーとして注入済み(claim_to_headers)のため、access_logからも
-                    # %REQ(...)%でそのまま参照できる(/loginはjwt_authn免除のため空文字列)。
+                    # 監査ログ集約(ADR 0025)。sub/scope/jtiはjwt_authn撤去(ADR 0031)に伴い
+                    # 常に空文字列になる——frontendの呼び出し元アイデンティティ(暗号化Cookie
+                    # 由来)はEnvoyからは見えず、アプリ層(Nitro)のログでのみ追跡できる。
+                    # 他ホップとaccess_logのフォーマットを揃えるためフィールド自体は残す。
                     access_log:
                       - name: envoy.access_loggers.stdout
                         typed_config:
@@ -99,33 +104,6 @@ data:
                             - match: { prefix: "/" }
                               route: { cluster: app_upstream, timeout: 0s, idle_timeout: 300s }
                     http_filters:
-                      - name: envoy.filters.http.jwt_authn
-                        typed_config:
-                          "@type": type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication
-                          providers:
-                            keycloak:
-                              issuer: "http://localhost:3000/realms/gekko"
-                              audiences: ["frontend"]
-                              remote_jwks:
-                                http_uri:
-                                  uri: "https://keycloak.gekko.svc.cluster.local:8443/realms/gekko/protocol/openid-connect/certs"
-                                  cluster: keycloak_jwks
-                                  timeout: 5s
-                                cache_duration: 300s
-                              forward: true
-                              claim_to_headers:
-                                - header_name: "x-auth-sub"
-                                  claim_name: "sub"
-                                - header_name: "x-auth-scope"
-                                  claim_name: "scope"
-                                - header_name: "x-auth-jti"
-                                  claim_name: "jti"
-                          rules:
-                            # /loginはログイン前なのでJWTを要求しない(順序が重要。prefix "/"より
-                            # 先に置く)。それ以外は全てaud=frontendのログイントークンを要求する。
-                            - match: { path: "/login" }
-                            - match: { prefix: "/" }
-                              requires: { provider_name: "keycloak" }
                       - name: envoy.filters.http.lua
                         typed_config:
                           "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
@@ -233,53 +211,6 @@ data:
                   - endpoint:
                       address:
                         socket_address: { address: 127.0.0.1, port_value: 9000 }
-        - name: keycloak_jwks
-          type: STRICT_DNS
-          lb_policy: ROUND_ROBIN
-          typed_extension_protocol_options:
-            envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
-              "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
-              explicit_http_config:
-                http2_protocol_options: {}
-          transport_socket:
-            name: envoy.transport_sockets.tls
-            typed_config:
-              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
-              common_tls_context:
-                alpn_protocols: ["h2"]
-                tls_certificate_sds_secret_configs:
-                  - name: "default"
-                    sds_config:
-                      resource_api_version: V3
-                      api_config_source:
-                        api_type: GRPC
-                        transport_api_version: V3
-                        grpc_services:
-                          - envoy_grpc:
-                              cluster_name: spire_agent
-                combined_validation_context:
-                  default_validation_context:
-                    match_typed_subject_alt_names:
-                      - san_type: URI
-                        matcher:
-                          exact: "spiffe://gekko.internal/ns/gekko/sa/default/keycloak"
-                  validation_context_sds_secret_config:
-                    name: "ROOTCA"
-                    sds_config:
-                      resource_api_version: V3
-                      api_config_source:
-                        api_type: GRPC
-                        transport_api_version: V3
-                        grpc_services:
-                          - envoy_grpc:
-                              cluster_name: spire_agent
-          load_assignment:
-            cluster_name: keycloak_jwks
-            endpoints:
-              - lb_endpoints:
-                  - endpoint:
-                      address:
-                        socket_address: { address: keycloak.gekko.svc.cluster.local, port_value: 8443 }
         # SPIRE Agent Workload API(UDS)へのSDSチャネル(ADR 0012)。
         - name: spire_agent
           connect_timeout: 0.25s
@@ -403,8 +334,10 @@ data:
                       address:
                         socket_address: { address: 127.0.0.1, port_value: 9002 }
         # token-exchangeサイドカーがKeycloakのトークンエンドポイントへmTLSで直接接続する
-        # (keycloak_jwksクラスタと宛先は同じだが、用途を分けて別クラスタにしてある。
-        # ADR 0019のkeycloak_upstreamと同じ構成)。
+        # (ADR 0019のkeycloak_upstreamと同じ構成)。egressのdomain: keycloakルート(上記)は
+        # Pod内の呼び出し元を区別しないため、appがid_token検証用にJWKS(/realms/gekko/
+        # protocol/openid-connect/certs)を取得する際(ADR 0031、server/utils/jwks.ts)も
+        # 同じこのクラスタを経由する。
         - name: keycloak_upstream
           type: STRICT_DNS
           lb_policy: ROUND_ROBIN

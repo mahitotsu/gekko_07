@@ -1,9 +1,9 @@
 # 1ホップ先行検証(fraud-mcp-server→account-service)のためだけの最小限のテスト用フィクスチャ。
 # 本番の認可設計(architecture.md §4)は変更しない。
 #
-# frontendの`directAccessGrantsEnabled`は、ADR 0024でrealm-configmap.yaml側に恒久化した
-# (簡易ログイン(ROPC)がfrontend本体の現在の実装そのものになったため。以前はここで一時的に
-# trueへ上書きしていた)。
+# frontendの`directAccessGrantsEnabled`は、ADR 0031で本物のAuthorization Code + PKCEブラウザ
+# フローに置き換えたため`false`に戻している(realm-configmap.yaml側。ADR 0024の簡易ログイン
+# (ROPC)時代に一時的にtrueへ上書きしていた名残はここには残っていない)。
 #
 # access-control-design.md 表6の3アナリスト全員をここで作成する(ADR 0026:account-serviceの
 # ABAC(表5)を実機検証するにはjunior/seniorの複数アナリストが要る。以前はyamada-analystのみ)。
@@ -40,8 +40,8 @@ data:
     #
     # email/firstName/lastNameが未設定だと、ユーザーのrequiredActions配列が空でも
     # 「Account is not fully set up」(Keycloak 26のDeclarative User Profileが必須属性の
-    # 欠落を検出し、ROPCログイン時に動的にVERIFY_PROFILEを要求する)でログインが失敗することを
-    # 実機で確認した。テスト目的でも実在に見えるメールアドレスは使わず、example.invalid
+    # 欠落を検出し、ログイン時に動的にVERIFY_PROFILEを要求する。grant typeによらない)で
+    # ログインが失敗することを実機で確認した。テスト目的でも実在に見えるメールアドレスは使わず、example.invalid
     # (RFC 2606で予約された、実在解決されないドメイン)を使う。
     create_or_update_user() {
       local username="$1" first_name="$2" last_name="$3" password_var="$4"

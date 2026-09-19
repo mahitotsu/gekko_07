@@ -1,14 +1,21 @@
 #!/bin/bash
 # account-serviceへの1ホップ先行検証(ADR 0002/0009/0010)。
-# 前提:make deploy && make deploy-verify-hopでstub一式がデプロイ済みであること。
+# 前提:make deploy(frontendを含むbase track全体)実行済みであること。
 #
-# パターン⓪(簡易ログイン、frontend。ADR 0024):
-# 0. yamada-analystがfrontendの/login(ROPCのHTTPエンドポイント化。本実装のAuthorization
-#    Code+PKCEの代用)でログインし、ログイントークン(aud=frontend)を得る。frontend/fraud-agent
-#    は共にclientAuthenticatorType: federated-jwtのため、cluster外からclient_secretで
-#    これらを名乗ってKeycloakを直接叩く手段はもう無い(以前はここをKeycloakへの直接呼び出しで
-#    代用していたが、federated-jwt化により技術的に不可能になった。これ自体が望ましい設計:
-#    呼び出し元の身元がSPIRE mTLS/JWT-SVIDに一元化された)。
+# パターン⓪(ログイン、frontend。ADR 0031):
+# 0. yamada-analystがfrontendの本物のAuthorization Code + PKCEブラウザフローでログインする。
+#    ヘッドレスブラウザなしでKeycloakのログインフォームをcurlで直接POSTする一般的な手法
+#    (login_via_frontend、下記)で、Cookie jarにgekko_session(暗号化Cookie、ADR 0031)を
+#    確立する。以降frontend向けの呼び出しは全てこのjarを使う(`-H "Authorization: Bearer"`では
+#    なく`-b <jar>`)。frontend/fraud-agentは共にclientAuthenticatorType: federated-jwtのため、
+#    cluster外からclient_secretでこれらを名乗ってKeycloakを直接叩く手段はもう無い。
+#
+#    パターン①検証(1a/1b/2c)用に、frontendのtoken-exchangeサイドカーへkubectl exec経由で
+#    直接authorization_code交換をリクエストして生のaud=frontendトークンも別途取得する
+#    (raw_login_token、下記)。BFFパターン(ADR 0031)によりブラウザ/verify-hop.shは通常
+#    このトークンの値そのものを知り得ない(gekko_sessionは復号鍵を持つfrontend自身にしか
+#    読めない不透明なCookie)ため、Envoyのext_authzが送るのと同じ形でサイドカーを直接叩く
+#    既存の技法(sidecar_exchange)をログイン自体にも適用したもの。
 #
 # パターン①(Token Exchange、fraud-mcp-server→account-service):
 # 1. account-service向けのaccount:readトークンを、frontend→fraud-agent→fraud-mcp-serverの
@@ -67,6 +74,7 @@ kubectl -n "$NAMESPACE" port-forward svc/edge-proxy "$LOCAL_EDGE_PORT":80 >/tmp/
 PF_PID=$!
 cleanup() {
   kill "$PF_PID" >/dev/null 2>&1 || true
+  rm -f "${YAMADA_JAR:-}" "${SUZUKI_JAR:-}" "${TANAKA_JAR:-}" 2>/dev/null || true
 }
 trap cleanup EXIT
 for _ in $(seq 1 20); do
@@ -78,17 +86,115 @@ done
 # 唯一の外部エントリポイント。
 EDGE="http://localhost:$LOCAL_EDGE_PORT"
 
-echo "==> 0. yamada-analystがfrontendの/loginでログイン(簡易ログイン、ROPCの代用。ADR 0024)"
-LOGIN_TOKEN=$(curl -s -X POST "$EDGE/login" \
-  -H "Content-Type: application/json" \
-  -d "{\"username\":\"yamada-analyst\",\"password\":\"$YAMADA_ANALYST_PASSWORD\"}" | jq -r .access_token)
-if [ "$LOGIN_TOKEN" = "null" ] || [ -z "$LOGIN_TOKEN" ]; then
-  echo "ログイントークンの取得に失敗しました" >&2
+FRONTEND_POD=$(newest_pod frontend)
+FRAUD_AGENT_POD=$(newest_pod fraud-agent)
+
+urlencode() {
+  jq -rn --arg v "$1" '$v|@uri'
+}
+
+# Keycloakのログインフォームを実際にPOSTする(ヘッドレスブラウザなしでKeycloakのログイン
+# フォームをcurlで直接叩く一般的な手法)。$jarでKeycloakのセッションCookieを引き継ぎつつ、
+# フォームのaction属性(セッションコード等を含む送信先URL)をHTMLから抽出してPOSTし、
+# 最終的なリダイレクト先URL全体(code=...&state=...を含む)を返す。テストフィクスチャで
+# email/firstName/lastNameを埋めてあるため(k8s/keycloak/test-fixtures-configmap.yaml)
+# 追加の確認画面は出ず、ログインフォームのPOST1回でcodeまで到達する。
+keycloak_login_redirect() {
+  local authorize_url="$1" username="$2" password="$3" jar="$4"
+  local login_page form_action
+  login_page=$(curl -s -c "$jar" -b "$jar" "$authorize_url")
+  form_action=$(printf '%s' "$login_page" | grep -o 'action="[^"]*"' | head -1 | sed -E 's/^action="//; s/"$//' | sed 's/&amp;/\&/g')
+  if [ -z "$form_action" ]; then
+    echo "Keycloakログインフォームのaction属性を取得できませんでした" >&2
+    return 1
+  fi
+  # フォームのaction属性もKC_HOSTNAME固定(localhost:3000)のまま埋め込まれているため、
+  # authorize_urlと同じ理由でホスト部分を$EDGEへ付け替える。
+  form_action="$EDGE$(echo "$form_action" | sed -E 's#^https?://[^/]+##')"
+  curl -s -D - -o /dev/null -c "$jar" -b "$jar" \
+    --data-urlencode "username=$username" --data-urlencode "password=$password" \
+    "$form_action" | awk -F': ' 'tolower($1)=="location"{print $2}' | tr -d '\r'
+}
+
+# パターン⓪:本物のAuthorization Code + PKCEブラウザフロー(ADR 0031)でログインし、
+# gekko_session Cookieを$jarに確立する。以降のfrontend呼び出しは全てこの$jarを使う。
+login_via_frontend() {
+  local username="$1" password="$2" jar="$3"
+  rm -f "$jar"
+  local authorize_url redirect_location code state
+  authorize_url=$(curl -s -D - -o /dev/null -c "$jar" "$EDGE/login" | awk -F': ' 'tolower($1)=="location"{print $2}' | tr -d '\r')
+  # KC_HOSTNAME固定(http://localhost:3000、ADR 0004)によりfrontendの/loginが返すLocationは
+  # 常にlocalhost:3000だが、verify-hop.sh自身のport-forwardは$LOCAL_EDGE_PORT(18080)。
+  # edge-proxyのルーティングはpathのみで決まる(Host非依存)ため、ホスト部分だけ$EDGEへ
+  # 付け替えて実際に到達可能なURLにする。
+  authorize_url="$EDGE$(echo "$authorize_url" | sed -E 's#^https?://[^/]+##')"
+  redirect_location=$(keycloak_login_redirect "$authorize_url" "$username" "$password" "$jar")
+  code=$(echo "$redirect_location" | grep -oE '[?&]code=[^&]+' | head -1 | cut -d= -f2-)
+  state=$(echo "$redirect_location" | grep -oE '[?&]state=[^&]+' | head -1 | cut -d= -f2-)
+  if [ -z "$code" ] || [ -z "$state" ]; then
+    echo "frontend経由のログインでcode/stateを取得できませんでした($username)" >&2
+    return 1
+  fi
+  curl -s -o /dev/null -c "$jar" -b "$jar" "$EDGE/callback?code=${code}&state=${state}"
+}
+
+# パターン①検証(1a/1b/2c)向けに、frontendの/loginを経由せず独自のPKCEパラメータで直接
+# Keycloakへログインし、frontendのtoken-exchangeサイドカーへkubectl exec経由でauthorization_code
+# 交換をリクエストして生のaud=frontendトークンを得る。BFFパターン(ADR 0031)により
+# gekko_session Cookieの中身(暗号化済み)からはこのトークンを取り出せないため、Envoyの
+# ext_authzが送るのと同じ形でサイドカーを直接叩く既存の技法(sidecar_exchange、後述)を
+# ログイン自体にも適用したもの。
+raw_login_token() {
+  local username="$1" password="$2"
+  local jar verifier challenge state redirect_uri authorize_url redirect_location code token_response
+  jar=$(mktemp)
+  verifier=$(openssl rand -base64 96 | tr -d '=+/\n' | cut -c1-64)
+  challenge=$(printf '%s' "$verifier" | openssl dgst -sha256 -binary | openssl base64 | tr '+/' '-_' | tr -d '=')
+  state=$(openssl rand -hex 16)
+  redirect_uri="http://localhost:3000/callback"
+  authorize_url="$EDGE/realms/gekko/protocol/openid-connect/auth?client_id=frontend&response_type=code&redirect_uri=$(urlencode "$redirect_uri")&scope=openid&code_challenge=${challenge}&code_challenge_method=S256&state=${state}"
+  redirect_location=$(keycloak_login_redirect "$authorize_url" "$username" "$password" "$jar")
+  rm -f "$jar"
+  code=$(echo "$redirect_location" | grep -oE '[?&]code=[^&]+' | head -1 | cut -d= -f2-)
+  if [ -z "$code" ]; then
+    echo "raw_login_token: codeを取得できませんでした($username)" >&2
+    return 1
+  fi
+  token_response=$(kubectl -n "$NAMESPACE" exec "$FRONTEND_POD" -c token-exchange -- env \
+    CODE="$code" REDIRECT_URI="$redirect_uri" VERIFIER="$verifier" \
+    python3 -c '
+import json, os, urllib.error, urllib.request
+data = json.dumps({
+    "code": os.environ["CODE"],
+    "redirectUri": os.environ["REDIRECT_URI"],
+    "codeVerifier": os.environ["VERIFIER"],
+}).encode()
+req = urllib.request.Request(
+    "http://127.0.0.1:9002/login/complete", data=data, headers={"Content-Type": "application/json"}
+)
+try:
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        print(resp.read().decode())
+except urllib.error.HTTPError as e:
+    print(e.read().decode())
+')
+  echo "$token_response" | jq -r .access_token
+}
+
+echo "==> 0. yamada-analystがfrontendの本物のAuthorization Code + PKCEブラウザフローでログイン(ADR 0031)"
+YAMADA_JAR=$(mktemp)
+login_via_frontend yamada-analyst "$YAMADA_ANALYST_PASSWORD" "$YAMADA_JAR"
+if ! curl -s -o /dev/null -w '%{http_code}' -b "$YAMADA_JAR" "$EDGE/me" | grep -q 200; then
+  echo "gekko_session Cookieの確立に失敗しました(GET /meが200になりません)" >&2
   exit 1
 fi
 
-FRONTEND_POD=$(newest_pod frontend)
-FRAUD_AGENT_POD=$(newest_pod fraud-agent)
+echo "==> 0b. パターン①検証(1a/1b/2c)用に生のaud=frontendトークンを別途取得"
+YAMADA_RAW_TOKEN=$(raw_login_token yamada-analyst "$YAMADA_ANALYST_PASSWORD")
+if [ -z "$YAMADA_RAW_TOKEN" ] || [ "$YAMADA_RAW_TOKEN" = "null" ]; then
+  echo "生のログイントークンの取得に失敗しました" >&2
+  exit 1
+fi
 
 # frontend/fraud-agent自身のtoken-exchangeサイドカー(ext_authzプロトコル)へ、Envoyのegress
 # ext_authzフィルタが送るのと同じ形(Host/Authorization、Method/Pathは実際のリクエストラインで
@@ -115,7 +221,7 @@ except urllib.error.HTTPError:
 }
 
 echo "==> 1a. frontendがfraud-agent宛てにToken Exchange(scope=account:read)する経路を直接検証"
-FRAUD_AGENT_TOKEN=$(sidecar_exchange "$FRONTEND_POD" fraud-agent POST /chat "$LOGIN_TOKEN")
+FRAUD_AGENT_TOKEN=$(sidecar_exchange "$FRONTEND_POD" fraud-agent POST /chat "$YAMADA_RAW_TOKEN")
 if [ -z "$FRAUD_AGENT_TOKEN" ]; then
   echo "fraud-agent宛てトークンの取得に失敗しました" >&2
   exit 1
@@ -166,7 +272,7 @@ echo "==> 2b. fraud-mcp-server egress Envoy経由でaccount-serviceのPOST(accou
 call_account_service POST /accounts/123/unfreeze-proposals "$DELEGATED_TOKEN" '{"reasoning":"直近の取引パターンを確認したが誤検知の疑いが強い"}'
 
 echo "==> 2c.(異常系)aud=frontendのログイントークンでそのまま叩く(拒否されるはず)"
-call_account_service GET /accounts/123/transactions "$LOGIN_TOKEN" || true
+call_account_service GET /accounts/123/transactions "$YAMADA_RAW_TOKEN" || true
 
 echo "==> 3. account-serviceのアプリポートへPod外から直接到達できないことを確認"
 ACCOUNT_POD_IP=$(kubectl -n "$NAMESPACE" get pod "$(newest_pod account-service)" -o jsonpath='{.status.podIP}')
@@ -252,9 +358,10 @@ call_account_service_no_auth GET /accounts/123/transactions || true
 echo "==> 4c. (テストフィクスチャ)確定パス(ステップ6)の前提として、account 123が凍結状態であることを保証する"
 call_account_service_no_auth POST /accounts/123/freeze '{"reason":"短時間に連続する高額送金を検知","ruleFired":"RULE_RAPID_TRANSFER","score":0.82}'
 
-echo "==> 5. frontend経由でaccount-serviceのGET(account:read)を叩く(edge-proxy→frontend ingress(mTLS+jwt_authn)"
-echo "     →frontend egress(Token Exchange)→account-service ingress、全区間を実際のfrontendから検証。ADR 0024)"
-FRONTEND_READ_RESPONSE=$(curl -s -X GET "$EDGE/accounts/123/transactions" -H "Authorization: Bearer $LOGIN_TOKEN")
+echo "==> 5. frontend経由でaccount-serviceのGET(account:read)を叩く(edge-proxy→frontend ingress(mTLS)"
+echo "     →frontend app(gekko_session Cookie復号)→frontend egress(Token Exchange)→account-service ingress、"
+echo "     全区間を実際のfrontendから検証。ADR 0024/0031)"
+FRONTEND_READ_RESPONSE=$(curl -s -X GET "$EDGE/accounts/123/transactions" -b "$YAMADA_JAR")
 echo "$FRONTEND_READ_RESPONSE"
 if echo "$FRONTEND_READ_RESPONSE" | grep -q '"region":"tokyo"'; then
   echo "==> 5'. frontend→account-service→analyst-attribute-serviceの全区間委任・表5のABAC判定を確認(期待通り)"
@@ -264,7 +371,7 @@ fi
 
 echo "==> 6. frontend経由でaccount-serviceのPOST /unfreeze(account:unfreeze、確定パス。account-serviceの新規rbacポリシー)を叩く"
 echo "     (直前のステップ4でaccount 123を凍結済みにしてあるため、何度スクリプトを再実行してもこのunfreezeは成功するはず)"
-FRONTEND_UNFREEZE_RESPONSE=$(curl -s -X POST "$EDGE/accounts/123/unfreeze" -H "Authorization: Bearer $LOGIN_TOKEN" -H "Content-Type: application/json" -d '{}')
+FRONTEND_UNFREEZE_RESPONSE=$(curl -s -X POST "$EDGE/accounts/123/unfreeze" -b "$YAMADA_JAR" -H "Content-Type: application/json" -d '{}')
 echo "$FRONTEND_UNFREEZE_RESPONSE"
 if echo "$FRONTEND_UNFREEZE_RESPONSE" | grep -q '"accountId":"123"'; then
   echo "==> 6'. account-serviceのunfreeze rbacポリシー(ADR 0024で新規追加)・凍結解除の実行を確認(期待通り)"
@@ -272,33 +379,41 @@ else
   echo "警告:frontend経由でaccount-serviceのunfreezeへ到達できませんでした" >&2
 fi
 
+echo "==> 6b.(異常系)ログアウト後にgekko_session Cookieが失効し、別ユーザーへ切り替えられることを確認(ADR 0031設計判断3・4)"
+YAMADA_JAR_SPENT=$(mktemp)
+cp "$YAMADA_JAR" "$YAMADA_JAR_SPENT"
+curl -s -o /dev/null -X POST -c "$YAMADA_JAR_SPENT" -b "$YAMADA_JAR_SPENT" "$EDGE/logout"
+LOGOUT_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -b "$YAMADA_JAR_SPENT" "$EDGE/me")
+[ "$LOGOUT_STATUS" = "401" ] && echo "     期待通り:ログアウト後は/meが401(セッション失効)" || echo "     警告:ログアウト後も/meが$LOGOUT_STATUS(セッションが残っている可能性)" >&2
+rm -f "$YAMADA_JAR_SPENT"
+
 echo "==> 6c. 表5のABAC判定を実機検証する(BR1・BR2・BR3)"
 SUZUKI_SENIOR_PASSWORD=$(cat "$SECRETS_DIR/suzuki-senior-password")
 TANAKA_JUNIOR_PASSWORD=$(cat "$SECRETS_DIR/tanaka-junior-password")
-SUZUKI_LOGIN_TOKEN=$(curl -s -X POST "$EDGE/login" -H "Content-Type: application/json" \
-  -d "{\"username\":\"suzuki-senior\",\"password\":\"$SUZUKI_SENIOR_PASSWORD\"}" | jq -r .access_token)
-TANAKA_LOGIN_TOKEN=$(curl -s -X POST "$EDGE/login" -H "Content-Type: application/json" \
-  -d "{\"username\":\"tanaka-junior\",\"password\":\"$TANAKA_JUNIOR_PASSWORD\"}" | jq -r .access_token)
+SUZUKI_JAR=$(mktemp)
+TANAKA_JAR=$(mktemp)
+login_via_frontend suzuki-senior "$SUZUKI_SENIOR_PASSWORD" "$SUZUKI_JAR"
+login_via_frontend tanaka-junior "$TANAKA_JUNIOR_PASSWORD" "$TANAKA_JAR"
 
 echo "     6c-1. yamada-analyst(junior・東京)が東京のhigh-value口座(789)を読もうとして404になること(BR2)"
-YAMADA_789_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X GET "$EDGE/accounts/789/transactions" -H "Authorization: Bearer $LOGIN_TOKEN")
+YAMADA_789_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X GET "$EDGE/accounts/789/transactions" -b "$YAMADA_JAR")
 [ "$YAMADA_789_STATUS" = "404" ] && echo "        期待通り(404)" || echo "        警告:期待は404だが実際は$YAMADA_789_STATUS" >&2
 
 echo "     6c-2. yamada-analyst(担当地域=東京)が大阪の口座(999)を読もうとして404になること(BR1)"
-YAMADA_999_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X GET "$EDGE/accounts/999/transactions" -H "Authorization: Bearer $LOGIN_TOKEN")
+YAMADA_999_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X GET "$EDGE/accounts/999/transactions" -b "$YAMADA_JAR")
 [ "$YAMADA_999_STATUS" = "404" ] && echo "        期待通り(404)" || echo "        警告:期待は404だが実際は$YAMADA_999_STATUS" >&2
 
 echo "     6c-3. suzuki-senior(senior・東京/大阪)は大阪のhigh-value口座(456)を読めること(BR3)"
-SUZUKI_456_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X GET "$EDGE/accounts/456/transactions" -H "Authorization: Bearer $SUZUKI_LOGIN_TOKEN")
+SUZUKI_456_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X GET "$EDGE/accounts/456/transactions" -b "$SUZUKI_JAR")
 [ "$SUZUKI_456_STATUS" = "200" ] && echo "        期待通り(200)" || echo "        警告:期待は200だが実際は$SUZUKI_456_STATUS" >&2
 
 echo "     6c-4. tanaka-junior(junior・大阪)は大阪のstandard口座(999)を読めること(BR1・BR2)"
-TANAKA_999_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X GET "$EDGE/accounts/999/transactions" -H "Authorization: Bearer $TANAKA_LOGIN_TOKEN")
+TANAKA_999_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X GET "$EDGE/accounts/999/transactions" -b "$TANAKA_JAR")
 [ "$TANAKA_999_STATUS" = "200" ] && echo "        期待通り(200)" || echo "        警告:期待は200だが実際は$TANAKA_999_STATUS" >&2
 
 echo "     6c-5. GET /accounts/frozen はアナリストごとに異なる結果セットを返す(use-cases.md UC3/UC4の「除外」)"
-YAMADA_FROZEN=$(curl -s -X GET "$EDGE/accounts/frozen" -H "Authorization: Bearer $LOGIN_TOKEN")
-SUZUKI_FROZEN=$(curl -s -X GET "$EDGE/accounts/frozen" -H "Authorization: Bearer $SUZUKI_LOGIN_TOKEN")
+YAMADA_FROZEN=$(curl -s -X GET "$EDGE/accounts/frozen" -b "$YAMADA_JAR")
+SUZUKI_FROZEN=$(curl -s -X GET "$EDGE/accounts/frozen" -b "$SUZUKI_JAR")
 echo "        yamada-analyst(junior・東京): $YAMADA_FROZEN"
 echo "        suzuki-senior(senior・東京/大阪): $SUZUKI_FROZEN"
 if echo "$YAMADA_FROZEN" | grep -q '"id":"789"'; then
@@ -320,7 +435,7 @@ echo "     ADR 0023が『frontend実装まで検証できない』としてい�
 # Envoy側は総時間の上限ではなくidle_timeout(無活動時間の上限)で制御する方式にした
 # (k8s/frontend・edge-proxy/envoy-configmap.yaml参照)。このテストスクリプト自身の待ち時間予算
 # として--max-time 240を設定する(本番の制御方式とは別に、テストが無限に待ち続けないための保険)。
-FRONTEND_CHAT_RESPONSE=$(curl -s --max-time 240 -X POST "$EDGE/chat" -H "Authorization: Bearer $LOGIN_TOKEN" -d '{}')
+FRONTEND_CHAT_RESPONSE=$(curl -s --max-time 240 -X POST "$EDGE/chat" -b "$YAMADA_JAR" -d '{}')
 echo "$FRONTEND_CHAT_RESPONSE"
 if echo "$FRONTEND_CHAT_RESPONSE" | grep -q '"type":"RUN_FINISHED"' && ! echo "$FRONTEND_CHAT_RESPONSE" | grep -q '"type":"RUN_ERROR"'; then
   echo "==> 7'. frontend→fraud-agent→fraud-mcp-serverの全区間委任を確認(期待通り。fraud-agentが"

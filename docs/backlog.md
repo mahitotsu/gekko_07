@@ -5,7 +5,6 @@
 ## Token Exchange / Envoyサイドカー
 
 - **合言葉ヘッダー名・env var名の確定**：1ホップ先行検証でヘッダー名`x-gekko-handshake`・env var名`HANDSHAKE_TOKEN_FILE`を採用し、Python実装のスタブ間で統一した（[k8s/account-service/app-configmap.yaml](../k8s/account-service/app-configmap.yaml)等）。Java/TypeScript/Rust/Go等、他言語での本実装時にも同じ命名を踏襲する
-- **frontendの簡易ログイン（ROPC）を本物のAuthorization Code + PKCEブラウザフローへ置き換える**：[ADR 0024](adr/0024-frontend-edge-proxy-and-simplified-login.md)で、`/login`エンドポイント（ROPCのHTTPエンドポイント化）と`directAccessGrantsEnabled=true`の恒久化を暫定実装として採用した。本実装（TypeScript/Nuxt.js）時に、本物のリダイレクト・code_verifier管理・Cookieによるセッション管理へ置き換え、`directAccessGrantsEnabled`をfalseに戻すかどうかを判断する
 - **Unixドメインソケット化の再検討**：[ADR 0009](adr/0009-envoy-ingress-responsibility-and-bypass-prevention.md)でTCP loopback+合言葉方式を採用しUnixドメインソケット化は見送ったが、「同一Pod内でアプリが侵害された場合」まで守る要求が出てきたら再検討する
 - **DPoPの適用範囲**：[ADR 0013](adr/0013-dpop-sender-constraining.md)でfraud-mcp-server→account-serviceの1ホップに導入したが、[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)で撤去した（mTLSとの実利の重複が大きい一方、制約だけが残るため）。実機検証で得た知見は下記「DPoP」節に残す
 - **Token Exchange結果のキャッシュ**：`(subject jti, audience)`単位でのキャッシュを検討しているが、各サイドカー内に閉じるか、どの範囲で共有するかは未決定。キャッシュTTLは性能とのトレードオフを意図的に選んだ短い値にする
@@ -41,7 +40,13 @@ fraud-mcp-server・fraud-detection-engine・account-service・analyst-attribute-
 
 - **Anthropic API向けNetworkPolicyのIPレンジ絞り込み**：[ADR 0030](adr/0030-fraud-agent-implementation.md)で導入した`ipBlock 0.0.0.0/0`（RFC1918除外）は、Anthropicの実IPを固定できないための暫定措置。将来Anthropicが固定IPレンジを公開する、またはegress-filteringプロキシ（例：Envoyの`sni_dynamic_forward_proxy`をFQDN許可リストと組み合わせる等）を追加で検討したくなった場合に絞り込む
 - **複数ターン会話の永続化**：現状はリクエストごとに新しい`ClaudeAgentAdapter`インスタンスを作って単発実行しており、会話履歴は保持しない（AG-UIの`threadId`は受け取るが、同じ`threadId`でも毎回新規セッション。複数ターンをまたぐ会話が必要になった場合、アダプタのセッション管理機能や永続化ストアの追加を検討する）
-- **AG-UIの状態同期・frontend tool機能の活用**：`@ag-ui/claude-agent-sdk`アダプタは`STATE_SNAPSHOT`/`STATE_DELTA`によるフロントエンドとの双方向状態同期や、クライアント提供ツール（human-in-the-loop）もサポートするが、今回は使っていない（`RunAgentInput.tools`/`state`を渡していない）。frontend本実装時にAG-UI準拠のUIを作る際に活用を検討する
+- **AG-UIの状態同期・frontend tool機能の活用**：`@ag-ui/claude-agent-sdk`アダプタは`STATE_SNAPSHOT`/`STATE_DELTA`によるフロントエンドとの双方向状態同期や、クライアント提供ツール（human-in-the-loop）もサポートするが、今回は使っていない（`RunAgentInput.tools`/`state`を渡していない）。frontend本実装（[ADR 0031](adr/0031-frontend-implementation.md)）でも`pages/chat.vue`は最小限の手書きSSEパーサに留めており未活用のまま。AG-UI準拠のUIを本格的に作る際に活用を検討する
+
+## frontend
+
+- **セッション暗号鍵の複数レプリカ対応**：[ADR 0031](adr/0031-frontend-implementation.md)でCookie暗号化鍵をPod起動時にプロセス内生成する方式にしたため、`replicas`を2以上にすると別レプリカが処理したリクエストの`gekko_session`を復号できない（無効セッション扱いになり`/login`へ302される）。複数レプリカ化する場合はKubernetes Secret等での鍵共有を検討する
+- **より長いが上限付き（絶対タイムアウト）のセッション**：[ADR 0031](adr/0031-frontend-implementation.md)はリフレッシュトークンを一切使わず、セッションをKeycloakのAccess Token Lifespan（既定5分）で必ず失効させる設計にした。5分ごとの再ログインが実用上不便になった場合、リフレッシュトークンを使いつつ絶対タイムアウト（ログイン時刻からの上限）を別途設ける設計を再検討する
+- **Cookieの`secure`属性**：[ADR 0031](adr/0031-frontend-implementation.md)はローカルk3d port-forwardがhttpのため`gekko_session`・`gekko_pkce`両Cookieとも`secure: false`固定にしている。本番相当のHTTPS環境で動かす場合は`secure: true`に切り替える
 
 ## 監査
 

@@ -1,4 +1,4 @@
-# ADR 0018/0023/0030。呼び出し元(frontend。未実装のため現状はverify-hop.shがROPCで代用)からの
+# ADR 0018/0023/0030。呼び出し元(frontend、ADR 0031で本実装済み)からの
 # ingressと、KeycloakのJWKS取得(mTLS)・fraud-mcp-serverへのToken Exchange委任(ADR 0023の
 # パターンを最初から適用)へのegressを許可する。
 #

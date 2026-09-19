@@ -1,15 +1,17 @@
-# frontend自身のPod内でログイン(ROPC)とToken Exchangeの両方を実行するサイドカー(ADR 0024)。
-# ADR 0002の原則(アプリ本体にはKeycloak通信・Token Exchangeのコードを一切持たせない)を、
-# ログイン部分にも一貫して適用する——appはこのサイドカーへ中継するだけで、Keycloakへの
-# 直接通信・SPIRE JWT-SVIDへのアクセスはこのサイドカー(spire-agent-socketをマウントする
-# 唯一のコンテナの1つ)が担う。
+# frontend自身のPod内で認可コード→トークン交換とToken Exchangeの両方を実行するサイドカー
+# (ADR 0024/0031)。ADR 0002の原則(アプリ本体にはKeycloak通信・Token Exchangeのコードを
+# 一切持たせない)を、ログイン部分にも一貫して適用する——appはこのサイドカーへ中継するだけで、
+# Keycloakへの直接通信・SPIRE JWT-SVIDへのアクセスはこのサイドカー(spire-agent-socketを
+# マウントする唯一のコンテナの1つ)が担う。
 #
 # 2つの役割を1つのHTTPサーバーに同居させている:
-#   - POST /login       : frontend appから直接(Envoyを経由せず127.0.0.1で)呼ばれる。ROPC
-#                          (grant_type=password)でKeycloakへログインし、ログイントークン
-#                          (aud=frontend)を返す。本実装のAuthorization Code + PKCEの代用
-#                          (ADR 0024。directAccessGrantsEnabledをrealm-configmap.yamlで
-#                          恒久的にtrueにした)
+#   - POST /login/complete : frontend appの/callbackハンドラから直接(Envoyを経由せず
+#                          127.0.0.1で)呼ばれる。認可コード(grant_type=authorization_code、
+#                          PKCEのcode_verifier込み)でKeycloakのトークンエンドポイントを叩き、
+#                          {access_token, id_token, expires_in}をそのまま返す(id_tokenの
+#                          検証はapp側の責務。ADR 0031)。Authorization Code + PKCEの
+#                          ブラウザフロー自体(認可エンドポイントへのリダイレクト)はapp本体が
+#                          直接行う(秘密情報を伴わないため。ADR 0002には抵触しない)。
 #   - それ以外(/accounts/... 等) : Envoyのegress ext_authzフィルタからのcheck-request。
 #                          account-service(ADR 0019/0020/0021)・fraud-mcp-server(ADR 0023)の
 #                          token-exchangeサイドカーと同じHTTPベースのext_authzプロトコル
@@ -98,15 +100,19 @@ data:
         return token
 
 
-    def ropc_login(username, password):
+    def exchange_authorization_code(code, redirect_uri, code_verifier):
+        # PKCEのclient_assertion(JWT-SVID)はKeycloak側のクライアント認証(confidential
+        # client)用。code_verifierはPKCE本来の「認可コード横取り対策」用で、両者は独立
+        # (ADR 0031 設計判断0:PKCE採用でpublicClient化するわけではない)。
         data = urllib.parse.urlencode(
             {
-                "grant_type": "password",
+                "grant_type": "authorization_code",
                 "client_id": CLIENT_ID,
                 "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-spiffe",
                 "client_assertion": fetch_jwt_svid(),
-                "username": username,
-                "password": password,
+                "code": code,
+                "redirect_uri": redirect_uri,
+                "code_verifier": code_verifier,
             }
         ).encode()
         req = urllib.request.Request(
@@ -142,25 +148,32 @@ data:
             self.send_response(code)
             self.end_headers()
 
-        def do_login(self):
+        def do_callback(self):
             length = int(self.headers.get("Content-Length", 0) or 0)
             try:
                 payload = json.loads(self.rfile.read(length)) if length else {}
-                username = payload["username"]
-                password = payload["password"]
+                code = payload["code"]
+                redirect_uri = payload["redirectUri"]
+                code_verifier = payload["codeVerifier"]
             except Exception:  # noqa: BLE001 - スタブなので広く捕捉してfail closeする
-                self.deny(400, "invalid login request body")
+                self.deny(400, "invalid callback request body")
                 return
             try:
-                token_response = ropc_login(username, password)
+                token_response = exchange_authorization_code(code, redirect_uri, code_verifier)
             except urllib.error.HTTPError as e:
-                self.deny(401, f"login rejected: {e.code} {e.read()!r}")
+                self.deny(401, f"token exchange rejected: {e.code} {e.read()!r}")
                 return
             except Exception as e:  # noqa: BLE001
-                self.deny(401, f"login failed: {e!r}")
+                self.deny(401, f"token exchange failed: {e!r}")
                 return
-            body = json.dumps({"access_token": token_response["access_token"]}).encode()
-            print(f"ALLOW login username={username}", flush=True)
+            body = json.dumps(
+                {
+                    "access_token": token_response["access_token"],
+                    "id_token": token_response["id_token"],
+                    "expires_in": token_response["expires_in"],
+                }
+            ).encode()
+            print("ALLOW login/complete", flush=True)
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -201,8 +214,8 @@ data:
             self.end_headers()
 
         def do_dispatch(self):
-            if self.path == "/login":
-                self.do_login()
+            if self.path == "/login/complete":
+                self.do_callback()
             else:
                 self.do_check()
 

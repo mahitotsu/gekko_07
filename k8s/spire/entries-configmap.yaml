@@ -158,8 +158,9 @@ data:
       -selector k8s:pod-label:app:frontend \
       -selector k8s:container-name:envoy
 
-    # ADR 0024: ログイン(ROPC)・Token Exchange実行主体(token-exchangeサイドカー)も同じ
-    # SPIFFE IDで動く必要がある(JWT-SVID取得のため。fraud-mcp-server(ADR 0019)と同じ理由)。
+    # ADR 0024/0031: ログイン(認可コード→トークン交換)・Token Exchange実行主体
+    # (token-exchangeサイドカー)も同じSPIFFE IDで動く必要がある(JWT-SVID取得のため。
+    # fraud-mcp-server(ADR 0019)と同じ理由)。
     echo "==> frontend entry (token-exchange container only)"
     create_if_missing_by_selectors "spiffe://${TRUST_DOMAIN}/ns/gekko/sa/default/frontend" \
       k8s:ns:gekko k8s:sa:default k8s:pod-label:app:frontend k8s:container-name:token-exchange

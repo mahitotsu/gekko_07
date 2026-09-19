@@ -1,6 +1,6 @@
 # gekko_07
 
-OAuth 2.0 Token Exchange (RFC 8693) をEnvoyサイドカー（ext_authz）に実装し、マイクロサービス群とAIエージェントが連携するローカル実行可能なサンプル。**現在はインフラ・セキュリティ層（Token Exchange・SPIFFE/SPIRE mTLS・NetworkPolicy・監査ログ集約）の実機検証を終え、account-service・analyst-attribute-service（[ADR 0026](docs/adr/0026-account-service-analyst-attribute-service-implementation.md)）・fraud-detection-engine（[ADR 0027](docs/adr/0027-fraud-detection-engine-implementation.md)）・fraud-mcp-server（[ADR 0029](docs/adr/0029-fraud-mcp-server-implementation.md)）・fraud-agent（[ADR 0030](docs/adr/0030-fraud-agent-implementation.md)）の本実装が完了した段階**（残るfrontendの本実装は未着手で、検証用スタブのみ実装済み）。目的・背景・要求水準は[docs/requirements.md](docs/requirements.md)を参照。
+OAuth 2.0 Token Exchange (RFC 8693) をEnvoyサイドカー（ext_authz）に実装し、マイクロサービス群とAIエージェントが連携するローカル実行可能なサンプル。**現在はインフラ・セキュリティ層（Token Exchange・SPIFFE/SPIRE mTLS・NetworkPolicy・監査ログ集約）の実機検証を終え、account-service・analyst-attribute-service（[ADR 0026](docs/adr/0026-account-service-analyst-attribute-service-implementation.md)）・fraud-detection-engine（[ADR 0027](docs/adr/0027-fraud-detection-engine-implementation.md)）・fraud-mcp-server（[ADR 0029](docs/adr/0029-fraud-mcp-server-implementation.md)）・fraud-agent（[ADR 0030](docs/adr/0030-fraud-agent-implementation.md)）・frontend（[ADR 0031](docs/adr/0031-frontend-implementation.md)）の全サービスの本実装が完了した段階**。目的・背景・要求水準は[docs/requirements.md](docs/requirements.md)を参照。
 
 想定ユースケースは金融の不正検知・口座凍結解除（[ADR 0001](docs/adr/0001-scenario-fraud-detection-with-agent-assist.md)・[ADR 0011](docs/adr/0011-scenario-ai-assisted-unfreeze.md)）。取引パターンから自動検知エンジンが口座を自動的に凍結し、AIエージェントが凍結の妥当性を分析して解除を提案、アナリストが確認の上で決定論的な操作を行って初めて解除が確定する。エージェントの権限はKeycloakのスコープ設計で読み取り・提案のみに制限し、実行権限（凍結解除）は一切持たせない。
 
@@ -17,7 +17,7 @@ OAuth 2.0 Token Exchange (RFC 8693) をEnvoyサイドカー（ext_authz）に実
 - [x] fraud-detection-engineの本実装（Rust/Axum）。自身のPostgreSQLに検知ルール・観測シグナルを持ち、定期スキャンでaccount-serviceへclient_credentials（`account:freeze`）による凍結を自律的に依頼する（UC0）。account-serviceのデモ用凍結シード（ADR 0026）はこの自動実行に置き換えた（[ADR 0027](docs/adr/0027-fraud-detection-engine-implementation.md)。[k8s/fraud-detection-engine/](k8s/fraud-detection-engine/)・[services/fraud-detection-engine/](services/fraud-detection-engine/)、`make deploy`側のbase trackに統合済み）
 - [x] fraud-mcp-serverの本実装（Python/FastMCP）。account-serviceの読み取り・提案系機能をMCPツール（`get_frozen_accounts`・`get_account_history`・`propose_unfreeze`）として公開し、受信した委任トークンをegressのtoken-exchangeサイドカーへそのまま転送するだけでToken Exchange自体は一切自前で行わない（[ADR 0029](docs/adr/0029-fraud-mcp-server-implementation.md)。[k8s/fraud-mcp-server/](k8s/fraud-mcp-server/)・[services/fraud-mcp-server/](services/fraud-mcp-server/)、`make deploy`側のbase trackに統合済み）
 - [x] fraud-agentの本実装（TypeScript/Claude Agent SDK）。frontendから`/chat`で呼ばれ、受信した委任トークンをMCPクライアント（fraud-mcp-server宛て）に転送しつつ、実際にAnthropic APIを呼び出して凍結口座の分析・解除提案を行う。レスポンスはAG-UIプロトコル（公式`@ag-ui/claude-agent-sdk`アダプタ、SSEイベントストリーム）準拠。Anthropic API向けに本リポジトリで初めてのクラスタ外egress（appは内部専用の別名経由で接続し、EnvoyがTLSを終端して実際のapi.anthropic.comへ再接続する。NetworkPolicyの`ipBlock`例外も新設）を設けた（[ADR 0030](docs/adr/0030-fraud-agent-implementation.md)。[k8s/fraud-agent/](k8s/fraud-agent/)・[services/fraud-agent/](services/fraud-agent/)、`make deploy`側のbase trackに統合済み）
-- [ ] 残るサービスの実装（本実装。frontendは現状Envoy/SPIRE検証用スタブのみで、ログインも簡易ログイン（ROPC）で代用中。詳細は[docs/services.md](docs/services.md)参照）
+- [x] frontendの本実装（TypeScript/Nuxt.js）。本物のAuthorization Code + PKCEブラウザフローでログインし（旧ADR 0024の簡易ログイン=ROPCを置き換え）、ログインセッションはAES-256-GCM暗号化Cookieでステートレスに保持する（リフレッシュトークンは使わずKeycloakのAccess Token Lifespanで必ず失効。ログアウトはKeycloakのSSOセッションもRP-Initiated Logoutで終了させる）。ダッシュボード（凍結中口座一覧・凍結解除確定）とチャットUI（fraud-agentのAG-UI SSEストリームを表示し、propose_unfreeze提案をその場で確定可能）を提供する（[ADR 0031](docs/adr/0031-frontend-implementation.md)。[k8s/frontend/](k8s/frontend/)・[services/frontend/](services/frontend/)、`make deploy`側のbase trackに統合済み）
 
 ## クイックスタート
 
@@ -26,15 +26,15 @@ make up               # k3dクラスタを作成し、アプリ層一式をデ�
 make status            # クラスタ・ノード・アプリPodの状態確認
 make network-status     # NetworkPolicy(通信許可)とEnvoyサイドカーの実プロトコル(mTLS/plaintext)を突き合わせて確認
 make keycloak-forward   # localhost:3000 -> edge-proxy経由でKeycloakへport-forward（フォアグラウンドで動き続ける）
-make deploy             # アプリ層（Postgres・SPIRE・Keycloak・edge-proxy・account-service・analyst-attribute-service・監査ログ集約基盤・NetworkPolicy）を再デプロイ（クラスタは起動済み前提）
+make deploy             # アプリ層一式（Postgres・SPIRE・Keycloak・edge-proxy・全マイクロサービス・frontend・監査ログ集約基盤・NetworkPolicy）を再デプロイ（クラスタは起動済み前提）
 make undeploy           # アプリ層だけを削除（クラスタは残す）
 make stop               # クラスタを停止（状態は保持）
 make start              # 停止したクラスタを再開
 make down               # クラスタを完全削除
 
-make deploy-verify-hop  # 残るスタブ(frontend)とテストアナリスト属性をデプロイ（make deploy実行済み前提）
+make deploy-verify-hop  # テスト用Keycloakフィクスチャ(表6のテストアナリスト属性等)をデプロイ（make deploy実行済み前提）
 make verify-hop         # 上記の検証スクリプトを実行
-make undeploy-verify-hop # 上記のスタブを削除
+make undeploy-verify-hop # 上記のテストフィクスチャを削除
 make grafana-forward    # localhost:3000 -> Grafana(otel-lgtm)へport-forward（keycloak-forwardとローカルポートが競合するため同時利用不可）
 make verify-observability # 監査ログ集約基盤の検証スクリプトを実行（deploy-observability・deploy-verify-hop実行済み前提）
 ```

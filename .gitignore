@@ -8,3 +8,5 @@ services/*/target/
 services/analyst-attribute-service/analyst-attribute-service
 services/*/node_modules/
 services/*/dist/
+services/*/.output/
+services/*/.nuxt/

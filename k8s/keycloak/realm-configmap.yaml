@@ -12,10 +12,12 @@
 # ADR 0025の監査ログ集約作業で判明:上記の想定と異なり、`sub`もコアclaim扱いでは自動的に
 # access tokenへ乗らない（Keycloak 26.7.0で実機確認。この実現象は"basic"スコープ等の
 # 組み込みscope欠如とは無関係で、admin-cli(masterrealm、標準scope完備)でも同様に欠落する
-# ため、realm importの構成に依存しないKeycloak側の挙動と判断した）。frontendクライアントの
-# ROPCログイン(`/login`)で発行されるアクセストークンに限り、`subject-claim`という
-# 明示的なdedicated protocol mapper(oidc-usermodel-property-mapper、user.attribute=id→
-# claim.name=sub)を追加してこれを補っている。Token Exchange(委任チェーンの②③④ホップ)は
+# ため、realm importの構成に依存しないKeycloak側の挙動と判断した）。frontendクライアントが
+# 自ら発行するアクセストークン(ADR 0031のAuthorization Code + PKCEフロー。旧ROPCでも同様)に
+# 限り、`subject-claim`という明示的なdedicated protocol mapper(oidc-usermodel-property-mapper、
+# user.attribute=id→claim.name=sub)を追加してこれを補っている（id_tokenには標準のOIDC
+# コアクレームとして`sub`が別途含まれるため対象外。id.token.claim=falseはそのため）。
+# Token Exchange(委任チェーンの②③④ホップ)は
 # このマッパーを追加する前から`sub`を正しく引き継いでいたため(実機確認済み)、frontend以外の
 # クライアントには同じマッパーを追加していない。
 #
@@ -174,13 +176,13 @@ data:
         {
           "clientId": "frontend",
           "name": "frontend (BFF)",
-          "description": "アナリスト向けBFF。ログイン（本実装はAuthorization Code + PKCEの想定だが、現状はROPCをHTTPエンドポイント化した簡易ログインで代用。ADR 0024）と用途ごとのToken Exchangeを実行する",
+          "description": "アナリスト向けBFF。Authorization Code + PKCEでログインし（ADR 0031）、用途ごとのToken Exchangeを実行する",
           "enabled": true,
           "protocol": "openid-connect",
           "publicClient": false,
           "standardFlowEnabled": true,
           "implicitFlowEnabled": false,
-          "directAccessGrantsEnabled": true,
+          "directAccessGrantsEnabled": false,
           "serviceAccountsEnabled": false,
           "authorizationServicesEnabled": false,
           "fullScopeAllowed": false,

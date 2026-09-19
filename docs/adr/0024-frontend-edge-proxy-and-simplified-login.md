@@ -1,6 +1,6 @@
 # ADR 0024: frontendを新規実装し、edge-proxy配線・簡易ログインでaccount-service/fraud-agentへ横展開する
 
-- **Status**: Accepted
+- **Status**: Partially superseded by [0031](0031-frontend-implementation.md)
 - **Date**: 2026-09-17
 
 ## Context
@@ -57,4 +57,5 @@ frontend/fraud-agentが共に`client_secret`ではなく`federated-jwt`になっ
 - account-serviceの`unfreeze` rbacポリシー欠落という既存の抜けを発見・是正した
 - Keycloakの`account:read`スコープの監査ギャップ（audienceパラメータを技術的に自由に選べる）が判明した。Client Policiesを使わない設計（architecture.md §4）の下では、これは各クライアント実装（token-exchangeサイドカーのSCOPE_RULES）の自制に依存する。今のところ全クライアントのサイドカーは正しいaudienceしか要求しないためリスクは顕在化していないが、将来的な懸念としてinsights.mdに記録した
 - 簡易ログイン（`/login`、ROPC）と`directAccessGrantsEnabled=true`の恒久化は、本物のAuthorization Code+PKCEブラウザフローに置き換わる時点で丸ごと捨てる想定の暫定実装。Cookieによるセッション管理（services.md記載）も引き続き未実装
+  - **[0031](0031-frontend-implementation.md)で置き換え済み**：ROPC・`directAccessGrantsEnabled=true`・frontend ingressのjwt_authnは0031で撤去し、Authorization Code+PKCE・暗号化Cookieセッション・RP-Initiated Logoutへ置き換えた。edge-proxy配線・Token Exchangeのscope解決方式・account-serviceのunfreeze rbacポリシーは本ADRのまま有効
 - `scripts/verify-hop.sh`を全面更新し、frontend/fraud-agent/fraud-mcp-server/account-service/analyst-attribute-serviceを含む全区間で新規ステップが成功することを確認した

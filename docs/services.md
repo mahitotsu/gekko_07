@@ -4,9 +4,9 @@
 
 各サービスの技術スタックは意図的に統一しない（多言語構成の理由は[requirements.md](requirements.md)「背景（なぜサイドカーへ切り出すか）」参照：Token Exchangeをサイドカーへ切り出す価値は、実装言語がバラバラな構成でこそ際立つ）。個々の選定理由は[ADR 0007](adr/0007-per-service-language-selection.md)を参照。
 
-account-service・analyst-attribute-service（[ADR 0026](adr/0026-account-service-analyst-attribute-service-implementation.md)）・fraud-detection-engine（[ADR 0027](adr/0027-fraud-detection-engine-implementation.md)）・fraud-mcp-server（[ADR 0029](adr/0029-fraud-mcp-server-implementation.md)）・fraud-agent（[ADR 0030](adr/0030-fraud-agent-implementation.md)）は本実装済み。残るfrontendの本実装は未着手（設計段階）で、Envoy/ext_authzによるToken Exchange・SPIFFE/SPIRE mTLSの実機検証用スタブとして存在する（本実装とは別物。詳細は[architecture.md](architecture.md)・[insights.md](insights.md)参照）。ログイン（Authorization Code + PKCE）は簡易ログイン（ROPCのHTTPエンドポイント化）で代用している（[ADR 0024](adr/0024-frontend-edge-proxy-and-simplified-login.md)）。
+account-service・analyst-attribute-service（[ADR 0026](adr/0026-account-service-analyst-attribute-service-implementation.md)）・fraud-detection-engine（[ADR 0027](adr/0027-fraud-detection-engine-implementation.md)）・fraud-mcp-server（[ADR 0029](adr/0029-fraud-mcp-server-implementation.md)）・fraud-agent（[ADR 0030](adr/0030-fraud-agent-implementation.md)）・frontend（[ADR 0031](adr/0031-frontend-implementation.md)）は全て本実装済み。frontendはAuthorization Code + PKCEブラウザフローで本物のログインを行う（[ADR 0031](adr/0031-frontend-implementation.md)。旧ADR 0024の簡易ログイン（ROPCのHTTPエンドポイント化）は置き換え済み）。
 
-## frontend（BFF）
+## frontend（BFF。本実装済み。[ADR 0031](adr/0031-frontend-implementation.md)）
 
 - **存在意義**：アナリストがシステムに触れる唯一の入口。ログイン・チャットUI・取引ダッシュボード・凍結解除確定ボタンを提供する
 - **提供機能**：

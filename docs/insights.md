@@ -505,6 +505,22 @@ fraud-agent-stub（`k8s/fraud-agent/app-configmap.yaml`）は元々fraud-mcp-ser
 
 3つとも修正後、`make verify-hop`で`/chat`が実際にAnthropic APIを呼び・fraud-mcp-server経由でaccount-serviceのデータを取得し・`RUN_FINISHED`（`isError: false`、実際のトークン使用量・コスト情報込み）まで到達することを実機（k3dクラスタ内、`CLAUDE_CODE_OAUTH_TOKEN`使用）で確認した。
 
+### Nitroで`throw createError()`すると、Nuxtのエラーページへの内部再ディスパッチがグローバルミドルウェアへ再突入し、loopbackチェックに失敗して意図しない403で上書きされる（ADR 0031）
+
+**症状**：frontend（`services/frontend`、Nitro）のAPIルート（`server/routes/me.get.ts`等）で、未ログイン時に`throw createError({ statusCode: 401, ... })`を投げたところ、クライアントが実際に受け取るレスポンスは`401`ではなく`403 forbidden`（`server/middleware/0.security.ts`の①loopback再チェックの拒否メッセージそのもの）になった。
+
+**原因**：`createError()`を投げるとNitroはNuxtの既定エラーページを描画しようとして`/__nuxt_error?...`への**内部**再ディスパッチを行う。この仮想リクエストは実TCP接続を伴わないため`event.node.req.socket.remoteAddress`が空文字列になるが、グローバルミドルウェア（`server/middleware/0.security.ts`、ADR 0009 §2の多層防御）は全リクエストに一律適用されるため、この内部リクエストにもloopbackチェックが働き、`remoteAddress`が空＝loopbackでないと判定されて403で弾かれる。この403がクライアントに見える最終レスポンスとして返ってしまい、本来返すはずだった401は握りつぶされる。
+
+**対応**：API的な401（未ログイン）を返す全ルート（`me.get.ts`・`accounts/[...].ts`・`chat.post.ts`）で`throw createError()`をやめ、`setResponseStatus(event, 401); return {...}`という直接レスポンス方式に統一した。Nitroの内部エラーページ描画パイプライン自体を経由しないため、この問題を回避できる。多層防御ミドルウェアを「全リクエストに一律適用」する設計（CWE-489対策）を維持したまま、フレームワークが生成する内部リクエストとの相性問題を避けるパターンとして記録する。
+
+### KC_HOSTNAME固定（ADR 0004）により、Keycloakが返すリダイレクト先URL・ログインフォームのaction属性は常に`http://localhost:3000`になる。異なるport-forwardポートから叩くテストスクリプトはホスト部分の付け替えが必要（ADR 0031）
+
+**症状**：`scripts/verify-hop.sh`は`kubectl port-forward svc/edge-proxy $LOCAL_EDGE_PORT:80`（`18080`。`make keycloak-forward`の`3000`と衝突しないよう別ポートにしてある）経由でedge-proxyへアクセスするが、frontendの`/login`が返す302 LocationヘッダーやKeycloakログインフォームの`action`属性は、KC_HOSTNAME固定値（`http://localhost:3000`、ADR 0004）のままの絶対URLになっている。これをそのまま`curl`で辿ると`localhost:3000`（`make keycloak-forward`を同時に起動していない限り何も listenしていない）に接続しようとして失敗し、`set -e`環境下でスクリプトが何のエラーメッセージも出さずに早期終了する。
+
+**原因**：KC_HOSTNAMEは「ホストから到達する固定URL」として意図的に固定されている（ADR 0004。ブラウザは常に`localhost:3000`でアクセスする前提）。Envoy（edge-proxy・frontend）自体のルーティングはHost非依存でpathのみで決まるため、実際の到達性には影響しないが、レスポンスボディ・ヘッダーに埋め込まれた絶対URLの「見た目」の値は変わらない。
+
+**対応**：`scripts/verify-hop.sh`の`keycloak_login_redirect()`・`login_via_frontend()`で、Location/action属性から取得した絶対URLのホスト部分（`sed -E 's#^https?://[^/]+##'`でpath+query以降だけ残す）を`$EDGE`（スクリプト自身のport-forward先）へ付け替えてから`curl`する。実際のブラウザ（`localhost:3000`で一貫してアクセスする）ではこの付け替えは不要——テストスクリプトが別ポートを使う場合特有の対応。
+
 ### Envoyの固定`timeout`はLLM呼び出しの不定長な実行時間に対して根本的に相性が悪く、`idle_timeout`へ切り替えた
 
 **症状**：`/chat`のEnvoyルートタイムアウトを既定の15秒から120秒へ緩めても、実機で`upstream connect error or disconnect/reset before headers. reset reason: connection termination`が発生する事例があった。
