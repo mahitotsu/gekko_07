@@ -1,6 +1,14 @@
-# ADR 0018/0023。呼び出し元(frontend。未実装のため現状はverify-hop.shがROPCで代用)からの
+# ADR 0018/0023/0030。呼び出し元(frontend。未実装のため現状はverify-hop.shがROPCで代用)からの
 # ingressと、KeycloakのJWKS取得(mTLS)・fraud-mcp-serverへのToken Exchange委任(ADR 0023の
 # パターンを最初から適用)へのegressを許可する。
+#
+# ADR 0030:Claude Agent SDK本体が呼ぶAnthropic API(api.anthropic.com)向けegressを追加。
+# 本リポジトリで初めての公開インターネットegressであり、既存のpodSelectorベースの許可とは
+# 性質が異なる。Anthropicの実IPは公開レンジとして固定できないため、ipBlock 0.0.0.0/0から
+# RFC1918プライベートレンジ(10.0.0.0/8・172.16.0.0/12・192.168.0.0/16。このクラスタの
+# k3d docker networkである172.19.0.0/16を含む)を除外した範囲をport 443のみで許可する。
+# 内部ホップへの誤到達を防ぐための除外であり、既存のfraud-mcp-server向けpodSelectorルールと
+# 論理和で合成される(除外しても内部到達性には影響しない)。
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -36,3 +44,13 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443

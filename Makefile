@@ -46,6 +46,19 @@ ACCOUNT_SERVICE_DB_PASSWORD := $(call get_secret,account-service-db-password)
 ANALYST_ATTRIBUTE_SERVICE_DB_PASSWORD := $(call get_secret,analyst-attribute-service-db-password)
 FRAUD_DETECTION_ENGINE_DB_PASSWORD := $(call get_secret,fraud-detection-engine-db-password)
 
+# fraud-agent(ADR 0030)がClaude Agent SDK経由でAnthropic APIを呼ぶための資格情報。
+# `claude setup-token`で取得したOAuthトークン(sk-ant-oat01-...、CLAUDE_CODE_OAUTH_TOKEN環境変数
+# として消費される)であり、keycloak-admin-password等と違いopenssl randで自動生成できない実
+# クレデンシャルのため、get_secretとは別に定義する:$(SECRETS_DIR)/claude-code-oauth-tokenが
+# 既にあればそれを再利用し、無ければ環境変数CLAUDE_CODE_OAUTH_TOKENから読み取って保存する。
+# どちらも無い場合は空文字列のままにし、deployターゲット側で明確なエラーとして早期に止める
+# (Secret未作成のままDeploymentがCrashLoopBackOFFし続けるより早く気づけるようにするため)。
+CLAUDE_CODE_OAUTH_TOKEN_FILE := $(SECRETS_DIR)/claude-code-oauth-token
+CLAUDE_CODE_OAUTH_TOKEN := $(shell mkdir -p $(SECRETS_DIR) && \
+	if [ -f $(CLAUDE_CODE_OAUTH_TOKEN_FILE) ]; then cat $(CLAUDE_CODE_OAUTH_TOKEN_FILE); \
+	elif [ -n "$$CLAUDE_CODE_OAUTH_TOKEN" ]; then printf '%s' "$$CLAUDE_CODE_OAUTH_TOKEN" > $(CLAUDE_CODE_OAUTH_TOKEN_FILE) && cat $(CLAUDE_CODE_OAUTH_TOKEN_FILE); \
+	else echo ""; fi)
+
 # SPIRE Serverのbundle endpoint（ADR 0019）自身のTLS終端用証明書。SPIRE発行のSVIDではなく
 # （bundle endpointが公開するtrust bundleの中身とは無関係な、この1エンドポイントだけのための
 # 使い捨てのTLS証明書）、ここだけ例外的に自己署名証明書をopensslで生成して使い回す
@@ -60,7 +73,7 @@ SPIRE_BUNDLE_ENDPOINT_CERT_DUMMY := $(shell mkdir -p $(SECRETS_DIR) && \
 	    -addext "subjectAltName=DNS:spire-server.spire.svc.cluster.local,DNS:spire-server" \
 	    >/dev/null 2>&1 ) )
 
-.PHONY: up down stop start status network-status clean deploy undeploy keycloak-forward keycloak-reimport-realm deploy-verify-hop undeploy-verify-hop verify-hop deploy-spire undeploy-spire deploy-network-policy undeploy-network-policy deploy-observability undeploy-observability grafana-forward verify-observability build-account-service build-analyst-attribute-service build-fraud-detection-engine build-fraud-mcp-server
+.PHONY: up down stop start status network-status clean deploy undeploy keycloak-forward keycloak-reimport-realm deploy-verify-hop undeploy-verify-hop verify-hop deploy-spire undeploy-spire deploy-network-policy undeploy-network-policy deploy-observability undeploy-observability grafana-forward verify-observability build-account-service build-analyst-attribute-service build-fraud-detection-engine build-fraud-mcp-server build-fraud-agent
 
 # -------------------------
 # クラスタ操作
@@ -115,6 +128,12 @@ clean: down
 # scriptからビルド済みイメージへ置き換わったため、同じ理由でbase trackへ格上げした。
 # 自身のDBを持たないためdb-init Job・NetworkPolicy前倒し適用は不要（NetworkPolicyは元々
 # deploy-network-policyで適用済み）。
+#
+# fraud-agent（ADR 0007本実装・0030）も同じ理由でbase trackへ格上げした。TypeScript/Claude
+# Agent SDKでコンパイルを要するためbuild-fraud-agentでビルドする。自身のDBは持たないが、
+# CLAUDE_CODE_OAUTH_TOKEN（`claude setup-token`で取得したOAuthトークン）というKeycloak/SPIRE
+# 経由では用意できない実クレデンシャルを必要とする点が他のbase trackサービスと異なる（未設定
+# なら明確なエラーで早期に停止する）。
 
 # services/account-serviceをビルドし、k3dクラスタへイメージを持ち込む
 build-account-service:
@@ -135,6 +154,11 @@ build-fraud-detection-engine:
 build-fraud-mcp-server:
 	docker build -t gekko07/fraud-mcp-server:local services/fraud-mcp-server
 	k3d image import gekko07/fraud-mcp-server:local -c $(CLUSTER)
+
+# services/fraud-agentをビルドし、k3dクラスタへイメージを持ち込む
+build-fraud-agent:
+	docker build -t gekko07/fraud-agent:local services/fraud-agent
+	k3d image import gekko07/fraud-agent:local -c $(CLUSTER)
 
 # PostgreSQL・SPIRE・Keycloak・edge-proxy・account-service・analyst-attribute-service・
 # fraud-detection-engine・fraud-mcp-serverをデプロイ（クラスタが起動済みであること）
@@ -188,6 +212,7 @@ deploy:
 	$(MAKE) build-analyst-attribute-service
 	$(MAKE) build-fraud-detection-engine
 	$(MAKE) build-fraud-mcp-server
+	$(MAKE) build-fraud-agent
 	kubectl apply -f k8s/analyst-attribute-service/envoy-configmap.yaml -f k8s/analyst-attribute-service/deployment.yaml -f k8s/analyst-attribute-service/service.yaml
 	kubectl apply -f k8s/account-service/token-exchange-app-configmap.yaml -f k8s/account-service/envoy-configmap.yaml -f k8s/account-service/deployment.yaml -f k8s/account-service/service.yaml
 	@# ADR 0027:fraud-detection-engineはingressを持たないためService(k8s/fraud-detection-engine/
@@ -196,10 +221,27 @@ deploy:
 	@# ADR 0029:fraud-mcp-serverはaccount-service/fraud-detection-engineと違いapp-configmap.yaml
 	@# を持たない(ビルド済みイメージで代替)。token-exchange-app-configmap.yamlはADR 0019のまま無変更。
 	kubectl apply -f k8s/fraud-mcp-server/token-exchange-app-configmap.yaml -f k8s/fraud-mcp-server/envoy-configmap.yaml -f k8s/fraud-mcp-server/deployment.yaml -f k8s/fraud-mcp-server/service.yaml
+	@# ADR 0030:fraud-agentも同じくビルド済みイメージで代替。CLAUDE_CODE_OAUTH_TOKENが
+	@# 用意できていなければ、Secret未作成のままDeploymentがCrashLoopBackOFFし続けるより早く
+	@# 気づけるようここで明確に停止する(`claude setup-token`で取得したトークンを
+	@# .secrets/claude-code-oauth-tokenへ書くか、環境変数CLAUDE_CODE_OAUTH_TOKENとして渡すこと)。
+	@if [ -z "$(CLAUDE_CODE_OAUTH_TOKEN)" ]; then \
+		echo "CLAUDE_CODE_OAUTH_TOKENが未設定です。'claude setup-token'で取得したトークンを" >&2; \
+		echo "  echo -n 'sk-ant-oat01-...' > $(CLAUDE_CODE_OAUTH_TOKEN_FILE)" >&2; \
+		echo "として保存するか、環境変数CLAUDE_CODE_OAUTH_TOKENとして渡してから再実行してください。" >&2; \
+		exit 1; \
+	fi
+	$(call upsert_secret,fraud-agent-claude,--from-literal=oauth-token=$(CLAUDE_CODE_OAUTH_TOKEN))
+	@# fraud-agentはADR 0023でDeployment名"fraud-agent-stub"のスタブとして導入され、ADR 0030で
+	@# "fraud-agent"へリネームして本実装へ昇格した(fraud-mcp-serverと違い元々スタブ専用の別名を
+	@# 持っていたため、リネームに伴う旧オブジェクトの後始末が必要)。
+	kubectl delete deployment fraud-agent-stub -n $(NAMESPACE) --ignore-not-found
+	kubectl apply -f k8s/fraud-agent/token-exchange-app-configmap.yaml -f k8s/fraud-agent/envoy-configmap.yaml -f k8s/fraud-agent/deployment.yaml -f k8s/fraud-agent/service.yaml
 	kubectl -n $(NAMESPACE) rollout status deployment/analyst-attribute-service --timeout=180s
 	kubectl -n $(NAMESPACE) rollout status deployment/account-service --timeout=180s
 	kubectl -n $(NAMESPACE) rollout status deployment/fraud-detection-engine --timeout=180s
 	kubectl -n $(NAMESPACE) rollout status deployment/fraud-mcp-server --timeout=180s
+	kubectl -n $(NAMESPACE) rollout status deployment/fraud-agent --timeout=180s
 	$(MAKE) deploy-observability
 	$(MAKE) deploy-network-policy
 	@echo "---"
@@ -219,6 +261,8 @@ undeploy:
 	kubectl delete -f k8s/fraud-detection-engine/deployment.yaml -f k8s/fraud-detection-engine/envoy-configmap.yaml -f k8s/fraud-detection-engine/client-credentials-app-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/fraud-detection-engine/db-init-job.yaml -f k8s/fraud-detection-engine/db-init-envoy-configmap.yaml -f k8s/fraud-detection-engine/db-init-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/fraud-mcp-server/service.yaml -f k8s/fraud-mcp-server/deployment.yaml -f k8s/fraud-mcp-server/envoy-configmap.yaml -f k8s/fraud-mcp-server/token-exchange-app-configmap.yaml --ignore-not-found
+	kubectl delete -f k8s/fraud-agent/service.yaml -f k8s/fraud-agent/deployment.yaml -f k8s/fraud-agent/envoy-configmap.yaml -f k8s/fraud-agent/token-exchange-app-configmap.yaml --ignore-not-found
+	kubectl delete secret fraud-agent-claude -n $(NAMESPACE) --ignore-not-found
 	kubectl delete secret account-service-db analyst-attribute-service-db fraud-detection-engine-db -n $(NAMESPACE) --ignore-not-found
 	kubectl delete -f k8s/edge-proxy/service.yaml -f k8s/edge-proxy/deployment.yaml -f k8s/edge-proxy/envoy-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/keycloak/service.yaml -f k8s/keycloak/deployment.yaml -f k8s/keycloak/envoy-configmap.yaml -f k8s/keycloak/realm-configmap.yaml --ignore-not-found
@@ -259,10 +303,10 @@ keycloak-reimport-realm:
 # -------------------------
 # 1ホップ先行検証（ADR 0002/0009/0010、fraud-mcp-server→account-service）
 # -------------------------
-# ここでデプロイするfraud-agent/frontendはいずれもスタブ実装であり、各サービスの本実装（未着手）
-# とは別物。account-service・analyst-attribute-service・fraud-detection-engine・fraud-mcp-server
-# は本実装済みでbase track（make deploy）側に属するため、ここでは表6のテストアナリスト属性の投入
-# のみを扱う（ADR 0026・0027・0029）。既存のdeploy/undeployとは独立させてあるため、Keycloak・
+# ここでデプロイするfrontendはスタブ実装であり、本実装（未着手）とは別物。account-service・
+# analyst-attribute-service・fraud-detection-engine・fraud-mcp-server・fraud-agentは本実装済みで
+# base track（make deploy）側に属するため、ここでは表6のテストアナリスト属性の投入のみを扱う
+# （ADR 0026・0027・0029・0030）。既存のdeploy/undeployとは独立させてあるため、Keycloak・
 # Postgresだけを触りたい場合はこのターゲット群を無視してよい。
 
 # スタブ一式＋テスト用Keycloakフィクスチャをデプロイする（make deploy実行済み・クラスタ起動済み前提）
@@ -283,9 +327,8 @@ deploy-verify-hop:
 	@# SPIRE(server/agent/registration entries)はmake deploy側で既にデプロイ済み(ADR 0016で
 	@# base trackへ格上げ)なので、ここでは呼ばない。
 	@# account-service向け(表3)のext-authz-service共有インスタンスは廃止(または最初から作らず)、
-	@# 呼び出し元自身のPod内サイドカーへ置き換えた。fraud-mcp-server自身はbase track側でデプロイ
-	@# 済み(ADR 0029)のため、ここではfraud-agent→fraud-mcp-serverホップ(ADR 0023)のみを扱う。
-	kubectl apply -f k8s/fraud-agent/app-configmap.yaml -f k8s/fraud-agent/token-exchange-app-configmap.yaml -f k8s/fraud-agent/envoy-configmap.yaml -f k8s/fraud-agent/deployment.yaml -f k8s/fraud-agent/service.yaml
+	@# 呼び出し元自身のPod内サイドカーへ置き換えた。fraud-mcp-server・fraud-agentはいずれも
+	@# base track側でデプロイ済み(ADR 0029・0030)のため、ここでは扱わない。
 	@# ADR 0024:frontend→account-service/fraud-agentホップ。edge-proxy側(base track、make deploy)の
 	@# ConfigMap更新も、frontend Service/SPIREエントリが揃った後でなければ意味を持たないため、
 	@# ここで念のため再適用・再起動する。
@@ -294,8 +337,7 @@ deploy-verify-hop:
 	@# EnvoyはConfigMapの静的bootstrap設定を起動時に1度だけ読み込み、変更をホットリロードしない
 	@# （Keycloak realmの--import-realmと同種の落とし穴。insights.md参照）。ConfigMap更新が
 	@# 既存Podへ確実に反映されるよう、スタブは常に再起動する（いずれも状態を持たないため無害）
-	kubectl -n $(NAMESPACE) rollout restart deployment/fraud-agent-stub deployment/frontend-stub deployment/edge-proxy
-	kubectl -n $(NAMESPACE) rollout status deployment/fraud-agent-stub --timeout=120s
+	kubectl -n $(NAMESPACE) rollout restart deployment/frontend-stub deployment/edge-proxy
 	kubectl -n $(NAMESPACE) rollout status deployment/frontend-stub --timeout=120s
 	kubectl -n $(NAMESPACE) rollout status deployment/edge-proxy --timeout=120s
 
@@ -308,7 +350,6 @@ verify-hop:
 # スタブだけ入れ替えられるようにする)
 undeploy-verify-hop:
 	kubectl delete -f k8s/frontend/service.yaml -f k8s/frontend/deployment.yaml -f k8s/frontend/envoy-configmap.yaml -f k8s/frontend/token-exchange-app-configmap.yaml -f k8s/frontend/app-configmap.yaml --ignore-not-found
-	kubectl delete -f k8s/fraud-agent/service.yaml -f k8s/fraud-agent/deployment.yaml -f k8s/fraud-agent/envoy-configmap.yaml -f k8s/fraud-agent/token-exchange-app-configmap.yaml -f k8s/fraud-agent/app-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/analyst-attribute-service/seed-job.yaml -f k8s/analyst-attribute-service/seed-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/keycloak/test-fixtures-job.yaml -f k8s/keycloak/test-fixtures-configmap.yaml --ignore-not-found
 	kubectl delete secret yamada-analyst suzuki-senior tanaka-junior -n $(NAMESPACE) --ignore-not-found

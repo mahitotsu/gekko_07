@@ -1,16 +1,19 @@
-# fraud-agent ingress+egress側Envoy設定(frontend→fraud-agent→fraud-mcp-serverホップ検証用。
-# ADR 0009/0023)。account-service(k8s/account-service/envoy-configmap.yaml、ingress/egress
-# 両方を持つ最初のサービス)を雛形に、呼び出し元をfrontend一つに、rbacポリシーを単一scope
-# (account:read)のワイルドカードルートへ簡略化した(analyst-attribute-serviceのingressと
-# 同じ簡略化)。
+# fraud-agentのingress+egress側Envoy設定(ADR 0009/0023/0030)。account-service
+# (k8s/account-service/envoy-configmap.yaml、ingress/egress両方を持つ最初のサービス)を雛形に、
+# 呼び出し元をfrontend一つに、rbacポリシーを単一scope(account:read)のワイルドカードルートへ
+# 簡略化した(analyst-attribute-serviceのingressと同じ簡略化)。
 #
 # ingress:jwt_authn(署名・iss・aud=fraud-agent検証、クレームをx-auth-*ヘッダーへ)→
 # rbac(account:read保有のみを要求)→lua(rbac通過後にのみ合言葉ヘッダーを付与。ADR 0009 §2③)→
 # router。
 #
-# egress:hostAliasesで"fraud-mcp-server"・"keycloak"を127.0.0.1へ横取りし、appからの
-# リクエストとtoken-exchangeサイドカー自身のKeycloak向けリクエストの両方をこのリスナーで
-# 受け止める(ADR 0019/0020と同じパターン)。
+# egress(80番):hostAliasesで"fraud-mcp-server"・"keycloak"・"anthropic-gateway"を127.0.0.1へ
+# 横取りし、appからのリクエストとtoken-exchangeサイドカー自身のKeycloak向けリクエストの両方を
+# このリスナーで受け止める(ADR 0019/0020と同じパターン)。"anthropic-gateway"はADR 0030で追加した
+# Anthropic API向けの仮想ホスト(本リポジトリで初めてのクラスタ外行き先)。Token Exchange対象では
+# ないためkeycloakルートと同じくext_authzを無効化するが、TLS自体はEnvoyが終端し実際の
+# api.anthropic.comへ再接続する(anthropic_upstreamクラスタ参照。SPIFFE mTLSではなく通常の
+# 公開CA検証)。
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -99,8 +102,11 @@ data:
                         - name: fraud_agent
                           domains: ["*"]
                           routes:
+                            # ADR 0030:/chatはAG-UIプロトコルのSSEストリームを返す(実行時間が
+                            # 不定長)。総時間の上限ではなく無活動時間の上限(idle_timeout)で
+                            # 制御する。
                             - match: { prefix: "/" }
-                              route: { cluster: app_upstream }
+                              route: { cluster: app_upstream, timeout: 0s, idle_timeout: 300s }
                     http_filters:
                       - name: envoy.filters.http.jwt_authn
                         typed_config:
@@ -200,6 +206,42 @@ data:
                           routes:
                             - match: { prefix: "/" }
                               route: { cluster: keycloak_upstream }
+                              typed_per_filter_config:
+                                envoy.filters.http.ext_authz:
+                                  "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
+                                  disabled: true
+                        # ADR 0030:Anthropic API(Claude Agent SDK本体の呼び出し先)向け。
+                        # keycloakルートと同じ理由でext_authz(Token Exchange)を無効化する
+                        # (Anthropicはメッシュ外・Keycloak登録済みaudienceではないため、
+                        # Token Exchangeの対象にならない)。appは`ANTHROPIC_BASE_URL=
+                        # http://anthropic-gateway`(hostAliasesで127.0.0.1)を経由し、
+                        # ここから先はEnvoyがTLSを終端して実際のapi.anthropic.comへ
+                        # 再接続する(下のanthropic_upstreamクラスタ参照)。
+                        - name: anthropic_gateway
+                          domains: ["anthropic-gateway"]
+                          routes:
+                            # ADR 0030実機で判明した罠(insights.md参照):appは自分が接続した
+                            # URLのホスト名("anthropic-gateway")をそのままHostヘッダーに送る。
+                            # SNIは"api.anthropic.com"(下のanthropic_upstreamクラスタ設定)なのに
+                            # Hostだけ食い違うと、Anthropic側が"421 Misdirected Request"で拒否する
+                            # ことを確認した。host_rewrite_literalでHostヘッダーを実際の
+                            # ホスト名へ書き換える。
+                            #
+                            # 実機で判明した罠その2:1回の会話ターンでAnthropic APIを複数回
+                            # (ツール呼び出しを挟んで)呼ぶが、ツール実行・モデルの思考で間隔が
+                            # 空くと、Anthropic側のエッジがHTTP/1.1のkeep-alive接続を先に
+                            # 閉じてしまうことがある。Envoyがこれに気づかず使い回そうとすると
+                            # "socket connection was closed unexpectedly"になることを確認した。
+                            # retry_policyでreset系エラーを自動リトライすることで解消した
+                            # (接続の使い回し自体は維持しつつ、失効した接続を掴んだ場合のみ
+                            # 透過的に再試行する。空振りリクエストなので二重実行の心配は無い)。
+                            - match: { prefix: "/" }
+                              route:
+                                cluster: anthropic_upstream
+                                host_rewrite_literal: api.anthropic.com
+                                retry_policy:
+                                  retry_on: "reset,connect-failure,refused-stream"
+                                  num_retries: 2
                               typed_per_filter_config:
                                 envoy.filters.http.ext_authz:
                                   "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
@@ -406,3 +448,45 @@ data:
                   - endpoint:
                       address:
                         socket_address: { address: keycloak.gekko.svc.cluster.local, port_value: 8443 }
+        # ADR 0030:egress:80のanthropic_gateway仮想ホストのアップストリーム。appは
+        # ANTHROPIC_BASE_URL=http://anthropic-gateway(hostAliasesで127.0.0.1)経由の平文で
+        # ここまで届き、EnvoyがここでTLSを終端して実際のapi.anthropic.com:443へ接続し直す
+        # (account-service等への他クラスタと同型のUpstreamTlsContextだが、SPIFFE SDSではなく
+        # システムのCAバンドルを使う点が異なる。Anthropicは信頼メッシュの外にある公開エンドポイント
+        # のため)。
+        #
+        # 実機で判明した罠(insights.md参照):当初はappからEnvoyへTLSバイト列をそのまま素通しする
+        # blind tcp_proxy(127.0.0.1:443の専用リスナー)を試したが、appとEnvoyの両方が
+        # "api.anthropic.com"という同一のhostAliasesエントリ(Pod内の全コンテナで共有される)を
+        # 見てしまい、Envoy自身のクラスタ名前解決が自分自身(127.0.0.1)を指してしまう自己参照
+        # ループになった。内部サービス(account-service等)ではapp向けの短縮名とEnvoy向けのFQDN
+        # (`*.svc.cluster.local`)が異なるためこの衝突は起きないが、Anthropicは公開ホスト名が
+        # 1つしかないため同じ手が使えない。ANTHROPIC_BASE_URLで「app向けの別名」(anthropic-gateway)
+        # を導入し、Envoy向けの本物のホスト名(api.anthropic.com)と分離することで解決した
+        # (内部サービスの「短縮名 vs FQDN」パターンと同じ考え方)。
+        - name: anthropic_upstream
+          type: LOGICAL_DNS
+          dns_lookup_family: V4_ONLY
+          lb_policy: ROUND_ROBIN
+          transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+              sni: api.anthropic.com
+              # ADR 0030実機で判明した罠(insights.md参照):h2をALPNへ含めると、Anthropic側が
+              # h2を選択した際にEnvoyのHTTP層(このクラスタにはtyped_extension_protocol_optionsで
+              # http2_protocol_optionsを明示していないため既定でHTTP/1.1コーデックのまま)との
+              # 不一致で"reset reason: protocol error"になることを確認した。downstream側
+              # (egress:80リスナー)もHTTP/1.1のため、http/1.1のみに絞ることで解消した。
+              common_tls_context:
+                alpn_protocols: ["http/1.1"]
+                validation_context:
+                  trusted_ca:
+                    filename: /etc/ssl/certs/ca-certificates.crt
+          load_assignment:
+            cluster_name: anthropic_upstream
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address: { address: api.anthropic.com, port_value: 443 }

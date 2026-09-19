@@ -464,3 +464,51 @@ fraud-detection-engine本実装（ADR 0027）ではRustの静的バイナリ化�
 ### fraud-agent-stubの疎通確認先を`/healthz`に切り替えた
 
 fraud-agent-stub（`k8s/fraud-agent/app-configmap.yaml`）は元々fraud-mcp-serverのスタブ実装（素のGETに任意のJSONを返す）への疎通確認として`http://fraud-mcp-server/`へ素のGETを送っていた。fraud-mcp-server本実装後、MCPプロトコル外の素のGETは`/mcp`エンドポイントでは200を返さない（FastMCP Streamable HTTPは`initialize`から始まる正規のJSON-RPCセッションを要求する）ため、`scripts/verify-hop.sh`のstep 7（`"fraud_mcp_server": {"status": 200`を期待するアサーション）が壊れる。fraud-agent自体は本実装のスコープ外のため、`FRAUD_MCP_SERVER_URL`の既定値を`http://fraud-mcp-server/healthz`に変更するだけで対応した（`app.py`に追加した`/healthz`はEnvoy ingressの同じscope検証(`account:read`)配下にある単純な200固定エンドポイント）。実機確認済み。
+
+## fraud-agent本実装（TypeScript/Claude Agent SDK、ADR 0030）
+
+### `@anthropic-ai/claude-agent-sdk`は独自のCLIランタイムを同梱した自己完結パッケージで、別途`claude`バイナリのインストールは不要
+
+**症状**：Claude Agent SDKがClaude Code CLIの薄いラッパーなのか、それとも別途CLIバイナリのインストールを要するのかが公開ドキュメントだけでは不明瞭だった。
+
+**確認方法**：`npm install @anthropic-ai/claude-agent-sdk@0.1.77`を実行し、パッケージ内容を実際に検査した。
+
+**判明した事実**：パッケージ自身が`cli.js`（約11MB、自己完結型のバンドル）・`sdk.mjs`・`resvg.wasm`・`tree-sitter*.wasm`を同梱しており、`query()`はこの同梱`cli.js`を子プロセスとして起動する（推定）。`package.json`に`bin`エントリは無く、他パッケージへの実行時依存（`dependencies`）も無い。そのため`services/fraud-agent/Dockerfile`は`npm ci`だけで完結し、fraud-mcp-server（Python/FastMCP）のように別途ランタイムを用意する必要が無かった。
+
+### `@ag-ui/claude-agent-sdk`の`ClaudeAgentAdapter`はリクエスト単位で作り直す前提の設計
+
+公式のAG-UIプロトコル用Claude Agent SDKアダプタ（2026-09-17公開、`@ag-ui/claude-agent-sdk@0.0.4`）を発見し採用した。`peerDependencies`が`@anthropic-ai/claude-agent-sdk: ^0.2.58`を要求するため、当初pinしていた`0.1.77`から`0.2.141`へ上げた。アダプタのREADME内コメントに明示されている通り、`headers`プロパティ（CopilotKit Runtime向けのper-request転送ヘッダー機構）は「Claude Agent SDKがプロセスベース（`query()`が子プロセスを起動する方式）であるため、LLM呼び出し自体へのヘッダー注入手段が無い」ことが理由でAnthropic API呼び出しには機能しない。ただし本リポジトリが必要としているのはLLM呼び出しへのヘッダーではなく、**MCPサーバー（fraud-mcp-server）向け**の委任トークン転送であり、これは`Options.mcpServers`（`ClaudeAgentAdapterConfig`が`Options`を継承するため利用可能）経由で実現できる。`ClaudeAgentAdapter`のコンストラクタで設定が固定されるため、リクエストごとに異なる`Authorization`を渡すには**リクエストごとに新しいアダプタインスタンスを作る**必要がある（`run(input)`の引数では変更できない）。1リクエスト1インスタンスは無駄に見えるが、アダプタ自体は状態を持たない薄いラッパーのため実害は無い。
+
+### `RunAgentInputSchema`は`@ag-ui/core`本体ではなく`@ag-ui/core/schemas`サブパスからimportする
+
+`@ag-ui/core`のメインエントリ（`import { RunAgentInputSchema } from "@ag-ui/core"`）はZodスキーマをエクスポートしていない（`RunAgentInput`という型だけ）。`tsc`のビルドエラー（`TS2724: has no exported member named 'RunAgentInputSchema'`）で気づいた。`package.json`の`exports`/`typesVersions`を確認したところ、スキーマ群は`"./schemas"`サブパス（`@ag-ui/core/schemas`）に分離されていた。型（`@ag-ui/core`）とランタイム検証用スキーマ（`@ag-ui/core/schemas`）が別エクスポートである点は、ドキュメントだけでは分からずパッケージ自体の`package.json`を確認して判明した。
+
+### `tools: []`＋`allowedTools`の明示リストで、SDKレベルでも組み込みツール（Bash/Read/Write等）を一切使わせない構成にできる
+
+`Options.tools`（`string[] | { type: 'preset'; preset: 'claude_code' }`）に空配列を渡すと組み込みツールが全て無効化され、`mcpServers`で渡したMCPサーバーのツールのみが使用可能になる。`allowedTools`にfraud-mcp-serverの3ツール名（`mcp__fraud_mcp_server__get_frozen_accounts`等）を明示し、`permissionMode: "dontAsk"`（許可リスト外は確認無しで拒否、`bypassPermissions`と違い`allowDangerouslySkipPermissions`も不要）にすることで、万一プロンプトインジェクション等でモデルが想定外のツール名を呼ぼうとしても、SDKの権限層で構造的に拒否される（実際の防御の主体はToken Exchangeのスコープ設計だが、これは多層防御の1枚として機能する）。
+
+### hostAliasesはPod内の全コンテナで共有されるため、Envoy自身のクラスタ名前解決と衝突しうる
+
+**症状**：Anthropic API（`api.anthropic.com`）向けegressの最初の実装案（appのhostAliasesで実ホスト名自体を127.0.0.1へ横取りし、Envoyがtransport_socket無しのblind tcp_proxyでTLSバイト列をそのまま転送する方式）で、Envoyのegressサイドカーが`envoy_bug failure: socket(2) failed, got error: Too many open files`で繰り返しクラッシュした。
+
+**原因**：`hostAliases`はPod内の全コンテナ（Envoy自身を含む）で共有される`/etc/hosts`への追記である。appを127.0.0.1へ誘導するために`api.anthropic.com`自体をhostAliasesへ登録すると、Envoy自身が`anthropic_upstream`クラスタ（`LOGICAL_DNS`）で同じホスト名を解決しようとした際にも同じエントリを引いてしまい、127.0.0.1（＝自分自身のリスナー）への自己参照ループになる。接続が失敗しては即座に再接続を試みる挙動が暴走し、fd（ファイルディスクリプタ）を急速に消費してクラッシュした。内部サービス（account-service等）ではapp向けの短縮名（`account-service`）とEnvoy向けのFQDN（`account-service.gekko.svc.cluster.local`）が異なるためこの種の衝突は起きないが、Anthropicのような公開ホスト名が1つしかない宛先では同じ手が使えない。
+
+**対応**：appの接続先を実ホスト名とは異なる内部専用の別名（`anthropic-gateway`）にし、Claude Agent SDKが標準で尊重する`ANTHROPIC_BASE_URL`環境変数（`http://anthropic-gateway`）でそれを指定した。Envoy側は`anthropic-gateway`ではなく本物の`api.anthropic.com`をクラスタのアップストリームとして解決するため、衝突が起きない（内部サービスの「短縮名(app向け) vs FQDN(Envoy向け)」パターンと同じ考え方）。Envoyはこの新しいegress:80仮想ホストでTLSを終端し、公開CAバンドル（`/etc/ssl/certs/ca-certificates.crt`。envoyproxyの公式イメージに同梱済み）で実際のAnthropicサーバーへ改めて接続する。この構成に切り替えたところ、fd枯渇は再発しなかった（envoyコンテナの起動コマンドに追加した`ulimit -n 65536`は原因解消後も安全側の設定として残した）。
+
+### app向けの別名＋EnvoyでTLS終端する構成へ切り替えた後も、3段階の実機特有の問題が続けて見つかった
+
+いずれも`k8s/fraud-agent/envoy-configmap.yaml`のanthropic_gateway仮想ホスト・anthropic_upstreamクラスタで発生。
+
+1. **ALPNとHTTPコーデックの不一致**：`alpn_protocols: ["h2", "http/1.1"]`と指定すると、Anthropic側がTLSネゴシエーションでh2を選択した場合に、Envoy側のHTTP層（`typed_extension_protocol_options`でhttp2_protocol_optionsを明示していないため既定でHTTP/1.1コーデックのまま）との不一致が生じ、`reset reason: protocol error`でリクエストが失敗した。**対応**：`alpn_protocols: ["http/1.1"]`のみに絞った（downstream側=egress:80リスナーもHTTP/1.1のため、コーデックを揃える形になる）。
+2. **Hostヘッダーの不一致による421**：appは接続先URL（`http://anthropic-gateway`）のホスト名をそのままHostヘッダーに送るが、Envoyのupstream TLS接続のSNIは`api.anthropic.com`（クラスタ設定）。この不一致により、Anthropic側のエッジが`421 Misdirected Request`で拒否した。**対応**：ルートに`host_rewrite_literal: api.anthropic.com`を追加し、Envoyが転送時にHostヘッダーを実際のホスト名へ書き換えるようにした。
+3. **HTTP/1.1 keep-alive接続の失効**：1回の会話ターン（AG-UIの1リクエスト）でAnthropic APIを複数回（ツール呼び出しを挟んで）呼ぶ構成のため、呼び出しの間隔が空くとAnthropic側のエッジが先にkeep-alive接続を閉じることがあり、Envoyが失効した接続を掴んで再利用しようとすると`API Error: The socket connection was closed unexpectedly`になった（`kubectl logs -c app`で確認、Envoy自身のaccess_logには該当リクエストの記録が残らなかった＝レスポンスヘッダー到達前に切れた）。**対応**：ルートに`retry_policy: { retry_on: "reset,connect-failure,refused-stream", num_retries: 2 }`を追加した。Envoyの再試行はレスポンスヘッダー到達前の失敗のみが対象のため、二重実行の心配は無い。
+
+3つとも修正後、`make verify-hop`で`/chat`が実際にAnthropic APIを呼び・fraud-mcp-server経由でaccount-serviceのデータを取得し・`RUN_FINISHED`（`isError: false`、実際のトークン使用量・コスト情報込み）まで到達することを実機（k3dクラスタ内、`CLAUDE_CODE_OAUTH_TOKEN`使用）で確認した。
+
+### Envoyの固定`timeout`はLLM呼び出しの不定長な実行時間に対して根本的に相性が悪く、`idle_timeout`へ切り替えた
+
+**症状**：`/chat`のEnvoyルートタイムアウトを既定の15秒から120秒へ緩めても、実機で`upstream connect error or disconnect/reset before headers. reset reason: connection termination`が発生する事例があった。
+
+**原因**：固定タイムアウトは「リクエスト開始から完了までの総時間」に上限を課す仕組みであり、LLM呼び出し（ツール呼び出しを挟む複数ターンの合計）のように実行時間が本質的に不定長な処理には、どんな値を設定しても「たまたま収まるかどうか」でしかない。
+
+**対応**：`/chat`が通る全ホップ（edge-proxy→frontend、frontend→fraud-agent、fraud-agent自身のingress）のEnvoyルートを`timeout: 0s`（総時間の上限を無効化）＋`idle_timeout: 300s`（無活動時間の上限）に変更した。あわせてfrontend-stub（`k8s/frontend/app-configmap.yaml`）の`/chat`中継を、応答を全部読み切ってから返す`forward()`から、1行ずつ即座に中継する`stream_forward()`に変更した（バッファ方式のままだとfraud-agentの処理中ずっとedge-proxy⇔frontend間の接続が無活動になり、idle_timeout化の恩恵を受けられないため）。`make verify-hop`で`/chat`がタイムアウトせず`RUN_FINISHED`まで完走することを実機確認した。

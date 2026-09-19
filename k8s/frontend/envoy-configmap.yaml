@@ -90,8 +90,14 @@ data:
                         - name: frontend
                           domains: ["*"]
                           routes:
+                            # ADR 0030:/chatはAG-UIプロトコルのSSEストリームを返す(実行時間が
+                            # 不定長)。総時間の上限(timeout)ではなく無活動時間の上限
+                            # (idle_timeout。イベントが流れ続けている限りリセットされる)で
+                            # 制御する方式に変更した。固定タイムアウトでは「本質的に不定長な
+                            # LLM呼び出し」を安全に打ち切れないため(120sに緩めても超過しうる
+                            # ことを実機で確認した)。
                             - match: { prefix: "/" }
-                              route: { cluster: app_upstream }
+                              route: { cluster: app_upstream, timeout: 0s, idle_timeout: 300s }
                     http_filters:
                       - name: envoy.filters.http.jwt_authn
                         typed_config:
@@ -177,8 +183,10 @@ data:
                         - name: fraud_agent
                           domains: ["fraud-agent"]
                           routes:
+                            # ADR 0030:/chatのSSEストリームはidle_timeoutで制御する(上記
+                            # frontendルートと同じ理由)。
                             - match: { prefix: "/" }
-                              route: { cluster: fraud_agent_upstream }
+                              route: { cluster: fraud_agent_upstream, timeout: 0s, idle_timeout: 300s }
                         # token-exchangeサイドカー自身がKeycloakのトークンエンドポイントを叩く際の
                         # 宛先(ログインのROPCも含む)。http_filtersはリスナー全体に適用されるため、
                         # このルートだけext_authzを無効化しないと、サイドカー自身のKeycloak宛て

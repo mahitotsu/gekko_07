@@ -1,6 +1,6 @@
 # ADR 0018: gekko namespaceにNetworkPolicyでL3/4のdefault-denyを導入する
 
-- **Status**: Partially superseded by [0022](0022-keycloak-mgmt-probe-exec.md)（Keycloakのhttp-mgmt:9000に対する`ipBlock`ベースのingress許可ルールは0022で撤廃された）・[0028](0028-postgres-mtls-tcp-proxy.md)（「共有PostgresインスタンスはmTLS適用対象外」という前提を0028が覆し、常駐4サービスの接続はEnvoyのmTLS配下に移した。db-init/seed JobはNetworkPolicyのみで保護する現状維持）。その他の許可ルールの決定は有効なまま
+- **Status**: Partially superseded by [0022](0022-keycloak-mgmt-probe-exec.md)（Keycloakのhttp-mgmt:9000に対する`ipBlock`ベースのingress許可ルールは0022で撤廃された）・[0028](0028-postgres-mtls-tcp-proxy.md)（「共有PostgresインスタンスはmTLS適用対象外」という前提を0028が覆し、常駐4サービスの接続はEnvoyのmTLS配下に移した。db-init/seed JobはNetworkPolicyのみで保護する現状維持）・[0030](0030-fraud-agent-implementation.md)（「全ての許可ルールはpodSelectorで宛先を特定できる」という前提を0030が初めて崩し、fraud-agent→Anthropic API向けに`ipBlock 0.0.0.0/0`ベースの公開インターネットegressを追加した）。その他の許可ルールの決定は有効なまま
 - **Date**: 2026-09-16
 
 ## Context
@@ -61,3 +61,4 @@ spire-agentは`hostNetwork: true`で動作しており（SPIRE公式チュート
 - postgres・keycloakのpodSelectorベースの許可は「現在の呼び出し元」に限定されている。将来account-service等が（[ADR 0008](0008-per-service-datastore-strategy.md)の分離検討に伴い）Postgresへ直接接続するようになった場合や、frontend/analyst-attribute-serviceが実装され新しいホップが増えた場合は、対応するNetworkPolicyの許可ルール追加が必要になる（既存のホップ横展開と同じ運用）
 - `kube-system`namespaceに`kubernetes.io/metadata.name: kube-system`ラベルが自動付与されていること（Kubernetes 1.21+の標準機能）に暗黙に依存している
 - `spire` namespaceへの横展開、`dpop-verifier`という現行マニフェストに存在しない稼働中Podの扱い（調査中に発見。本ADRのスコープ外）は、いずれもbacklog.mdに記録する
+- **[0030](0030-fraud-agent-implementation.md)で初めての例外**：fraud-agentがClaude Agent SDK経由で呼ぶAnthropic API（`api.anthropic.com`）向けに、`ipBlock 0.0.0.0/0`（RFC1918プライベートレンジを`except`で除外）による公開インターネットegressを許可した。Anthropicの実IPは固定できないため、これまでの「宛先はpodSelectorまたは既知の固定CIDR」という運用から外れる、意図的な例外である（`k8s/fraud-agent/networkpolicy.yaml`）

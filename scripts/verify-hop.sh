@@ -36,10 +36,16 @@
 # frontendの/login→/accounts/{id}/unfreezeを、edge-proxy経由の実呼び出しとして叩く。
 # account-serviceのingressに今回追加したunfreeze rbacポリシーもここで検証される
 #
-# パターン⑤(Token Exchange、frontend→fraud-agent→fraud-mcp-server。ADR 0023/0024):
+# パターン⑤(Token Exchange、frontend→fraud-agent→fraud-mcp-server。ADR 0023/0024/0030):
 # frontendの/login→/chatを、edge-proxy経由の実呼び出しとして叩く。ADR 0023が「frontend実装
 # まで検証できない」としていたfraud-agent自身のingress側(mTLS+jwt_authn+rbac+合言葉)も、
-# ここで実際のfrontendから初めて実機検証される
+# ここで実際のfrontendから初めて実機検証される。
+# ADR 0030でfraud-agentが本実装(TypeScript/Claude Agent SDK)に置き換わったため、/chatは
+# 「即時のJSONエコー」ではなく実際にAnthropic APIを呼びfraud-mcp-server経由でaccount-service
+# へ問い合わせる処理になった。CLAUDE_CODE_OAUTH_TOKEN・外部ネットワーク(egress-anthropic、
+# ipBlock 0.0.0.0/0)の実在に依存し、スタブ時代より応答に時間がかかる。レスポンスボディの
+# 厳密な形("fraud_mcp_server"キー等)は問わず、200が返り"reply"に何らかのテキストが
+# 含まれることのみを確認する
 set -euo pipefail
 
 NAMESPACE=gekko
@@ -309,12 +315,19 @@ fi
 echo "==> 7. frontend経由でfraud-agentのチャット開始(/chat、audience=fraud-agent)を叩く(edge-proxy→frontend ingress→"
 echo "     frontend egress→fraud-agent ingress→fraud-agent egress→fraud-mcp-server ingress、全区間を実際のfrontendから検証。"
 echo "     ADR 0023が『frontend実装まで検証できない』としていたfraud-agent自身のingress側もここで初めて実機検証される)"
-FRONTEND_CHAT_RESPONSE=$(curl -s -X POST "$EDGE/chat" -H "Authorization: Bearer $LOGIN_TOKEN" -d '{}')
+# ADR 0030:fraud-agentはAG-UIプロトコル(公式`@ag-ui/claude-agent-sdk`アダプタ)に準拠し、
+# レスポンスをSSE(text/event-stream)で返す。実際にAnthropic APIを呼ぶため実行時間は不定長だが、
+# Envoy側は総時間の上限ではなくidle_timeout(無活動時間の上限)で制御する方式にした
+# (k8s/frontend・edge-proxy/envoy-configmap.yaml参照)。このテストスクリプト自身の待ち時間予算
+# として--max-time 240を設定する(本番の制御方式とは別に、テストが無限に待ち続けないための保険)。
+FRONTEND_CHAT_RESPONSE=$(curl -s --max-time 240 -X POST "$EDGE/chat" -H "Authorization: Bearer $LOGIN_TOKEN" -d '{}')
 echo "$FRONTEND_CHAT_RESPONSE"
-if echo "$FRONTEND_CHAT_RESPONSE" | grep -q '"fraud_mcp_server": {"status": 200'; then
-  echo "==> 7'. frontend→fraud-agent→fraud-mcp-serverの全区間委任を確認(期待通り)"
+if echo "$FRONTEND_CHAT_RESPONSE" | grep -q '"type":"RUN_FINISHED"' && ! echo "$FRONTEND_CHAT_RESPONSE" | grep -q '"type":"RUN_ERROR"'; then
+  echo "==> 7'. frontend→fraud-agent→fraud-mcp-serverの全区間委任を確認(期待通り。fraud-agentが"
+  echo "     実際にAnthropic APIを呼びfraud-mcp-server経由でaccount-serviceへ問い合わせ、"
+  echo "     AG-UIイベントストリームがRUN_ERROR無しでRUN_FINISHEDまで到達した)"
 else
-  echo "警告:frontend経由でfraud-agent→fraud-mcp-serverへ到達できませんでした" >&2
+  echo "警告:frontend経由でfraud-agent→fraud-mcp-serverへ到達できなかった、またはRUN_ERRORが発生しました" >&2
 fi
 
 echo "==> 8.(異常系)frontend/fraud-agent/fraud-mcp-serverのappポートへPod外から直接到達できないことを確認(ADR 0009主対策①と同じ考え方)"

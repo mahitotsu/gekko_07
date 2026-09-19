@@ -65,8 +65,13 @@ data:
                               route: { cluster: keycloak_upstream }
                             - match: { prefix: "/admin/" }
                               route: { cluster: keycloak_upstream }
+                            # ADR 0030:frontend→fraud-agentの/chatはAG-UIプロトコルのSSE
+                            # ストリーム(実行時間が不定長)を返す。総時間の上限ではなく無活動
+                            # 時間の上限(idle_timeout)で制御する方式にした(login/accounts等
+                            # 即時応答するリクエストにも同じ設定を使うが、idle_timeoutは実際に
+                            # 無活動が続いた場合のみ働くため害はない)。
                             - match: { prefix: "/" }
-                              route: { cluster: frontend_upstream }
+                              route: { cluster: frontend_upstream, timeout: 0s, idle_timeout: 300s }
                     http_filters:
                       - name: envoy.filters.http.router
                         typed_config:

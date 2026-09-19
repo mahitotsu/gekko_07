@@ -4,7 +4,7 @@
 
 各サービスの技術スタックは意図的に統一しない（多言語構成の理由は[requirements.md](requirements.md)「背景（なぜサイドカーへ切り出すか）」参照：Token Exchangeをサイドカーへ切り出す価値は、実装言語がバラバラな構成でこそ際立つ）。個々の選定理由は[ADR 0007](adr/0007-per-service-language-selection.md)を参照。
 
-account-service・analyst-attribute-service（[ADR 0026](adr/0026-account-service-analyst-attribute-service-implementation.md)）・fraud-detection-engine（[ADR 0027](adr/0027-fraud-detection-engine-implementation.md)）・fraud-mcp-server（[ADR 0029](adr/0029-fraud-mcp-server-implementation.md)）は本実装済み。残るfraud-agent・frontendの本実装は未着手（設計段階）で、Envoy/ext_authzによるToken Exchange・SPIFFE/SPIRE mTLSの実機検証用スタブとして存在する（本実装とは別物。詳細は[architecture.md](architecture.md)・[insights.md](insights.md)参照）。frontendのみ、ログイン（Authorization Code + PKCE）を簡易ログイン（ROPCのHTTPエンドポイント化）で代用している（[ADR 0024](adr/0024-frontend-edge-proxy-and-simplified-login.md)）。
+account-service・analyst-attribute-service（[ADR 0026](adr/0026-account-service-analyst-attribute-service-implementation.md)）・fraud-detection-engine（[ADR 0027](adr/0027-fraud-detection-engine-implementation.md)）・fraud-mcp-server（[ADR 0029](adr/0029-fraud-mcp-server-implementation.md)）・fraud-agent（[ADR 0030](adr/0030-fraud-agent-implementation.md)）は本実装済み。残るfrontendの本実装は未着手（設計段階）で、Envoy/ext_authzによるToken Exchange・SPIFFE/SPIRE mTLSの実機検証用スタブとして存在する（本実装とは別物。詳細は[architecture.md](architecture.md)・[insights.md](insights.md)参照）。ログイン（Authorization Code + PKCE）は簡易ログイン（ROPCのHTTPエンドポイント化）で代用している（[ADR 0024](adr/0024-frontend-edge-proxy-and-simplified-login.md)）。
 
 ## frontend（BFF）
 
@@ -18,13 +18,13 @@ account-service・analyst-attribute-service（[ADR 0026](adr/0026-account-servic
 - **連携相手**：Keycloak（認証、用途ごとのToken Exchangeの実行）、account-service（交換後のトークンで）、fraud-agent（Token Exchangeで得たトークンによる実呼び出し）
 - **技術スタック**：TypeScript / Nuxt.js（選定理由は[ADR 0007](adr/0007-per-service-language-selection.md)）
 
-## fraud-agent（AIエージェント）
+## fraud-agent（AIエージェント。本実装済み。[ADR 0030](adr/0030-fraud-agent-implementation.md)）
 
 - **存在意義**：凍結済み口座の凍結理由・取引履歴を分析し、誤検知の疑いがあれば凍結解除の提案を行う。**書き込み権限は「提案の記録」までで、凍結解除の実行権限は一切持たない**
-- **提供機能**：fraud-mcp-serverが公開するMCPツールを呼び出し、凍結中口座の凍結根拠・取引履歴を分析し、誤検知かどうかを判断する。結果を凍結解除提案としてfraud-mcp-server経由で記録する
+- **提供機能**：`POST /chat`でfrontendから呼ばれ、fraud-mcp-serverが公開するMCPツール（`get_frozen_accounts`・`get_account_history`・`propose_unfreeze`）のみを使って凍結中口座の凍結根拠・取引履歴を実際にAnthropic APIへ分析させ、誤検知の疑いがあれば根拠とともに解除を提案する。SDKレベルでもこの3ツール以外を許可しない構成（`allowedTools`・`permissionMode: "dontAsk"`）にしている。レスポンスはAG-UIプロトコル（公式`@ag-ui/claude-agent-sdk`アダプタ）準拠のSSEイベントストリーム
 - **保有データ**：なし（frontendから渡された委任トークンを保持するのみ。永続化しない）
-- **連携相手**：frontend（Token Exchangeで得たトークンによる実呼び出しを受ける）、fraud-mcp-server（MCPクライアントとして）。Keycloakとは自身のEnvoyサイドカー経由でToken Exchangeを行う（受け取った`aud=fraud-agent`のトークンを`subject_token`に`audience=fraud-mcp-server, scope=account:read`で交換。アプリ本体はトークンを一切意識しない。[ADR 0002](adr/0002-token-exchange-in-envoy-sidecar.md)・[ADR 0014](adr/0014-fraud-agent-token-exchange.md)）
-- **技術スタック**：TypeScript / Claude Agent SDK（選定理由は[ADR 0007](adr/0007-per-service-language-selection.md)）
+- **連携相手**：frontend（Token Exchangeで得たトークンによる実呼び出しを受ける）、fraud-mcp-server（MCPクライアントとして）、Anthropic API（Claude Agent SDK本体の呼び出し先。クラスタ外・Token Exchange対象外）。Keycloakとは自身のEnvoyサイドカー経由でToken Exchangeを行う（受け取った`aud=fraud-agent`のトークンを`subject_token`に`audience=fraud-mcp-server, scope=account:read`で交換。アプリ本体はトークンを一切意識しない。[ADR 0002](adr/0002-token-exchange-in-envoy-sidecar.md)・[ADR 0014](adr/0014-fraud-agent-token-exchange.md)）
+- **技術スタック**：TypeScript / Claude Agent SDK（選定理由は[ADR 0007](adr/0007-per-service-language-selection.md)）。Anthropic API呼び出しは`claude setup-token`で取得したOAuthトークン（`CLAUDE_CODE_OAUTH_TOKEN`）を使う
 
 ## fraud-mcp-server（本実装済み。[ADR 0029](adr/0029-fraud-mcp-server-implementation.md)）
 

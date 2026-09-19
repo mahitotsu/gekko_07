@@ -6,3 +6,5 @@
 # ローカルでの動作確認のために生成したものをコミットしない）。
 services/*/target/
 services/analyst-attribute-service/analyst-attribute-service
+services/*/node_modules/
+services/*/dist/

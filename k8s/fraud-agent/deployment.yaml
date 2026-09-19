@@ -1,20 +1,26 @@
-# fraud-agentの最小スタブDeployment(frontend→fraud-agent→fraud-mcp-serverホップ検証用。
-# ADR 0002/0009/0010/0023)。Service名・ラベルは本実装と同じ"fraud-agent"にする(ADR 0010 MUST:
-# Keycloakクライアントid=K8s Service名=audience名を常に同一の文字列にする)。
-# Deployment名は"fraud-agent-stub"とし、本実装完成時にこのDeploymentごと差し替える。
+# fraud-agentの本実装Deployment(TypeScript/Claude Agent SDK。ADR 0002/0007/0009/0010/0023/0030)。
+# fraud-mcp-server(k8s/fraud-mcp-server/deployment.yaml、ADR 0029)が辿ったのと同じ昇格：
+# Deployment名をfraud-agent-stub→fraud-agentへリネームし、appコンテナのみビルド済みイメージへ
+# 置き換えた。initContainers(handshake-init・envoyのネイティブsidecar)・token-exchangeサイドカーは
+# 無変更。
 #
-# Pod構成はinitContainer(合言葉生成)＋app＋Envoy＋token-exchangeの4者(account-service
-# (architecture.md §3)と同型。ADR 0019/0020のパターンをtoken-exchangeサイドカーとして
-# 最初から適用)。
+# hostAliasesで"fraud-mcp-server"・"keycloak"・"anthropic-gateway"を127.0.0.1へマッピングする
+# (ADR 0023のegressパターン)。ADR 0030で追加した"anthropic-gateway"は、appのClaude Agent SDKが
+# 呼ぶAnthropic API向け。egress:80の新設virtual_host(k8s/fraud-agent/envoy-configmap.yaml)が
+# ここでTLSを終端し、実際のapi.anthropic.comへ再接続する(公開CA検証。SPIFFE mTLSの対象外)。
 #
-# hostAliasesで"fraud-mcp-server"・"keycloak"を127.0.0.1へ静的にマッピングし、
-# egressリスナー(fraud-agent-envoy ConfigMap参照)へappからのリクエストとtoken-exchange
-# サイドカー自身のKeycloak向けリクエストを横取りさせる(account-service/fraud-mcp-serverと
-# 同じADR 0010/0019パターン)。
+# 実機で判明した罠(insights.md参照):当初は"api.anthropic.com"という実ホスト名そのものを
+# hostAliasesに登録し、Envoyが中身を解釈しないblind tcp_proxyで素通しする設計を試した。しかし
+# hostAliasesはPod内の全コンテナ(Envoy自身を含む)で共有される/etc/hostsへの追記であり、
+# Envoy自身のクラスタ名前解決も同じエントリを引いてしまい、自分自身(127.0.0.1)への自己参照
+# ループになった。内部サービスではapp向けの短縮名とEnvoy向けのFQDN(`*.svc.cluster.local`)が
+# 異なるためこの衝突は起きないが、Anthropicは公開ホスト名が1つしかないため同じ手が使えない。
+# "anthropic-gateway"という別名を導入し、EnvoyがTLSを終端して本物の"api.anthropic.com"へ
+# 改めて接続する構成(内部サービスと同じ「短縮名 vs FQDN」パターン)に変更して解決した。
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: fraud-agent-stub
+  name: fraud-agent
   namespace: gekko
   labels:
     app: fraud-agent
@@ -30,7 +36,7 @@ spec:
     spec:
       hostAliases:
         - ip: "127.0.0.1"
-          hostnames: ["fraud-mcp-server", "keycloak"]
+          hostnames: ["fraud-mcp-server", "keycloak", "anthropic-gateway"]
       initContainers:
         # ADR 0009 §2③:Pod内合言葉。initContainerの完了がメインコンテナ起動前に保証されるため、
         # 「先に生成、後で両方が読む」がレースコンディションなく書ける。
@@ -54,6 +60,11 @@ spec:
           args:
             - |
               export HANDSHAKE_TOKEN="$(cat /handshake/token)"
+              # ADR 0030:コンテナ既定のnofile soft limit(1024)では"Too many open files"で
+              # クラッシュすることを実機で確認した(当時は後述の自己参照ループが原因で接続の
+              # 張り直しが暴走していたためだが、hard limitは1048576まであり無害なので、
+              # 原因解消後も安全側の設定として残す)。
+              ulimit -n 65536
               exec envoy -c /etc/envoy/envoy.yaml
           ports:
             - name: http
@@ -79,8 +90,8 @@ spec:
               memory: "128Mi"
       containers:
         - name: app
-          image: python:3.12-alpine
-          command: ["python3", "/scripts/app.py"]
+          image: gekko07/fraud-agent:local
+          imagePullPolicy: IfNotPresent
           env:
             - name: APP_BIND_HOST
               value: "127.0.0.1" # ADR 0009 主対策①:Pod外から直接到達不能にする
@@ -88,20 +99,33 @@ spec:
               value: "9000"
             - name: HANDSHAKE_TOKEN_FILE
               value: "/handshake/token"
+            - name: FRAUD_MCP_SERVER_URL
+              value: "http://fraud-mcp-server/mcp"
+            # ADR 0030:Claude Agent SDKが呼ぶAnthropic APIの接続先を、hostAliasesで127.0.0.1へ
+            # 横取りされる別名"anthropic-gateway"へ向ける(SDKが標準で尊重するANTHROPIC_BASE_URL
+            # 環境変数。実機確認済み)。ここから先はEnvoyのegress:80(anthropic_gateway仮想ホスト)
+            # がTLSを終端し、実際のapi.anthropic.comへ再接続する。
+            - name: ANTHROPIC_BASE_URL
+              value: "http://anthropic-gateway"
+            # ADR 0030:`claude setup-token`で取得したOAuthトークン。Claude Agent SDKが
+            # process.envから自動的に読み、Authorizationヘッダーとして送出する(アプリ本体は
+            # この環境変数名を意識するだけで、実際の読み出し・付与はSDK側が行う)。
+            - name: CLAUDE_CODE_OAUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: fraud-agent-claude
+                  key: oauth-token
           volumeMounts:
-            - name: app-script
-              mountPath: /scripts
-              readOnly: true
             - name: handshake
               mountPath: /handshake
               readOnly: true
           resources:
             requests:
-              cpu: "50m"
-              memory: "64Mi"
+              cpu: "100m"
+              memory: "256Mi"
             limits:
-              cpu: "200m"
-              memory: "128Mi"
+              cpu: "500m"
+              memory: "512Mi"
         # frontend→fraud-agent→fraud-mcp-serverのToken Exchange実行主体。envoyコンテナと
         # 同じくWorkload API UDSソケットへアクセスする(JWT-SVID取得のため)。SPIRE registration
         # entryもenvoyコンテナと並んでこのコンテナ名をselectorに持つ(k8s/spire/entries-configmap.yaml
@@ -143,9 +167,6 @@ spec:
               cpu: "200m"
               memory: "128Mi"
       volumes:
-        - name: app-script
-          configMap:
-            name: fraud-agent-stub-app
         - name: token-exchange-app-script
           configMap:
             name: fraud-agent-token-exchange-app

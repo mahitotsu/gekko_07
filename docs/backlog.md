@@ -37,6 +37,12 @@ fraud-mcp-server・fraud-detection-engine・account-service・analyst-attribute-
 - **実際の取引イベントストリームとの連携**：[ADR 0027](adr/0027-fraud-detection-engine-implementation.md)で本実装した監視ループは、上流の取引イベント基盤が存在しないため観測シグナル（口座ID・発火ルール・スコア・理由）を起動時の固定シードで代用している。実際の取引ストリームと連携したくなった場合、BR7（fraud-detection-engineはaccount:readを持たない。access-control-design.md表4）とどう両立させるか（account-serviceからの何らかのイベント供給の形を取るのか等）を含めて再検討が必要
 - **スキャン間隔のチューニング**：既定5秒はデモの応答性優先の値であり実運用相当ではない。実運用を想定した値・可変間隔（負荷に応じた調整等）が必要になった場合に見直す
 
+## fraud-agent
+
+- **Anthropic API向けNetworkPolicyのIPレンジ絞り込み**：[ADR 0030](adr/0030-fraud-agent-implementation.md)で導入した`ipBlock 0.0.0.0/0`（RFC1918除外）は、Anthropicの実IPを固定できないための暫定措置。将来Anthropicが固定IPレンジを公開する、またはegress-filteringプロキシ（例：Envoyの`sni_dynamic_forward_proxy`をFQDN許可リストと組み合わせる等）を追加で検討したくなった場合に絞り込む
+- **複数ターン会話の永続化**：現状はリクエストごとに新しい`ClaudeAgentAdapter`インスタンスを作って単発実行しており、会話履歴は保持しない（AG-UIの`threadId`は受け取るが、同じ`threadId`でも毎回新規セッション。複数ターンをまたぐ会話が必要になった場合、アダプタのセッション管理機能や永続化ストアの追加を検討する）
+- **AG-UIの状態同期・frontend tool機能の活用**：`@ag-ui/claude-agent-sdk`アダプタは`STATE_SNAPSHOT`/`STATE_DELTA`によるフロントエンドとの双方向状態同期や、クライアント提供ツール（human-in-the-loop）もサポートするが、今回は使っていない（`RunAgentInput.tools`/`state`を渡していない）。frontend本実装時にAG-UI準拠のUIを作る際に活用を検討する
+
 ## 監査
 
 - **otel-lgtmの同梱コンポーネント（Prometheus/Tempo/Pyroscope/OTel Collector）を無効化できるか**：ADR 0025で採用した`grafana/otel-lgtm`はGrafana+Lokiのみ使う想定だが、残り4コンポーネントも起動している。個別に無効化できるかは未調査（動くが未使用として許容している）
