@@ -216,7 +216,7 @@ fraud-detection-engineはユーザー委任チェーンに参加しない機械�
 | 属性未登録 | DENY | DENY | DENY |
 
 - 担当地域はアナリストごとに複数持てる（表6参照）
-- 「地域不一致」は、読み取り系エンドポイントでは個別のDENYではなく**結果セットから除外**という形で現れる可能性がある（実装時に確定。§10参照）
+- 拒否の表現は操作種別で使い分ける（[ADR 0026](adr/0026-account-service-analyst-attribute-service-implementation.md)）：単一リソース読み取り（`GET /accounts/{id}/transactions`）は404（口座の存在自体を秘匿）、単一リソースへの操作（propose/unfreeze）は403（呼び出し元は既に口座の存在を知っている前提）、一覧（`GET /accounts/frozen`）は個別のDENYではなく**結果セットからの除外**（§10参照）
 - juniorがhigh-value口座の凍結解除を試みた場合、AIエージェント経由（提案止まり）でも人間の確定操作でも、この表に従ってaccount-serviceが拒否する
 
 ### 表6: テストアナリスト
@@ -343,6 +343,7 @@ UC1と同じ流れだが、手順6で大阪のhigh-value口座も結果に含ま
 - **Unixドメインソケット化の再検討**：[ADR 0009](adr/0009-envoy-ingress-responsibility-and-bypass-prevention.md)でTCP loopback+合言葉方式を採用しUnixドメインソケット化は見送ったが、「同一Pod内でアプリが侵害された場合」まで守る要求が出てきたら再検討する
 - **Token Exchange結果のキャッシュ**：`(subject jti, audience)`単位でのキャッシュを検討しているが、各サイドカー内に閉じるか、どの範囲で共有するかは未決定。キャッシュTTLは性能とのトレードオフを意図的に選んだ短い値にする
 - **交換後トークンのアクセストークン有効期間**：[ADR 0006](adr/0006-claim-vs-external-attribute-criteria.md)は、トークン漏洩・誤用時の被害範囲を抑える多層防御として交換後トークンの有効期間を短く設定する方針を前提にしている。ログイントークンとは別に、各クライアント（frontend/fraud-mcp-server/account-service）が交換で得るトークンのAccess Token Lifespanを具体的に何秒にするかは未決定
+- **`account:read`スコープのaudience監査ギャップ**：`account:read`は複数audience（account-service・fraud-agent・fraud-mcp-server）向けの`oidc-audience-mapper`を1つのclient scopeで共有しているため、Keycloak側は要求元クライアントが`account:read`を持ってさえいれば任意のaudienceを要求できてしまう（表1のDENYはKeycloakのクライアント設定ではなく、各クライアントの実装＝token-exchangeサイドカーが正しいaudienceしか要求しないことに依存している）。Client Policiesを使わない設計（§4）の下ではこの自制に頼るしかなく、現状は全クライアントの実装が正しいaudienceしか要求しないためリスクは顕在化していないが、監査要件が強まった場合はClient Policies導入を再検討する（[ADR 0024](adr/0024-frontend-edge-proxy-and-simplified-login.md) Consequences、[insights.md](insights.md)参照）
 
 ### DPoP
 

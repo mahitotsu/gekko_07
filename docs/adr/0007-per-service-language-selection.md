@@ -22,7 +22,7 @@
 
 frontendとfraud-agentは両方ともTypeScriptだが、これは「6言語ユニークな構成を手放した」わけではない。fraud-agent・fraud-mcp-serverはいずれも固有の理由（Claude Agent SDK、公式MCP SDKの充実度）でPython/TypeScriptの2択に絞られており、他の言語を選ぶ積極的な理由がない。この2サービスの候補プールが最初からPython/TypeScriptの2つしかない以上、3つ目のサービス（frontend）がどちらかと被るのはほぼ避けられない。
 
-ここでPHPやRubyのように候補プールに入っていない言語を持ち込んで被りを回避することも考えられるが、それは「diversityの数字を揃えるためだけの選択」であり、このADRの前提（無理に言語を割り振ってサイドカーの実演価値を損なっては本末転倒）に反する。frontendの言語は独立した理由（Nuxt.js、国内での定番であること）で決めており、その結果がfraud-agentと同じTypeScriptになったのは、候補プールの構造上ほぼ必然の帰結であって、多様性を犠牲にした妥協ではない。多様性はfraud-mcp-server（Python）・payment-service（Rust）・account-service（Java）・analyst-attribute-service（Go）を含む4言語構成で十分に示されている。
+ここでPHPやRubyのように候補プールに入っていない言語を持ち込んで被りを回避することも考えられるが、それは「diversityの数字を揃えるためだけの選択」であり、このADRの前提（無理に言語を割り振ってサイドカーの実演価値を損なっては本末転倒）に反する。frontendの言語は独立した理由（Nuxt.js、国内での定番であること）で決めており、その結果がfraud-agentと同じTypeScriptになったのは、候補プールの構造上ほぼ必然の帰結であって、多様性を犠牲にした妥協ではない。多様性はfraud-mcp-server（Python）・fraud-detection-engine（Rust）・account-service（Java）・analyst-attribute-service（Go）を含む4言語構成で十分に示されている。
 
 ### fraud-detection-engineのRust選定について
 

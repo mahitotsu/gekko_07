@@ -1,6 +1,6 @@
 # ADR 0010: egressは実サービス名への透過的な呼び出しとし、audienceはHostヘッダーから自動導出する
 
-- **Status**: Accepted
+- **Status**: Partially superseded by [0014](0014-fraud-agent-token-exchange.md)（egressパターン③「素通し」・④「トークンを値として取得」を廃止。①Token Exchange・②client_credentials発行の2パターンへ整理された。本文には〔ADR 0014で削除/訂正〕として反映済み）
 - **Date**: 2026-09-14
 
 ## Context

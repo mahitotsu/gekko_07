@@ -1,6 +1,6 @@
 # ADR 0002: Token Exchange実装をEnvoyサイドカー（ext_authz）に配置
 
-- **Status**: Accepted
+- **Status**: Partially superseded by [0010](0010-egress-listener-granularity.md)（egressの宛先指定を`localhost:<egressポート>`から実サービス名＋`hostAliases`へ変更。「アプリ本体にToken Exchangeのコードを持たせない」というコアの決定は有効なまま）
 - **Date**: 2026-09-13
 
 ## Context

@@ -2,7 +2,7 @@
 
 本ディレクトリは、設計判断1件ごとの根拠・選択経緯を記録する。[architecture.md](../architecture.md) は現在有効な設計断面のみを記載し、個々の判断の根拠はここに委譲する。
 
-決定が覆った場合は、旧ADRのStatusを`Superseded by NNNN`に更新し、新しいADRを追加する。31件のうち24件は今も覆っていないAccepted——後続ADRによる修正はテーマが偏っており（身元検証まわりに集中）、乱発しているわけではない。以下はテーマ別の索引。同じテーマのADRを続けて読むと、1つの関心事がどう変遷したかを追いやすい。
+決定が覆った場合は、旧ADRのStatusを`Superseded by NNNN`に更新し、新しいADRを追加する。31件のうち23件は今も覆っていないAccepted——後続ADRによる修正は「Token Exchangeの実行主体・宛先指定」と「身元検証（mTLS/SPIFFE/SPIRE）」の2テーマに偏っており、乱発しているわけではない。以下はテーマ別の索引。同じテーマのADRを続けて読むと、1つの関心事がどう変遷したかを追いやすい。
 
 ## シナリオ選定
 
@@ -15,11 +15,11 @@
 
 | # | タイトル | Status |
 |---|---|---|
-| [0002](0002-token-exchange-in-envoy-sidecar.md) | Token Exchange実装をEnvoyサイドカー（ext_authz）に配置 | Accepted |
+| [0002](0002-token-exchange-in-envoy-sidecar.md) | Token Exchange実装をEnvoyサイドカー（ext_authz）に配置 | Partially superseded by 0010 |
 | [0005](0005-single-audience-tokens-only.md) | トークンは常に単一audienceのみを持つ | Accepted |
 | [0006](0006-claim-vs-external-attribute-criteria.md) | トークンのクレームにするか業務データとして外部化するかの判断基準 | Accepted |
 | [0009](0009-envoy-ingress-responsibility-and-bypass-prevention.md) | Envoy ingress側の責務範囲とバイパス防止 | Accepted |
-| [0010](0010-egress-listener-granularity.md) | egressは実サービス名への透過的な呼び出しとし、audienceはHostヘッダーから自動導出する | Accepted |
+| [0010](0010-egress-listener-granularity.md) | egressは実サービス名への透過的な呼び出しとし、audienceはHostヘッダーから自動導出する | Partially superseded by 0014 |
 | [0014](0014-fraud-agent-token-exchange.md) | fraud-agent→fraud-mcp-serverをToken Exchangeに変更し、frontendの事前トークン取得（パターン④）を廃止する | Accepted |
 
 ## 身元検証・mTLS・SPIFFE/SPIRE・DPoPの変遷

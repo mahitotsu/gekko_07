@@ -1,6 +1,6 @@
 # サービス仕様
 
-各サービスの存在意義・提供機能・保有データを定義する。認可の詳細は[architecture.md](architecture.md)、トークンチェーンの実装方式は[architecture.md](architecture.md)を参照。
+各サービスの存在意義・提供機能・保有データを定義する。認可の詳細・トークンチェーンの実装方式は[architecture.md](architecture.md)を参照。
 
 各サービスの技術スタックは意図的に統一しない（多言語構成の理由は[requirements.md](requirements.md)「背景（なぜサイドカーへ切り出すか）」参照：Token Exchangeをサイドカーへ切り出す価値は、実装言語がバラバラな構成でこそ際立つ）。個々の選定理由は[ADR 0007](adr/0007-per-service-language-selection.md)を参照。
 
