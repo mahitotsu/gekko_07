@@ -1,4 +1,4 @@
-# access-control-design.md 表6のテストアナリスト属性をanalyst-attribute-serviceのDBへ投入する。
+# architecture.md 表6のテストアナリスト属性をanalyst-attribute-serviceのDBへ投入する。
 # ADR 0026:x-auth-sub(analyst_attribute_service.analysts.idの一致キー)はKeycloakが発行する
 # ユーザーUUIDであり、ユーザー名(yamada-analyst等)ではないため、k8s/keycloak/test-fixtures-job.yaml
 # がKeycloak上にユーザーを作成した後でなければ実際のUUIDが確定しない。そのため

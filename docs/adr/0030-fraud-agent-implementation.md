@@ -7,7 +7,7 @@
 
 [ADR 0029](0029-fraud-mcp-server-implementation.md)でfraud-mcp-serverを本実装した時点で、README.mdの残り未着手項目はfraud-agent・frontendの2サービスだった。fraud-agentはfraud-mcp-serverのみに依存し（frontend未実装への依存が無い）、architecture.md §3の実装順序（1ホップ先行検証の順）でも残り2サービス中もっとも先頭に位置するため、本実装の最有力候補だった。
 
-fraud-agentは[ADR 0007](0007-per-service-language-selection.md)でTypeScript/Claude Agent SDKと選定済み。[use-cases.md](../use-cases.md) UC1は「fraud-agentが凍結理由・取引履歴を分析し、誤検知の疑いがあれば解除を提案する」という実際のAI分析を前提にしており、決定論的なスタブ分析ではなく実際にAnthropic APIを呼び出す実装方針とした。
+fraud-agentは[ADR 0007](0007-per-service-language-selection.md)でTypeScript/Claude Agent SDKと選定済み。[architecture.md](../architecture.md) UC1は「fraud-agentが凍結理由・取引履歴を分析し、誤検知の疑いがあれば解除を提案する」という実際のAI分析を前提にしており、決定論的なスタブ分析ではなく実際にAnthropic APIを呼び出す実装方針とした。
 
 これは本リポジトリで初めて「クラスタ外（インターネット上のapi.anthropic.com）への実通信」が発生するケースであり、既存のSPIFFE mTLS前提のEnvoyサイドカーパターン（[ADR 0010](0010-egress-listener-granularity.md)の2パターン：①Token Exchange透過プロキシ、②client_credentials発行）のどちらにも当てはまらない新規のアーキテクチャ判断を要した。
 
@@ -24,7 +24,7 @@ fraud-mcp-server（Python/FastMCP、ADR 0029）と同型の構成（単一ファ
 - レスポンスは`Content-Type: text/event-stream`のAG-UIイベントストリーム（`EventEncoder.encodeSSE()`が`data: {...}\n\n`フレーミングを生成する）。`RUN_STARTED`→`TEXT_MESSAGE_*`/`TOOL_CALL_*`→`RUN_FINISHED`（正常時）、または`RUN_ERROR`（異常時）という標準のイベント順序に従う。
 - 公式アダプタ`ClaudeAgentAdapter`（`@ag-ui/claude-agent-sdk`）が内部で`query()`のライフサイクル・メッセージ→AG-UIイベント変換を管理する。**リクエストごとに新しい`ClaudeAgentAdapter`インスタンスを作る**（アダプタの設定はコンストラクタ時点で固定されるため、分析対象アナリストが変わるたびに異なる委任トークンを`mcpServers`へ渡す必要がある本リポジトリの要件には、インスタンスを使い回すAPIが用意されていない。1リクエスト1インスタンスは無駄だが状態を持たないため安全）。
 - 受信した`Authorization`ヘッダーをそのまま`mcpServers.fraud_mcp_server.headers.Authorization`（`type: "http"`, `url: "http://fraud-mcp-server/mcp"`）へ渡す。`McpHttpServerConfig`はアダプタ生成のたびに設定できることを実機で確認した。egressのtoken-exchangeサイドカー（ADR 0023）がこれをsubject_tokenとして扱う。アプリ本体はToken Exchangeを一切意識しない（fraud-mcp-serverの`_delegated_authorization`と同じ設計）。
-- アダプタの設定は`tools: []`（組み込みツールを全て無効化）・`allowedTools`にfraud-mcp-serverが公開する3ツール名（`mcp__fraud_mcp_server__get_frozen_accounts`等）のみを明示・`permissionMode: "dontAsk"`（許可リスト外のツール呼び出しは確認無しで拒否）とし、SDKレベルでも「読み取り・提案のみ」に構造的に絞った（access-control-design.md表2のスコープ設計と同じ意図の多層防御。SDK側の制約が破られてもToken Exchangeのスコープ側で`account:unfreeze`は取得できない）。
+- アダプタの設定は`tools: []`（組み込みツールを全て無効化）・`allowedTools`にfraud-mcp-serverが公開する3ツール名（`mcp__fraud_mcp_server__get_frozen_accounts`等）のみを明示・`permissionMode: "dontAsk"`（許可リスト外のツール呼び出しは確認無しで拒否）とし、SDKレベルでも「読み取り・提案のみ」に構造的に絞った（architecture.md表2のスコープ設計と同じ意図の多層防御。SDK側の制約が破られてもToken Exchangeのスコープ側で`account:unfreeze`は取得できない）。
 - アダプタ内部のエラーはAG-UIの`RUN_ERROR`イベントとしてストリームに乗って返ってくる（詳細を漏らさない一律のメッセージ。account-service/fraud-mcp-serverと同じfail-close方針）ため、アプリ側で追加の変換は不要。Observable自体が予期せずエラーになった場合（アダプタのバグ等）のみ、保険として自前で`RUN_ERROR`を書いてから接続を閉じる。
 - `CLAUDE_CODE_OAUTH_TOKEN`（`claude setup-token`で取得したOAuthトークン、`sk-ant-oat01-...`、有効期限1年）はSDKが`process.env`から自動的に読む。アプリコードはこの環境変数を明示的に扱わない。
 

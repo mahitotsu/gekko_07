@@ -7,7 +7,7 @@
 
 これまでの実装（OAuth Token Exchange、[ADR 0012](0012-spiffe-spire-mtls-single-hop.md)・[ADR 0015](0015-dpop-removal-and-fraud-detection-engine-mtls.md)・[ADR 0016](0016-ext-authz-and-keycloak-mtls.md)・[ADR 0017](0017-edge-proxy-full-keycloak-mtls.md)のSPIRE mTLS）は「誰が何をしてよいか」という業務認可層と、「誰と話しているか」という通信路の身元検証・暗号化の2層に集中しており、L3/4（IPアドレス・ポート単位の到達可否）は素通しのままだった。[ADR 0012](0012-spiffe-spire-mtls-single-hop.md) R7・[ADR 0017](0017-edge-proxy-full-keycloak-mtls.md)は、NetworkPolicyによるL3/4のdefault-denyを「mTLS・業務認可とは独立な別トラック」として繰り返し先送りしてきた。
 
-技術的な導入障壁は実機確認済みである（このクラスタでkube-router netpolが実際に有効なことを`iptables-save`で`KUBE-ROUTER-INPUT/FORWARD/OUTPUT`・Pod単位の`KUBE-POD-FW-*`チェーンとして確認済み）。増分価値が大きい対象として、mTLSの適用対象外である共有Postgresインスタンス（[ADR 0008](0008-per-service-datastore-strategy.md)）と、Keycloakのkubelet向けhttp-mgmt:9000が[docs/backlog.md](../backlog.md)で名指しされていた。直近でaccount-serviceのplaintext受け口を撤廃したばかりであり、「1ホップずつ実機検証してから横展開する」という一貫した方針の次の段として、本ADRでこのL3/4防御を導入する。
+技術的な導入障壁は実機確認済みである（このクラスタでkube-router netpolが実際に有効なことを`iptables-save`で`KUBE-ROUTER-INPUT/FORWARD/OUTPUT`・Pod単位の`KUBE-POD-FW-*`チェーンとして確認済み）。増分価値が大きい対象として、mTLSの適用対象外である共有Postgresインスタンス（[ADR 0008](0008-per-service-datastore-strategy.md)）と、Keycloakのkubelet向けhttp-mgmt:9000が[docs/architecture.md](../architecture.md)で名指しされていた。直近でaccount-serviceのplaintext受け口を撤廃したばかりであり、「1ホップずつ実機検証してから横展開する」という一貫した方針の次の段として、本ADRでこのL3/4防御を導入する。
 
 ## Decision
 
@@ -53,12 +53,12 @@ kubectl port-forwardの通信経路については、kubeletがPodのネット�
 
 ### spire namespaceは対象外
 
-spire-agentは`hostNetwork: true`で動作しており（SPIRE公式チュートリアルが示すPID/cgroup経由のワークロード相関づけに必要、[ADR 0012](0012-spiffe-spire-mtls-single-hop.md)）、kube-router netpolがhostNetwork Podに対してNetworkPolicyをどう適用する（あるいは適用しない）かが実機で未検証である。加えて`spire-entries` Job（`kubectl exec`でspire-serverへ接続する）等、`gekko` namespaceとは異なる接続パターンを持つ。「1ホップずつ実機検証してから横展開する」方針に従い、今回は見送り[docs/backlog.md](../backlog.md)に記録する。
+spire-agentは`hostNetwork: true`で動作しており（SPIRE公式チュートリアルが示すPID/cgroup経由のワークロード相関づけに必要、[ADR 0012](0012-spiffe-spire-mtls-single-hop.md)）、kube-router netpolがhostNetwork Podに対してNetworkPolicyをどう適用する（あるいは適用しない）かが実機で未検証である。加えて`spire-entries` Job（`kubectl exec`でspire-serverへ接続する）等、`gekko` namespaceとは異なる接続パターンを持つ。「1ホップずつ実機検証してから横展開する」方針に従い、今回は見送り[docs/architecture.md](../architecture.md)に記録する。
 
 ## Consequences
 
 - 共有Postgresインスタンスとkeycloakのhttp-mgmt:9000という、mTLS適用対象外だった2箇所が、L3/4レベルでも許可された呼び出し元・ポートからしか到達できなくなった
 - postgres・keycloakのpodSelectorベースの許可は「現在の呼び出し元」に限定されている。将来account-service等が（[ADR 0008](0008-per-service-datastore-strategy.md)の分離検討に伴い）Postgresへ直接接続するようになった場合や、frontend/analyst-attribute-serviceが実装され新しいホップが増えた場合は、対応するNetworkPolicyの許可ルール追加が必要になる（既存のホップ横展開と同じ運用）
 - `kube-system`namespaceに`kubernetes.io/metadata.name: kube-system`ラベルが自動付与されていること（Kubernetes 1.21+の標準機能）に暗黙に依存している
-- `spire` namespaceへの横展開、`dpop-verifier`という現行マニフェストに存在しない稼働中Podの扱い（調査中に発見。本ADRのスコープ外）は、いずれもbacklog.mdに記録する
+- `spire` namespaceへの横展開、`dpop-verifier`という現行マニフェストに存在しない稼働中Podの扱い（調査中に発見。本ADRのスコープ外）は、いずれもarchitecture.mdに記録する
 - **[0030](0030-fraud-agent-implementation.md)で初めての例外**：fraud-agentがClaude Agent SDK経由で呼ぶAnthropic API（`api.anthropic.com`）向けに、`ipBlock 0.0.0.0/0`（RFC1918プライベートレンジを`except`で除外）による公開インターネットegressを許可した。Anthropicの実IPは固定できないため、これまでの「宛先はpodSelectorまたは既知の固定CIDR」という運用から外れる、意図的な例外である（`k8s/fraud-agent/networkpolicy.yaml`）

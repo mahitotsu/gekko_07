@@ -32,6 +32,6 @@ account-serviceの`envoy`コンテナ(mTLS用のX.509-SVID)と`token-exchange`�
 ## Consequences
 
 - account-service→analyst-attribute-serviceのToken Exchangeで、Keycloakが検証する身元(mTLS/JWT-SVID)と主張するclient_idが一致するようになった。共有`ext-authz-service`インスタンス方式を経由することなく、最初から新パターンで実装できた
-- `docs/backlog.md`に残っていた「ext-authz-service-analystの身元検証ギャップ」は解消した。ADR 0002/0016由来の共有ext-authz-serviceインスタンス方式は、fraud-mcp-server(ADR 0019)・fraud-detection-engine(ADR 0020)・account-service(本ADR)の全ホップで置き換えが完了した
+- `docs/architecture.md`に残っていた「ext-authz-service-analystの身元検証ギャップ」は解消した。ADR 0002/0016由来の共有ext-authz-serviceインスタンス方式は、fraud-mcp-server(ADR 0019)・fraud-detection-engine(ADR 0020)・account-service(本ADR)の全ホップで置き換えが完了した
 - account-serviceはingress/egress両方のリスナーを持つ初めてのサービスになった。1つのEnvoyプロセスに複数の責務(着信の認可・発信の委任)を持たせる構成が実機で問題なく動作することを確認した
 - `scripts/verify-hop.sh`にパターン③(account-service→analyst-attribute-service)の検証ステップを追加し、全14ステップが成功することを確認した

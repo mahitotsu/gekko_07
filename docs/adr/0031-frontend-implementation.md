@@ -32,11 +32,11 @@ GCMは暗号化と改ざん検知を同時に満たすため、services.mdの「
 
 検討した代替案：Envoyの`jwt_authn`に`from_cookies`を設定し、Cookieに生のJWTをそのまま格納する案。Envoy側の変更が最小で済む利点はあるが、services.mdが明示する「暗号化・署名付きCookie」を字義通り満たせない（生JWTは署名付きだが暗号化されていない）ため不採用とした。
 
-暗号鍵はPod起動時に`crypto.randomBytes(32)`でプロセス内生成し、Kubernetes Secretとしては永続化しない。services.mdが明言する「ステートレス・サーバー側データストアなし」という設計そのものが「Pod再起動でセッションが失われても構わない」ことを前提にしているため、鍵の永続化は不要と判断した。複数レプリカ化する場合は再検討が要る（backlog.md参照）。
+暗号鍵はPod起動時に`crypto.randomBytes(32)`でプロセス内生成し、Kubernetes Secretとしては永続化しない。services.mdが明言する「ステートレス・サーバー側データストアなし」という設計そのものが「Pod再起動でセッションが失われても構わない」ことを前提にしているため、鍵の永続化は不要と判断した。複数レプリカ化する場合は再検討が要る（architecture.md参照）。
 
 ### セッションは失効させる。リフレッシュトークンによるサイレント延命は行わない
 
-「一度ログインしたら実質無期限にセッションが有効」はバッドプラクティスであるため、リフレッシュトークンを取得・保持・使用しない（`scope`に`offline_access`等を含めない。トークンレスポンスから`refresh_token`が返っても保存せず捨てる）。`gekko_session` Cookieの`maxAge`はKeycloakが発行した`access_token`の`exp`（realm-configmap.yamlで明示的に上書きしていないためKeycloakの既定値=5分）にそのまま連動させ、`requireSession()`相当の`exp`確認と合わせて二重に効かせる。5分経過後はアプリのセッションが必ず失効し、ダッシュボード/チャットへのアクセスは`/login`へ302される（再度Keycloakの認可エンドポイントへ飛ぶ）。より長いが上限付き（絶対タイムアウト）のセッションが要る場合はリフレッシュトークン運用の再検討が要る旨をbacklog.mdに記録した。
+「一度ログインしたら実質無期限にセッションが有効」はバッドプラクティスであるため、リフレッシュトークンを取得・保持・使用しない（`scope`に`offline_access`等を含めない。トークンレスポンスから`refresh_token`が返っても保存せず捨てる）。`gekko_session` Cookieの`maxAge`はKeycloakが発行した`access_token`の`exp`（realm-configmap.yamlで明示的に上書きしていないためKeycloakの既定値=5分）にそのまま連動させ、`requireSession()`相当の`exp`確認と合わせて二重に効かせる。5分経過後はアプリのセッションが必ず失効し、ダッシュボード/チャットへのアクセスは`/login`へ302される（再度Keycloakの認可エンドポイントへ飛ぶ）。より長いが上限付き（絶対タイムアウト）のセッションが要る場合はリフレッシュトークン運用の再検討が要る旨をarchitecture.mdに記録した。
 
 ### ログアウト：ローカルCookie削除に加え、KeycloakのSSOセッションもRP-Initiated Logoutで終了させる
 
@@ -54,7 +54,7 @@ CSRF対策として`/logout`はGETリンクではなくPOST専用にする（`Sa
 
 ### Cookie属性
 
-`httpOnly`・`SameSite=Lax`・`secure=false`（ローカルk3d port-forwardがhttpのため。本番相当環境対応時の検討事項としてbacklog.mdに記録）。`SameSite=Lax`はOAuthのトップレベルリダイレクト（Keycloak→`/callback`のGET）では送信されるが他サイトからのPOSTでは送信されないため、追加のCSRFトークンなしで妥当な保護になる。
+`httpOnly`・`SameSite=Lax`・`secure=false`（ローカルk3d port-forwardがhttpのため。本番相当環境対応時の検討事項としてarchitecture.mdに記録）。`SameSite=Lax`はOAuthのトップレベルリダイレクト（Keycloak→`/callback`のGET）では送信されるが他サイトからのPOSTでは送信されないため、追加のCSRFトークンなしで妥当な保護になる。
 
 ### `directAccessGrantsEnabled`を`false`に戻し、ROPCコードを完全に削除する
 
@@ -94,8 +94,8 @@ fraud-agentと同じマルチステージ・`node:22-slim`・非root（`USER nod
 
 ## Consequences
 
-- README.md・docs/services.mdの進捗を「frontendも本実装済み」へ更新した。docs/backlog.mdの「frontendの簡易ログイン（ROPC）を本物のAuthorization Code + PKCEブラウザフローへ置き換える」項目は解消した
+- README.md・docs/services.mdの進捗を「frontendも本実装済み」へ更新した。docs/architecture.mdの「frontendの簡易ログイン（ROPC）を本物のAuthorization Code + PKCEブラウザフローへ置き換える」項目は解消した
 - [ADR 0024](0024-frontend-edge-proxy-and-simplified-login.md)のStatusを`Partially superseded by 0031`に更新した（ROPC・`directAccessGrantsEnabled=true`の恒久化・frontend ingressのjwt_authnは本ADRで置き換えたが、edge-proxy配線・Token Exchangeのscope解決方式・account-serviceのunfreeze rbacポリシー追加は無変更で有効）
 - UC1〜UC5がfrontendのダッシュボード・チャット画面を通じて実機で一気通貫に確認できるようになった
-- リフレッシュトークン不使用によりセッションは5分（Keycloak既定のAccess Token Lifespan）で必ず失効する。より長いセッションが必要になった場合の再検討事項をbacklog.mdに記録した
-- 複数レプリカ化する場合、セッション暗号鍵がPod内生成でレプリカ間共有されないため、同一セッションが別レプリカに当たると復号に失敗する（現状replicas: 1のため顕在化しない）。将来の検討事項としてbacklog.mdに記録した
+- リフレッシュトークン不使用によりセッションは5分（Keycloak既定のAccess Token Lifespan）で必ず失効する。より長いセッションが必要になった場合の再検討事項をarchitecture.mdに記録した
+- 複数レプリカ化する場合、セッション暗号鍵がPod内生成でレプリカ間共有されないため、同一セッションが別レプリカに当たると復号に失敗する（現状replicas: 1のため顕在化しない）。将来の検討事項としてarchitecture.mdに記録した

@@ -46,7 +46,7 @@ fraud-mcp-serverの`envoy`コンテナ(mTLS用のX.509-SVID)と`token-exchange`�
 ## Consequences
 
 - fraud-mcp-server→account-serviceのToken Exchangeで、Keycloakが検証する身元(mTLS/JWT-SVID)と主張するclient_idが一致するようになった。ext-authz-serviceが呼び出し元のclient_secretを代理保持するという構造は、このホップに関しては解消された
-- `ext-authz-service`(共有・fraud-mcp-server専用インスタンス)を廃止した。`ext-authz-service-cc`(fraud-detection-engine、client_credentials、パターン②)・`ext-authz-service-analyst`(account-service→analyst-attribute-service)は本ADRのスコープ外で、従来通りclient_secretを保持する共有インスタンスのまま残る。同じ身元検証ギャップが残っており、同じパターンの横展開をbacklog.mdに記録する
+- `ext-authz-service`(共有・fraud-mcp-server専用インスタンス)を廃止した。`ext-authz-service-cc`(fraud-detection-engine、client_credentials、パターン②)・`ext-authz-service-analyst`(account-service→analyst-attribute-service)は本ADRのスコープ外で、従来通りclient_secretを保持する共有インスタンスのまま残る。同じ身元検証ギャップが残っており、同じパターンの横展開をarchitecture.mdに記録する
 - Keycloakの`spiffe`機能はKeycloakの成熟度区分で"Preview"(安定版ではない)。x509cert-lookup SPI同様、将来のKeycloakバージョンアップで破壊的変更を受ける可能性がある。関連するAdmin UI側の既知の未解決バグ(Issue #42634・#42044・#51682)もある
 - Kubernetes `ImageVolume`機能(Beta)への依存が新たに生じた。この機能が無効化されたクラスタでは`spire-agent`バイナリの入手方法を再検討する必要がある
 - fraud-mcp-server-clientのKubernetes Secret・Keycloak client_secretは不要になったため、関連するMakefile変数・test-fixtures.shの設定処理を削除した

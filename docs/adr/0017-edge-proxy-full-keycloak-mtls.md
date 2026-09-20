@@ -39,4 +39,4 @@
 - Keycloakへのplaintextでの到達経路(8080)が完全に無くなった。到達可能なのは`https-mtls:8443`(許可されたSPIFFE ID: `ext-authz-service`・`ext-authz-service-cc`・`account-service`・`edge-proxy`のみ)と、kubelet専用の`http-mgmt:9000`のみ
 - Keycloakの実質的な「非mTLS呼び出し元向けの受け口」はedge-proxyへ移動した。edge-proxy自体はDBアクセスも業務ロジックも持たない薄いEnvoyのみのPodであり、Keycloak本体(トークン発行・DB資格情報を持つJVMプロセス)より侵害時の実害が小さいコンポーネントに攻撃面を寄せられた
 - frontend実装時は、frontendもedge-proxy経由にする(同じPodを使い回し、route_configにvirtual_host/routeを追加するだけで済む)想定 → [ADR 0024](0024-frontend-edge-proxy-and-simplified-login.md)で実施済み(想定通り、Podは変更せずroute_config分割のみで対応できた)
-- NetworkPolicyによるL3/4の多層防御は本ADRのスコープ外。kube-router netpolがこのクラスタで実際に有効なことは実機確認済みだが、[ADR 0012](0012-spiffe-spire-mtls-single-hop.md) R7が最初から「mTLS/業務認可とは独立な別トラック」と位置づけている通り関心事が異なり、kubeletプローブとの相性検証という別の実機検証項目を抱えるため、backlog.mdに記録するに留める
+- NetworkPolicyによるL3/4の多層防御は本ADRのスコープ外。kube-router netpolがこのクラスタで実際に有効なことは実機確認済みだが、[ADR 0012](0012-spiffe-spire-mtls-single-hop.md) R7が最初から「mTLS/業務認可とは独立な別トラック」と位置づけている通り関心事が異なり、kubeletプローブとの相性検証という別の実機検証項目を抱えるため、architecture.mdに記録するに留める

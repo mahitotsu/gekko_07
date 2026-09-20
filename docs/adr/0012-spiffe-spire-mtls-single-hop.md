@@ -5,7 +5,7 @@
 
 ## Context
 
-これまでの設計・実装は「誰がどのトークンで何をしてよいか」という業務認可層（Keycloak・スコープ・Token Exchange。[access-control-requirements.md](../access-control-requirements.md) BR0〜BR8、[ADR 0002](0002-token-exchange-in-envoy-sidecar.md)・[ADR 0009](0009-envoy-ingress-responsibility-and-bypass-prevention.md)・[ADR 0010](0010-egress-listener-granularity.md)）に集中しており、Envoy間の通信路自体（誰が接続してきているか・盗聴/改竄耐性）は素のHTTP/1.1平文のままだった。これは業務認可層とは別の関心事であり、金融系トラフィックにふさわしい水準を別途検討した。
+これまでの設計・実装は「誰がどのトークンで何をしてよいか」という業務認可層（Keycloak・スコープ・Token Exchange。[requirements.md](../requirements.md) BR0〜BR8、[ADR 0002](0002-token-exchange-in-envoy-sidecar.md)・[ADR 0009](0009-envoy-ingress-responsibility-and-bypass-prevention.md)・[ADR 0010](0010-egress-listener-granularity.md)）に集中しており、Envoy間の通信路自体（誰が接続してきているか・盗聴/改竄耐性）は素のHTTP/1.1平文のままだった。これは業務認可層とは別の関心事であり、金融系トラフィックにふさわしい水準を別途検討した。
 
 ### ゼロトラストの要件（R1〜R7）
 
@@ -34,9 +34,9 @@ Istio導入（[ADR 0003](0003-k3d-without-istio.md)）は「学習対象がト�
 
 トークン送信者拘束の代替候補としてRFC 8705（mTLSの証明書でアクセストークンを拘束する）を検討したが、本プロジェクトのアーキテクチャでは**スコープの問題ではなく構造的に成立しない**と判断した。
 
-Keycloakへの実際のToken Exchange呼び出しは、各サービス自身のEnvoyではなく共有の`ext-authz-service`（Envoyサイドカーを持たない）が行う（[ADR 0002](0002-token-exchange-in-envoy-sidecar.md)）。RFC 8705はトークン発行時にmTLS認証したクライアント証明書と、トークン提示時に使われたクライアント証明書が同一であることを要求するが、本プロジェクトでは「発行時にKeycloakへ接続する主体（`ext-authz-service`）」と「提示時にaccount-serviceへ接続する主体（fraud-mcp-server自身のEnvoy）」が異なるプロセス・異なる証明書になる。これは`ext-authz-service`を言語非依存の集約点として設計したADR 0002の意図そのものが生む帰結であり、この集約を維持する限りRFC 8705は成立しない（ADR 0002をWASMフィルタ化して各サービス自身のEnvoy内でToken Exchangeを完結させれば理論上は成立するが、ADR 0002が明示的に退けたビルドトールチェーン導入コストを再度負うことになり、今回は見送る。backlog.md参照）。
+Keycloakへの実際のToken Exchange呼び出しは、各サービス自身のEnvoyではなく共有の`ext-authz-service`（Envoyサイドカーを持たない）が行う（[ADR 0002](0002-token-exchange-in-envoy-sidecar.md)）。RFC 8705はトークン発行時にmTLS認証したクライアント証明書と、トークン提示時に使われたクライアント証明書が同一であることを要求するが、本プロジェクトでは「発行時にKeycloakへ接続する主体（`ext-authz-service`）」と「提示時にaccount-serviceへ接続する主体（fraud-mcp-server自身のEnvoy）」が異なるプロセス・異なる証明書になる。これは`ext-authz-service`を言語非依存の集約点として設計したADR 0002の意図そのものが生む帰結であり、この集約を維持する限りRFC 8705は成立しない（ADR 0002をWASMフィルタ化して各サービス自身のEnvoy内でToken Exchangeを完結させれば理論上は成立するが、ADR 0002が明示的に退けたビルドトールチェーン導入コストを再度負うことになり、今回は見送る。architecture.md参照）。
 
-このため、トークン送信者拘束が必要になった場合はDPoP（RFC 9449）を検討対象とする。DPoPはアクセストークン自体はキャッシュ可能なまま、提示のたびに新しい署名付きproof（`htm`/`htu`/`iat`/`ath`をバインド）を要求する方式で、mTLS接続の同一性に依存しないため、`ext-authz-service`を挟む今のアーキテクチャと矛盾しない。ただし、DPoP proofの再生検知にはjti追跡という検証側の状態保持が新たに必要になり、Envoyの`jwt_authn`フィルタ（ステートレス）では完結しないため、これは本ADRのスコープ外の、規模の大きい別課題として引き続きbacklog.mdで管理する。
+このため、トークン送信者拘束が必要になった場合はDPoP（RFC 9449）を検討対象とする。DPoPはアクセストークン自体はキャッシュ可能なまま、提示のたびに新しい署名付きproof（`htm`/`htu`/`iat`/`ath`をバインド）を要求する方式で、mTLS接続の同一性に依存しないため、`ext-authz-service`を挟む今のアーキテクチャと矛盾しない。ただし、DPoP proofの再生検知にはjti追跡という検証側の状態保持が新たに必要になり、Envoyの`jwt_authn`フィルタ（ステートレス）では完結しないため、これは本ADRのスコープ外の、規模の大きい別課題として引き続きarchitecture.mdで管理する。
 
 ## Decision
 
@@ -48,7 +48,7 @@ Keycloakへの実際のToken Exchange呼び出しは、各サービス自身のE
 
 **対象**：SPIRE server/agentのデプロイ、account-service・fraud-mcp-server双方のEnvoyサイドカーへのSPIFFE ID割り当て、このホップのmTLS＋ALPN h2化、検証、本ADR。
 
-**対象外（backlog.md参照）**：`ext-authz-service`のKeycloak向け接続（Envoyサイドカーを持たないため平文のまま）、RFC 8705（上記の通り構造的に不成立）、他ホップへの横展開、`spiffe-csi`ドライバ・`spire-controller-manager`（新規可動部を増やさないため見送り）、account-service/fraud-mcp-serverの**ワークロードPod自体**への`hostPID`/`hostNetwork`付与（属性解決が実機で失敗した場合のみ再検討）。
+**対象外（architecture.md参照）**：`ext-authz-service`のKeycloak向け接続（Envoyサイドカーを持たないため平文のまま）、RFC 8705（上記の通り構造的に不成立）、他ホップへの横展開、`spiffe-csi`ドライバ・`spire-controller-manager`（新規可動部を増やさないため見送り）、account-service/fraud-mcp-serverの**ワークロードPod自体**への`hostPID`/`hostNetwork`付与（属性解決が実機で失敗した場合のみ再検討）。
 
 ### 設計判断
 
@@ -66,6 +66,6 @@ Keycloakへの実際のToken Exchange呼び出しは、各サービス自身のE
 ## Consequences
 
 - fraud-mcp-server→account-serviceのホップは、OAuth Token Exchangeによる業務認可（誰が何をしてよいか）と、SPIRE発行のmTLSによる通信路の身元検証・暗号化（誰と話しているか）という、独立した2つの層で守られるようになる
-- **既知の限界：account-serviceへのplaintextでの到達自体は引き続き可能**。account-serviceのingressリスナーは全呼び出し元が共有する単一のリスナーであり、fraud-detection-engine（パターン②、SPIRE化はスコープ外）を壊さないために、TLS/plaintextの両方を受け付けるfilter_chain構成にした（Design Decisions参照）。account-serviceはfilter_chain選択の時点（L4）ではHTTPパスを見られないため、「読み取り・提案系のパスだけmTLS必須にし、freezeパスだけplaintextを許可する」といったパス単位の強制はできない。結果として、R2（相互認証）が額面通り機能するのは「TLSで接続してきた場合」に限られ、mTLSは呼び出し元が選択する任意の追加防御層にとどまる（有効なOAuthトークンさえあれば、plaintextでの到達自体は今回の変更前と変わらず可能）。この限界を解消するには、fraud-detection-engine（および将来の他の呼び出し元）もSPIRE化してplaintextの受け口自体を廃止するか、NetworkPolicy等の別レイヤーで呼び出し元を制限する必要があり、いずれも本ADRのスコープ外としてbacklog.mdに追加する
+- **既知の限界：account-serviceへのplaintextでの到達自体は引き続き可能**。account-serviceのingressリスナーは全呼び出し元が共有する単一のリスナーであり、fraud-detection-engine（パターン②、SPIRE化はスコープ外）を壊さないために、TLS/plaintextの両方を受け付けるfilter_chain構成にした（Design Decisions参照）。account-serviceはfilter_chain選択の時点（L4）ではHTTPパスを見られないため、「読み取り・提案系のパスだけmTLS必須にし、freezeパスだけplaintextを許可する」といったパス単位の強制はできない。結果として、R2（相互認証）が額面通り機能するのは「TLSで接続してきた場合」に限られ、mTLSは呼び出し元が選択する任意の追加防御層にとどまる（有効なOAuthトークンさえあれば、plaintextでの到達自体は今回の変更前と変わらず可能）。この限界を解消するには、fraud-detection-engine（および将来の他の呼び出し元）もSPIRE化してplaintextの受け口自体を廃止するか、NetworkPolicy等の別レイヤーで呼び出し元を制限する必要があり、いずれも本ADRのスコープ外としてarchitecture.mdに追加する
 - `hostPID`・`hostNetwork`・DaemonSet・`pods/exec`・StatefulSet+PVC（postgres以外）・新しい`spire` namespace・`bitnami/kubectl`イメージは、いずれも本リポジトリで初めて使う要素。実機検証で想定通り動くかは別途insights.mdに記録する
-- 他ホップ（frontend→account-service等）へのmTLS横展開、`ext-authz-service`自体のSPIFFE化、DPoPの検証・実装方式、RFC 8705を実現するためのADR 0002見直し（WASMフィルタ化）は、いずれも本ADRのスコープ外としてbacklog.mdへ追加する
+- 他ホップ（frontend→account-service等）へのmTLS横展開、`ext-authz-service`自体のSPIFFE化、DPoPの検証・実装方式、RFC 8705を実現するためのADR 0002見直し（WASMフィルタ化）は、いずれも本ADRのスコープ外としてarchitecture.mdへ追加する

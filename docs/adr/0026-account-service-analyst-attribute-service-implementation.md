@@ -7,7 +7,7 @@
 
 `README.md`の最終未着手項目は「各サービスの実装（本実装）」だった。[docs/services.md](../services.md)でaccount-serviceは「今回の主役」と位置付けられ、fraud-mcp-server・fraud-detection-engine・frontendの依存の中心にあるため、本実装に着手する際の最有力候補だった。
 
-account-serviceのABAC判定（[access-control-design.md](../access-control-design.md) 表5：担当地域・権限レベルによるアクセス可否）はanalyst-attribute-serviceから取得するアナリスト属性が前提になる。しかし同サービスは「受け取ったヘッダーをそのまま返すだけ」のスタブで、実際の属性データ（表6：yamada-analyst/suzuki-senior/tanaka-junior）を一切持っていなかった。account-serviceだけを本実装しても、ABACの主要な分岐（BR1・BR2・BR3）は実機検証できないままになるため、analyst-attribute-serviceも同時に本実装することにした。
+account-serviceのABAC判定（[architecture.md](../architecture.md) 表5：担当地域・権限レベルによるアクセス可否）はanalyst-attribute-serviceから取得するアナリスト属性が前提になる。しかし同サービスは「受け取ったヘッダーをそのまま返すだけ」のスタブで、実際の属性データ（表6：yamada-analyst/suzuki-senior/tanaka-junior）を一切持っていなかった。account-serviceだけを本実装しても、ABACの主要な分岐（BR1・BR2・BR3）は実機検証できないままになるため、analyst-attribute-serviceも同時に本実装することにした。
 
 このリポジトリでは初めてコンパイルを要するサービスであり、ビルド・イメージ配布パイプライン（Dockerfile・イメージのクラスタへの持ち込み）が一切存在しなかった。全サービスがPythonインラインスクリプト（ConfigMapマウント）のスタブだったため、今回新規に設計する必要があった。
 
@@ -21,10 +21,10 @@ account-serviceのABAC判定（[access-control-design.md](../access-control-desi
 
 Spring MVCのコントローラ1つ（`AccountController`）と、JDBC直叩き（`NamedParameterJdbcTemplate`、ORMは導入しない）のリポジトリ1つで構成する。スキーマ管理はFlyway（`src/main/resources/db/migration/`にV1__init.sql・V2__seed.sql）を採用した。
 
-- エンドポイントは[access-control-design.md](../access-control-design.md) 表2のパスパターンをそのまま実装し、`scripts/verify-hop.sh`が既に使っていたパス（`/accounts/{id}/transactions`・`/accounts/{id}/unfreeze-proposals`・`/accounts/{id}/freeze`・`/accounts/{id}/unfreeze`）を維持したため、Envoyのrbac設定（`k8s/account-service/envoy-configmap.yaml`）は変更不要だった。新たに一覧用`GET /accounts/frozen`を追加した（get_frozen_accounts用、表2の`GET /accounts/**`許可に収まる）
+- エンドポイントは[architecture.md](../architecture.md) 表2のパスパターンをそのまま実装し、`scripts/verify-hop.sh`が既に使っていたパス（`/accounts/{id}/transactions`・`/accounts/{id}/unfreeze-proposals`・`/accounts/{id}/freeze`・`/accounts/{id}/unfreeze`）を維持したため、Envoyのrbac設定（`k8s/account-service/envoy-configmap.yaml`）は変更不要だった。新たに一覧用`GET /accounts/frozen`を追加した（get_frozen_accounts用、表2の`GET /accounts/**`許可に収まる）
 - スコープ（account:read/propose/freeze/unfreeze）の検証はEnvoy rbacの責務のまま変更していない（ADR 0009 §1）。account-serviceのアプリ内で行うのは表5のABAC判定（業務データ依存）のみ
 - ABAC判定は`AccessControl`クラスに集約した：属性未登録・地域不一致は常にDENY、地域一致ならstandardはjunior/senior問わずALLOW、high-valueはsenior限定ALLOW
-- ABAC拒否の表現は操作種別で使い分けた：単一リソース読み取り（`GET /accounts/{id}/transactions`）は404（口座の存在自体を秘匿）、単一リソースへの操作（propose/unfreeze）は403（呼び出し元は既に口座の存在を知っている前提のため）、一覧（`GET /accounts/frozen`）は結果セットからの除外（use-cases.md UC3/UC4の想定通り）
+- ABAC拒否の表現は操作種別で使い分けた：単一リソース読み取り（`GET /accounts/{id}/transactions`）は404（口座の存在自体を秘匿）、単一リソースへの操作（propose/unfreeze）は403（呼び出し元は既に口座の存在を知っている前提のため）、一覧（`GET /accounts/frozen`）は結果セットからの除外（architecture.md UC3/UC4の想定通り）
 - `POST /accounts/{id}/unfreeze`は口座が凍結中でない場合409を返す（多層防御としてのABAC再照会はキャッシュせず毎回analyst-attribute-serviceへ問い合わせる）
 - account-service→analyst-attribute-serviceの呼び出し経路（自身のegress Envoy 127.0.0.1:80、hostAliasesで宛先を横取り、token-exchangeサイドカーがAuthorizationヘッダーをsubject_tokenに交換）はスタブ時代のパターンをそのまま踏襲した
 
@@ -51,7 +51,7 @@ ADR 0007の「Go標準ライブラリ」方針を踏襲し、`net/http`（Go 1.2
 ## Consequences
 
 - **[0027](0027-fraud-detection-engine-implementation.md)により一部Superseded**：本ADRのFlyway `V2__seed.sql`は、fraud-detection-engineが未実装だったためデモ用の4口座を`frozen=TRUE`・`freeze_records`付きであらかじめ投入していた。fraud-detection-engineの本実装（ADR 0027）により、この凍結状態はfraud-detection-engine自身の自動検知・凍結実行で再現されるようになったため、V2の凍結シードは`V3__remove_demo_freeze_seed.sql`で取り消した（本ADRのV2本文自体は書き換えていない。歴史的経緯として保持）
-- `docs/backlog.md`の「`proposal_id`のaccount-service側実装（DB永続化）」を解消した
+- `docs/architecture.md`の「`proposal_id`のaccount-service側実装（DB永続化）」を解消した
 - `docs/services.md`のaccount-service・analyst-attribute-serviceの記述を「未着手（設計段階）」から実装済みへ更新した
 - README.mdの「各サービスの実装（本実装）」チェックリストが2/6サービス完了に進んだ。残るfraud-mcp-server・fraud-detection-engine・fraud-agent・frontendは引き続きスタブのまま
 - account-serviceのデータモデル（accounts/transactions/freeze_records/unfreeze_proposals/unfreeze_executions）はデモ・実機検証用の簡略化されたものであり、実際の銀行システムが持つであろう項目（取引種別、通貨、複数口座間送金の表現等）は持たない。実装を進める中で必要になれば拡張する

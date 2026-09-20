@@ -5,7 +5,7 @@
 
 ## Context
 
-`docs/architecture.md` §8（監査）は、口座凍結解除の事後追跡可能性（[access-control-requirements.md](../access-control-requirements.md) BR8）を満たす手段として「`proposal_id` + OpenTelemetryトレース + Keycloakイベントログの統合」を構想していたが、OpenTelemetry関連は`k8s/`配下に一度も実装されておらず（構想止まり）、`proposal_id`自体もaccount-serviceが依然「1ホップ先行検証用の最小スタブ」（業務ロジック・永続化なし）のため未実装のままだった。
+`docs/architecture.md` §9（監査）は、口座凍結解除の事後追跡可能性（[requirements.md](../requirements.md) BR8）を満たす手段として「`proposal_id` + OpenTelemetryトレース + Keycloakイベントログの統合」を構想していたが、OpenTelemetry関連は`k8s/`配下に一度も実装されておらず（構想止まり）、`proposal_id`自体もaccount-serviceが依然「1ホップ先行検証用の最小スタブ」（業務ロジック・永続化なし）のため未実装のままだった。
 
 一方でADR 0019〜0024を経て、以下が今のアーキテクチャの実態として確立している。
 
@@ -57,9 +57,9 @@ realm再importを伴う実機検証の過程で、`k8s/keycloak/test-fixtures-jo
 
 ## Consequences
 
-- 監査ログ集約基盤（Alloy+otel-lgtm）と、全8サービスのEnvoyアクセスログ・Keycloakイベントログの集約が実機で検証された。`docs/backlog.md`の該当項目を解消した
-- 監査の相関キー設計を`sub`単体から`sessionId`（チェーン単位）+`sub`/`userId`/`username`（誰が）+`token_id`/`scope`/`audience`（各ホップで何をしたか）の組み合わせへ更新した。architecture.md §8を更新した
+- 監査ログ集約基盤（Alloy+otel-lgtm）と、全8サービスのEnvoyアクセスログ・Keycloakイベントログの集約が実機で検証された。`docs/architecture.md`の該当項目を解消した
+- 監査の相関キー設計を`sub`単体から`sessionId`（チェーン単位）+`sub`/`userId`/`username`（誰が）+`token_id`/`scope`/`audience`（各ホップで何をしたか）の組み合わせへ更新した。architecture.md §9を更新した
 - `proposal_id`のaccount-service側実装（DB永続化）は引き続き未着手（ADR 0007の本実装待ち）。今回集約したログは`sub`/`sessionId`による相関のみで、業務レベルの「どの提案に基づく実行か」の紐付けは今後の課題として残る
 - otel-lgtmは本番非推奨のデモ/開発用イメージで、PVCを持たせていないためPod再起動でログが失われる。Grafana/Loki以外の同梱コンポーネント（Prometheus/Tempo/Pyroscope/OTel Collector）は起動するが未使用のまま（無効化方法は未調査）
 - 副産物として2つの既存バグを発見・是正した：edge-proxyの`/admin/`ルーティング漏れ（ADR 0024）、frontendログイントークンの`sub`クレーム欠落
-- `k8s/keycloak/test-fixtures-job.yaml`のパスワード設定に再現性のある問題（realm再import後、作成直後のユーザーでログインに失敗することがある）を発見したが、原因未特定のまま今回は対応を見送った（insights.md・backlog.md参照）
+- `k8s/keycloak/test-fixtures-job.yaml`のパスワード設定に再現性のある問題（realm再import後、作成直後のユーザーでログインに失敗することがある）を発見したが、原因未特定のまま今回は対応を見送った（insights.md・architecture.md参照）

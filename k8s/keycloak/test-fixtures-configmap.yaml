@@ -5,7 +5,7 @@
 # フローに置き換えたため`false`に戻している(realm-configmap.yaml側。ADR 0024の簡易ログイン
 # (ROPC)時代に一時的にtrueへ上書きしていた名残はここには残っていない)。
 #
-# access-control-design.md 表6の3アナリスト全員をここで作成する(ADR 0026:account-serviceの
+# architecture.md 表6の3アナリスト全員をここで作成する(ADR 0026:account-serviceの
 # ABAC(表5)を実機検証するにはjunior/seniorの複数アナリストが要る。以前はyamada-analystのみ)。
 apiVersion: v1
 kind: ConfigMap
@@ -36,7 +36,7 @@ data:
     # いずれもclientAuthenticatorType: federated-jwtへ移行したため、client_secretの設定は
     # 不要になった(realm-configmap.yamlのjwt.credential.*属性で完結する)。
 
-    # テストアナリスト(access-control-design.md 表6)。冪等: 既にいれば作り直さない。
+    # テストアナリスト(architecture.md 表6)。冪等: 既にいれば作り直さない。
     #
     # email/firstName/lastNameが未設定だと、ユーザーのrequiredActions配列が空でも
     # 「Account is not fully set up」(Keycloak 26のDeclarative User Profileが必須属性の

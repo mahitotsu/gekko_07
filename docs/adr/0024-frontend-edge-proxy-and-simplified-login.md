@@ -5,7 +5,7 @@
 
 ## Context
 
-fraud-agent実装（[ADR 0023](0023-fraud-agent-fraud-mcp-server-hop.md)）で`docs/backlog.md`の「frontend方向への横展開」のうちfraud-agent→fraud-mcp-serverホップは解消したが、frontend自体が未実装のため、frontend→account-service・frontend→fraud-agentは着手できずにいた。またADR 0023はfraud-agent自身のingress側（frontend→fraud-agent）の実機検証を「frontend実装まで持ち越し」としていた（[ADR 0014](0014-fraud-agent-token-exchange.md) Consequences由来の制約）。
+fraud-agent実装（[ADR 0023](0023-fraud-agent-fraud-mcp-server-hop.md)）で`docs/architecture.md`の「frontend方向への横展開」のうちfraud-agent→fraud-mcp-serverホップは解消したが、frontend自体が未実装のため、frontend→account-service・frontend→fraud-agentは着手できずにいた。またADR 0023はfraud-agent自身のingress側（frontend→fraud-agent）の実機検証を「frontend実装まで持ち越し」としていた（[ADR 0014](0014-fraud-agent-token-exchange.md) Consequences由来の制約）。
 
 frontendは他5サービスと異なり、SPIFFE mTLSを持てないブラウザが実際の呼び出し元になる唯一のサービスであり、[ADR 0017](0017-edge-proxy-full-keycloak-mtls.md)のedge-proxyが「frontend実装時にroute_configへ追加する」と想定していたピースでもある。
 
@@ -48,11 +48,11 @@ frontend/fraud-agentが共に`client_secret`ではなく`federated-jwt`になっ
 - account-serviceへの読み取り・確定操作：`$EDGE/accounts/{id}/transactions`（GET）・`$EDGE/accounts/{id}/unfreeze`（POST）（新規。account-serviceの新設unfreezeポリシーもここで検証される）
 - fraud-agentへのチャット開始：`$EDGE/chat`（POST）（旧：fraud-agent-stub Podへの直接pod-exec呼び出しで代用）
 
-一方、パターン①（fraud-mcp-server→account-service）が使う個別トークン（`aud=fraud-mcp-server`）は、table 1（access-control-design.md）ではfrontendに許可されていない（frontend→fraud-mcp-serverの直接exchangeはDENY）。旧verify-hop.shはこれを無視してfrontend役に直接exchangeさせていたが、これは意図しない抜け道だった（Keycloakの`account:read`スコープが3つのaudienceマッパーを共有しているため、技術的には成功してしまっていた。table 1のDENYはKeycloak側の強制ではなく、各クライアントの実装が要求するaudienceを自制することに依存している）。今回、`frontend→fraud-agent→fraud-mcp-server`という実チェーンを、各サービス自身のtoken-exchangeサイドカーへ直接（Envoyが送るのと同じ形で）リクエストして正しいトークンを取得する方式に置き換え、この抜け道を使わなくなった。
+一方、パターン①（fraud-mcp-server→account-service）が使う個別トークン（`aud=fraud-mcp-server`）は、table 1（architecture.md）ではfrontendに許可されていない（frontend→fraud-mcp-serverの直接exchangeはDENY）。旧verify-hop.shはこれを無視してfrontend役に直接exchangeさせていたが、これは意図しない抜け道だった（Keycloakの`account:read`スコープが3つのaudienceマッパーを共有しているため、技術的には成功してしまっていた。table 1のDENYはKeycloak側の強制ではなく、各クライアントの実装が要求するaudienceを自制することに依存している）。今回、`frontend→fraud-agent→fraud-mcp-server`という実チェーンを、各サービス自身のtoken-exchangeサイドカーへ直接（Envoyが送るのと同じ形で）リクエストして正しいトークンを取得する方式に置き換え、この抜け道を使わなくなった。
 
 ## Consequences
 
-- frontend→account-service（読み取り・確定パス両方）・frontend→fraud-agentのToken Exchangeが実機で検証された。`docs/backlog.md`の「frontend方向への横展開」は完全に解消した
+- frontend→account-service（読み取り・確定パス両方）・frontend→fraud-agentのToken Exchangeが実機で検証された。`docs/architecture.md`の「frontend方向への横展開」は完全に解消した
 - ADR 0023が「frontend実装まで検証できない」としていたfraud-agent自身のingress（mTLS+jwt_authn+rbac+合言葉）が、実際のfrontendから初めて実機検証された
 - account-serviceの`unfreeze` rbacポリシー欠落という既存の抜けを発見・是正した
 - Keycloakの`account:read`スコープの監査ギャップ（audienceパラメータを技術的に自由に選べる）が判明した。Client Policiesを使わない設計（architecture.md §4）の下では、これは各クライアント実装（token-exchangeサイドカーのSCOPE_RULES）の自制に依存する。今のところ全クライアントのサイドカーは正しいaudienceしか要求しないためリスクは顕在化していないが、将来的な懸念としてinsights.mdに記録した

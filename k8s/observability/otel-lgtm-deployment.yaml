@@ -2,7 +2,7 @@
 # 今回使うのはGrafana(3000)+Loki(3100)のみ。Prometheus/Tempo/Pyroscope/OTel Collectorも
 # 同じコンテナ内で起動するが未使用(個別無効化はできなかった。デモ/開発用イメージとして
 # 公式に非推奨とされる本番運用は行わない前提で許容する)。
-# PVCなし(ephemeral): Pod再起動でログは失われる。永続化が要る場合は別途検討する(backlog.md)。
+# PVCなし(ephemeral): Pod再起動でログは失われる。永続化が要る場合は別途検討する(architecture.md)。
 apiVersion: apps/v1
 kind: Deployment
 metadata:

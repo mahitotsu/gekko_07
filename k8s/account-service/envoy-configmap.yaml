@@ -1,5 +1,5 @@
 # account-service ingress側Envoy設定(ADR 0009)。jwt_authn(署名・iss・aud検証、クレームを
-# x-auth-*ヘッダーへ)→rbac(access-control-design.md 表2のscope要求)→lua(rbac通過後にのみ
+# x-auth-*ヘッダーへ)→rbac(architecture.md 表2のscope要求)→lua(rbac通過後にのみ
 # 合言葉ヘッダーを付与。ADR 0009 §2③)→router、の順で通す。
 #
 # freezeポリシーはfraud-detection-engineのclient_credentialsトークン(委任チェーン外。表4参照)

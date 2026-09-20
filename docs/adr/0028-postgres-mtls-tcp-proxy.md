@@ -26,7 +26,7 @@
 **対象外**：`keycloak-db-init`・`account-service-db-init`・`analyst-attribute-service-db-init`・`analyst-attribute-service-seed`・`fraud-detection-engine-db-init`という、psqlでsuperuser権限のまま直接接続する1回限りの初期化Job。理由：
 1. 常駐アプリのmTLS化は、これまで6ホップに使ってきたEnvoyサイドカーパターンの単純な横展開である。
 2. Jobは1回だけ動いて終わる処理であり、Envoyサイドカーを付けると、EnvoyがJobの終了を検知して自身も終了しないと、Jobがいつまでも完了しない。これを解決するKubernetesの仕組み（`restartPolicy: Always`のinitContainer＝ネイティブsidecar、1.29+でGA）はこのクラスタ（v1.35）で使えることを確認済みだが、このリポジトリでは一度も使ったことがないパターンである。
-3. 「常駐アプリのmTLS化」と「Jobへの新しいK8sパターン導入」という性質の異なる2つの新規性を1つの変更に混ぜず、常駐アプリ側だけに絞る。db-init/seed Jobは引き続きNetworkPolicyのみで保護する（[docs/backlog.md](../backlog.md)に追加検討事項として記録）。
+3. 「常駐アプリのmTLS化」と「Jobへの新しいK8sパターン導入」という性質の異なる2つの新規性を1つの変更に混ぜず、常駐アプリ側だけに絞る。db-init/seed Jobは引き続きNetworkPolicyのみで保護する（[docs/architecture.md](../architecture.md)に追加検討事項として記録）。
 
 ## Design Decisions
 

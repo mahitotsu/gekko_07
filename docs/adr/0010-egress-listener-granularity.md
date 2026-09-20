@@ -34,7 +34,7 @@ architecture.md §3は「次ホップごとに専用のegressリスナーを1つ
 
 ### 2. audienceはHostヘッダーから自動導出する（context_extensionsでの明示指定は不要）
 
-[access-control-design.md](../access-control-design.md)表1の注記で、本システムは既に「各サービスのaudience名とKeycloakのクライアントidを同一にする」ことを前提にしている。この前提を**KubernetesのService名にも拡張し、audience名＝Keycloakクライアントid＝Kubernetes Service名＝アプリが呼び出すホスト名を、常に同一の文字列にする**（MUST）。
+[architecture.md](../architecture.md)表1の注記で、本システムは既に「各サービスのaudience名とKeycloakのクライアントidを同一にする」ことを前提にしている。この前提を**KubernetesのService名にも拡張し、audience名＝Keycloakクライアントid＝Kubernetes Service名＝アプリが呼び出すホスト名を、常に同一の文字列にする**（MUST）。
 
 この結果、ext_authzサービスはCheckRequestに含まれる`Host`ヘッダーの値を、そのままToken Exchangeの`audience`パラメータとして使える。audienceをリスナー・ルートごとに静的設定する必要がなくなり、設定の重複が1つ減る。
 
@@ -42,7 +42,7 @@ architecture.md §3は「次ホップごとに専用のegressリスナーを1つ
 
 ### 3. scopeは常に「(ホスト, パス, メソッド) → scope」という単一の仕組みで決める
 
-scopeは最終的に相手サービスの**実際のAPIパス・メソッド**から決まるべきものであり、これは相手サービス自身が公開する契約（[access-control-design.md](../access-control-design.md)表2を拡張した`(パス, メソッド) → スコープ`対応表）を参照して解決する。**この対応表はext_authzサービス自身がコードとして持ち**、CheckRequestで自動転送される`Path`+`Method`（§2訂正箇所参照）から解決する。**これは全ての委任関係に対して同じ1つの仕組みであり、特別扱いするケースはない**（`audience`は§2の通り自動転送される`Host`から導出されるため、Envoy側のroute設定はどのクラスタへ転送するかという宛先の振り分けだけを担い、scope解決ロジックを持たない）。
+scopeは最終的に相手サービスの**実際のAPIパス・メソッド**から決まるべきものであり、これは相手サービス自身が公開する契約（[architecture.md](../architecture.md)表2を拡張した`(パス, メソッド) → スコープ`対応表）を参照して解決する。**この対応表はext_authzサービス自身がコードとして持ち**、CheckRequestで自動転送される`Path`+`Method`（§2訂正箇所参照）から解決する。**これは全ての委任関係に対して同じ1つの仕組みであり、特別扱いするケースはない**（`audience`は§2の通り自動転送される`Host`から導出されるため、Envoy側のroute設定はどのクラスタへ転送するかという宛先の振り分けだけを担い、scope解決ロジックを持たない）。
 
 [services.md](../services.md)の7つの委任関係を実際に当てはめると、結果として2種類の見た目になる。
 
@@ -57,7 +57,7 @@ scopeは最終的に相手サービスの**実際のAPIパス・メソッド**�
 
 「scopeがpathによらず1つだけ」なホスト（前者4つ）は、たまたまルートが1本（ワイルドカード）に潰れているだけであり、「scopeがpathで変わる」ホスト（後者2つ）はルートが複数本になる。**両者は設計上の別カテゴリではなく、同じ仕組みが生成する結果の違いにすぎない**。
 
-パスパターンは[access-control-design.md](../access-control-design.md)表2に拡張済み（account-service自身のingress側rbacポリシーと、これを呼ぶ全ての呼び出し元のegress側scope解決の、両方が参照する単一の情報源）。「account-serviceの完全なAPI設計（レスポンス形式・ページネーション等）」を待つ必要はない——Envoyのroute解決に要るのは表2のパスパターンだけであり、これは既に決まっているため、この節はもう未解決ではない。アプリのコードは常に「実ホスト名・実パス・実メソッドで普通にAPIを呼ぶ」だけでよい。そのAPIコールに対応するEnvoyルートが1本のワイルドカードなのか複数の実パスマッチなのかは、アプリのコード側が意識する必要は一切ない。
+パスパターンは[architecture.md](../architecture.md)表2に拡張済み（account-service自身のingress側rbacポリシーと、これを呼ぶ全ての呼び出し元のegress側scope解決の、両方が参照する単一の情報源）。「account-serviceの完全なAPI設計（レスポンス形式・ページネーション等）」を待つ必要はない——Envoyのroute解決に要るのは表2のパスパターンだけであり、これは既に決まっているため、この節はもう未解決ではない。アプリのコードは常に「実ホスト名・実パス・実メソッドで普通にAPIを呼ぶ」だけでよい。そのAPIコールに対応するEnvoyルートが1本のワイルドカードなのか複数の実パスマッチなのかは、アプリのコード側が意識する必要は一切ない。
 
 ### 4. egressの2パターン（当初4パターン→[ADR 0014](0014-fraud-agent-token-exchange.md)で③④廃止）
 
@@ -82,7 +82,7 @@ egressで必要な処理は当初4種類あるとしていたが、③・④は[
 
 - architecture.md §3の記述を「実サービス名への透過的呼び出し」「audienceはHostヘッダーから自動導出」「scopeは常に(ホスト,パス,メソッド)→scopeという単一の仕組みで決める（結果としてワイルドカード1本のホストと複数ルートが要るホストに分かれる）」に更新した
 - **MUST**：Keycloakクライアントid＝Kubernetes Service名＝audience名は、常に同一の文字列にする（今後実装する全サービスのマニフェストで守る）
-- 先行検証（ADR 0002が予定するfraud-mcp-server→account-service）で、`hostAliases`＋Envoy `virtual_hosts`による透過的ルーティングを実機確認**済み**（`account:read`/`account:propose`いずれも200・期待した`x-auth-*`ヘッダーで到達）。パスパターンは[access-control-design.md](../access-control-design.md)表2に拡張済みだったため、先行検証を妨げる未決定事項はなかった
+- 先行検証（ADR 0002が予定するfraud-mcp-server→account-service）で、`hostAliases`＋Envoy `virtual_hosts`による透過的ルーティングを実機確認**済み**（`account:read`/`account:propose`いずれも200・期待した`x-auth-*`ヘッダーで到達）。パスパターンは[architecture.md](../architecture.md)表2に拡張済みだったため、先行検証を妨げる未決定事項はなかった
 - account-serviceの完全なAPI設計（レスポンス形式・ページネーション等の実装詳細）はaccount-service実装着手時に行うが、Envoyのroute解決に必要なパスパターン自体は表2に既に決まっているため、これはもう「egress設計のブロッカー」ではない
 - ext_authzサービスと実際のEnvoy bootstrap設定（`hostAliases`、`virtual_hosts`、`ExtAuthzPerRoute`）は、パターン①（Token Exchange、fraud-mcp-server→account-service）に加え、パターン②（client_credentials、fraud-detection-engine→account-service）についても実機検証**済み**（`k8s/ext-authz/`・`k8s/account-service/`・`k8s/fraud-mcp-server/`・`k8s/fraud-detection-engine/`。scopeは§2・§3訂正の通りcontext_extensionsを使わずext_authz側で解決する）。パターン②は、subject_tokenを持たない呼び出し元向けに、ext_authzサービスを`GRANT_TYPE=client_credentials`で動作させる専用インスタンス（`ext-authz-service-cc`。呼び出し元固定・scope固定）として実装した。パターン④（`direct_response`、`allowed_client_headers_on_success`）・パターン③（素通し）は未検証のまま利用者がいなくなり、[ADR 0014](0014-fraud-agent-token-exchange.md)で廃止した
 - パターン②の検証で2つの運用上の落とし穴が判明した（詳細は[insights.md](../insights.md)）。1つ目：Keycloakの`--import-realm`はデータディレクトリが空の初回起動時のみ有効なため、ADR 0011のシナリオ変更でrealm-configmap.yamlに追加した`fraud-detection-engine`クライアント・`account:unfreeze`スコープが、既にPostgresへ永続化済みのrealmには反映されていなかった（`gekko` realmを明示的に削除してKeycloakを再起動する必要があった。`make keycloak-reimport-realm`として整備した）。2つ目：Envoyサイドカーも同様にConfigMapの静的bootstrap設定を起動時に1度だけ読み込みホットリロードしないため、account-serviceのrbacポリシーが`unfreeze-proposals`への改名前の古いパスパターンのまま稼働し続けていた（`make deploy-verify-hop`が対象Deploymentを常に再起動するよう修正済み）

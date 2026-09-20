@@ -5,7 +5,7 @@
 
 ## Context
 
-`docs/backlog.md`の「frontend方向への横展開」は、ADR 0019〜0021で確立した「呼び出し元自身のPod内Envoyサイドカー＋SPIRE発行JWT-SVIDクライアント認証」パターンを、残りのホップ（frontend→account-service、frontend→fraud-agent、fraud-agent→fraud-mcp-server）へ展開する項目だが、frontend/fraud-agentの両方が未実装であることを理由に着手できずにいた。
+`docs/architecture.md`の「frontend方向への横展開」は、ADR 0019〜0021で確立した「呼び出し元自身のPod内Envoyサイドカー＋SPIRE発行JWT-SVIDクライアント認証」パターンを、残りのホップ（frontend→account-service、frontend→fraud-agent、fraud-agent→fraud-mcp-server）へ展開する項目だが、frontend/fraud-agentの両方が未実装であることを理由に着手できずにいた。
 
 frontendはブラウザ向けOIDCフロー・edge-proxyルーティング変更・`directAccessGrantsEnabled`後始末など決定事項が多く単独でも大きいため、先にスコープの小さい**fraud-agent**（ingress+egressの単一固定スコープ構成で、account-serviceの構造にほぼそのまま倣える）に着手し、frontend実装（別途）の土台を作ることにした。
 
@@ -47,7 +47,7 @@ frontend自体が未実装のため、fraud-agentのingress（mTLS+jwt_authn+rba
 ## Consequences
 
 - fraud-agent→fraud-mcp-serverのToken Exchangeで、Keycloakが検証する身元（JWT-SVID）と主張するclient_idが一致する構成を最初から実装できた。`ext-authz-service`のような共有インスタンス方式を経由する中間ステップは発生しなかった
-- `docs/backlog.md`の「frontend方向への横展開」のうち、fraud-agent→fraud-mcp-serverホップ分は解消した。残るfrontend→account-service・frontend→fraud-agentはfrontend実装まで持ち越し
+- `docs/architecture.md`の「frontend方向への横展開」のうち、fraud-agent→fraud-mcp-serverホップ分は解消した。残るfrontend→account-service・frontend→fraud-agentはfrontend実装まで持ち越し
 - fraud-mcp-serverはaccount-serviceに続き、ingress/egress両方のリスナーを持つ2番目のサービスになった
 - fraud-agent自身のingress（frontend→fraud-agent）の実機検証はfrontend実装まで持ち越し。frontend実装時に、`scripts/verify-hop.sh`のステップ15〜16をfrontendの実際のToken ExchangeとfraudエージェントServiceへの実呼び出し（mTLS込み）に置き換える必要がある
 - `scripts/verify-hop.sh`に新規ステップを追加し、既存ステップとあわせて全ステップが成功することを確認した

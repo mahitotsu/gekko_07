@@ -13,7 +13,7 @@
 # (`spire-agent api fetch jwt`)。grpcio等の新規Python依存を増やさずに済む。
 #
 # scope解決ロジック(SCOPE_RULES)はk8s/ext-authz/app-configmap.yamlと同じ表2の対応表。
-# 単一の情報源はaccess-control-design.md 表2であり、ここはそれをコードに落としたコピー。
+# 単一の情報源はarchitecture.md 表2であり、ここはそれをコードに落としたコピー。
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -48,7 +48,7 @@ data:
     LISTEN_HOST = os.environ.get("LISTEN_HOST", "127.0.0.1")
     LISTEN_PORT = int(os.environ.get("LISTEN_PORT", "9002"))
 
-    # access-control-design.md 表2をそのまま反映した(path, method) -> scope の対応表。
+    # architecture.md 表2をそのまま反映した(path, method) -> scope の対応表。
     SCOPE_RULES = [
         (re.compile(r"^/accounts/[^/]+/unfreeze-proposals$"), "POST", "account:propose"),
         (re.compile(r"^/accounts/[^/]+(/.*)?$"), "GET", "account:read"),

@@ -26,5 +26,5 @@
 
 - 「凍結は自動・即時、解除は人間の判断」という構造は、実際の不正対策運用（自動ブロック→誤検知レビュー→解除）に近く、ドメイン知識なしでも直感的に伝わるリアリティを保ったまま、以前より実務に即したシナリオになる
 - 凍結解除も「誤って解除すれば被害が継続する」という意味で不可逆・高リスクな操作であり続けるため、ADR 0001が狙っていた「AIには実行権限を持たせない」という設計思想の説得力は損なわれない
-- AML/SAR的な監査要件（誰が何を根拠に何を確定したか）は、凍結の自動実行記録と凍結解除提案・確定の記録という2種類の監査対象に分かれ、architecture.md §8の監査設計とより自然に結びつく
-- 影響範囲：requirements.md、access-control-requirements.md（BR2・BR3・BR5〜BR8）、access-control-design.md（表1・表2・表4・表5）、architecture.md（§2・§4・§5・§7・§8）、services.md、use-cases.md、README.md、および該当するKubernetesマニフェスト（realm-configmap.yaml等）を本ADRに合わせて更新する
+- AML/SAR的な監査要件（誰が何を根拠に何を確定したか）は、凍結の自動実行記録と凍結解除提案・確定の記録という2種類の監査対象に分かれ、architecture.md §9の監査設計とより自然に結びつく
+- 影響範囲：requirements.md（目的の記述、BR2・BR3・BR5〜BR8）、architecture.md（表1・表2・表4・表5、§2・§4・§5・§8・§9、実行時シナリオ節）、services.md、README.md、および該当するKubernetesマニフェスト（realm-configmap.yaml等）を本ADRに合わせて更新する

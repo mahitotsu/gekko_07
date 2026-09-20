@@ -5,7 +5,7 @@
 
 ## Context
 
-[ADR 0012](0012-spiffe-spire-mtls-single-hop.md)・[ADR 0015](0015-dpop-removal-and-fraud-detection-engine-mtls.md)で`fraud-mcp-server`・`fraud-detection-engine` → `account-service`の1ホップはSPIRE mTLS化し、account-serviceへのplaintext到達経路は完全に撤廃した。しかしADR 0012のスコープ境界(§スコープ境界)・[backlog.md](../backlog.md)が明示していた通り、Token Exchange/client_credentialsの実装本体である`ext-authz-service`(および`ext-authz-service-cc`)はEnvoyサイドカーを持たず、以下2ホップが平文のまま残っていた。
+[ADR 0012](0012-spiffe-spire-mtls-single-hop.md)・[ADR 0015](0015-dpop-removal-and-fraud-detection-engine-mtls.md)で`fraud-mcp-server`・`fraud-detection-engine` → `account-service`の1ホップはSPIRE mTLS化し、account-serviceへのplaintext到達経路は完全に撤廃した。しかしADR 0012のスコープ境界(§スコープ境界)・[architecture.md](../architecture.md)が明示していた通り、Token Exchange/client_credentialsの実装本体である`ext-authz-service`(および`ext-authz-service-cc`)はEnvoyサイドカーを持たず、以下2ホップが平文のまま残っていた。
 
 1. 各サービスのEnvoy(egress) → `ext-authz-service`/`ext-authz-service-cc`
 2. `ext-authz-service`(-cc) → Keycloak
@@ -32,7 +32,7 @@ Keycloakには、SPIFFE身元を持ちえない呼び出し元(ブラウザ経�
 - 既存の`http:8080`/`http-mgmt:9000`は無変更のまま残す。keycloakコンテナ自身が直接受け、ブラウザ・`kcadm.sh`・`verify-hop.sh`向けの経路として引き続き平文のまま機能する
 - 新設の`https-mtls:8443`はEnvoyサイドカーが受け、`require_client_certificate: true`＋`match_typed_subject_alt_names`で`ext-authz-service`・`ext-authz-service-cc`の2つのSPIFFE IDのみに限定する。同一Pod内のkeycloakコンテナ(127.0.0.1:8080)へ平文で転送する(TLS終端はEnvoyで完結しており、Pod内loopback越えまで暗号化する必要はない)
 
-この非対称性は将来「まだ塞ぎ忘れている」と誤解されないよう、意図的な恒久設計としてbacklog.mdに明記する。
+この非対称性は将来「まだ塞ぎ忘れている」と誤解されないよう、意図的な恒久設計としてarchitecture.mdに明記する。
 
 ### SPIREのbase trackへの格上げ
 
@@ -40,7 +40,7 @@ KeycloakはPostgresと並ぶ基盤コンポーネントであり、スタブ実�
 
 ## Consequences
 
-- `ext-authz-service`(-cc)↔呼び出し元Envoy、`ext-authz-service`(-cc)↔Keycloakの両ホップがmTLS化され、[ADR 0002](0002-token-exchange-in-envoy-sidecar.md)・[ADR 0009](0009-envoy-ingress-responsibility-and-bypass-prevention.md)が掲げる「TLS終端は常にEnvoy」という設計の一貫性が回復した。backlog.mdの「ext-authz-service自体のSPIFFE化」項目は解消済みとして削除する
+- `ext-authz-service`(-cc)↔呼び出し元Envoy、`ext-authz-service`(-cc)↔Keycloakの両ホップがmTLS化され、[ADR 0002](0002-token-exchange-in-envoy-sidecar.md)・[ADR 0009](0009-envoy-ingress-responsibility-and-bypass-prevention.md)が掲げる「TLS終端は常にEnvoy」という設計の一貫性が回復した。architecture.mdの「ext-authz-service自体のSPIFFE化」項目は解消済みとして削除する
 - **(0017/0022で覆った)** 「Keycloakの8080/9000は今後も恒久的に平文のまま残る」と、ブラウザ・管理操作というSPIFFE身元を持ちえない呼び出し元が存在する限り解消できない構造的境界だと当時は判断した。しかし[ADR 0017](0017-edge-proxy-full-keycloak-mtls.md)がedge-proxyを導入してこの非対称性自体を吸収し(8080はkeycloakコンテナのloopbackへ後退、外部からの平文到達点はedge-proxy側に一本化)、[ADR 0022](0022-keycloak-mgmt-probe-exec.md)が9000もexecプローブ化でloopback限定にしたことで、「解消不能な恒久的非対称性」という前提自体が外れた
 - SPIREが`make deploy`単独の実行でも起動するようになり、Keycloak+Postgresだけを触りたい場合でも`k8s/spire/`一式(StatefulSet+PVC、DaemonSet、`hostPID`/`hostNetwork`)が常時稼働するようになった。ローカル環境のリソース消費は増えるが、新しいメカニズムを追加しない(既存のSPIRE基盤を再利用する)ことを優先した
-- **(0017で解消済み)** account-serviceのjwt_authnが参照するKeycloakのJWKSエンドポイントは当初`http://keycloak.gekko.svc.cluster.local:8080/...`のまま本ADRの対象外としていたが、[ADR 0017](0017-edge-proxy-full-keycloak-mtls.md)のKeycloak完全mTLS化に伴い`https://keycloak.gekko.svc.cluster.local:8443/...`(mTLS、`keycloak_jwks`クラスタ)に切り替わっている([k8s/account-service/envoy-configmap.yaml](../../k8s/account-service/envoy-configmap.yaml)参照)。backlog.mdへの追記が漏れたまま本ADRの記述だけが古くなっていたが、実体は既に解消済み
+- **(0017で解消済み)** account-serviceのjwt_authnが参照するKeycloakのJWKSエンドポイントは当初`http://keycloak.gekko.svc.cluster.local:8080/...`のまま本ADRの対象外としていたが、[ADR 0017](0017-edge-proxy-full-keycloak-mtls.md)のKeycloak完全mTLS化に伴い`https://keycloak.gekko.svc.cluster.local:8443/...`(mTLS、`keycloak_jwks`クラスタ)に切り替わっている([k8s/account-service/envoy-configmap.yaml](../../k8s/account-service/envoy-configmap.yaml)参照)。architecture.mdへの追記が漏れたまま本ADRの記述だけが古くなっていたが、実体は既に解消済み

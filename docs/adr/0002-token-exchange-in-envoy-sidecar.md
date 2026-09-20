@@ -30,5 +30,5 @@ Envoyでの実現方式として以下を検討した。
 ## Consequences
 
 - サービスの実装言語ごとのToken Exchangeクライアント重複実装が発生しない
-- サイドカー方式そのものの検証コストが増える（Envoy bootstrap設定、ext_authzサービスの実装、Kubernetesマニフェスト）。1ホップで先行検証してから残りのホップへ横展開する方針とする（backlog.md参照）
-- アプリ層でのDPoP検証をアプリ層に残すかサイドカー側に寄せるかは未決定（backlog.md参照）
+- サイドカー方式そのものの検証コストが増える（Envoy bootstrap設定、ext_authzサービスの実装、Kubernetesマニフェスト）。1ホップで先行検証してから残りのホップへ横展開する方針とする（architecture.md参照）
+- アプリ層でのDPoP検証をアプリ層に残すかサイドカー側に寄せるかは未決定（architecture.md参照）

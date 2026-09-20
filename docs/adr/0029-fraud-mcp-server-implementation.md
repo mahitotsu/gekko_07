@@ -7,7 +7,7 @@
 
 [ADR 0027](0027-fraud-detection-engine-implementation.md)でfraud-detection-engineを本実装した時点で、README.mdの残り未着手項目はfraud-mcp-server・fraud-agent・frontendの3サービスだった。[docs/services.md](../services.md)の記述順・[architecture.md](../architecture.md) §3の実装順序（1ホップ先行検証の順）のいずれでもfraud-mcp-server→account-serviceが残り3サービス中もっとも先頭に位置し、かつaccount-serviceのみに依存する（fraud-agent・frontend未実装への依存が無い）ため本実装に着手する最有力候補だった。ロジックもMCPツール3本をaccount-serviceへ中継するだけで、fraud-detection-engineの自律検知ループより単純である。
 
-fraud-mcp-serverは[ADR 0011](0011-scenario-ai-assisted-unfreeze.md)・[use-cases.md](../use-cases.md)で「account-serviceの読み取り・提案系機能をMCPツールとして公開し、AIエージェント（fraud-agent）とaccount-serviceの間に立ってMCPプロトコルとREST/gRPCの変換を担う」役割と定義されている。scope設計（[access-control-design.md](../access-control-design.md) 表2）は既にfraud-agent→fraud-mcp-server（`account:read`固定、[ADR 0023](0023-fraud-agent-fraud-mcp-server-hop.md)）・fraud-mcp-server→account-service（`account:read`/`account:propose`）の両ホップとも1ホップ先行検証済みで、Envoy/token-exchangeサイドカー（[ADR 0019](0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md)）は無変更のまま使い回せる。本実装のスコープは`app`コンテナ（MCPサーバー本体）のみであり、fraud-agent・frontend自体は引き続きスタブのままとした。
+fraud-mcp-serverは[ADR 0011](0011-scenario-ai-assisted-unfreeze.md)・[architecture.md](../architecture.md)で「account-serviceの読み取り・提案系機能をMCPツールとして公開し、AIエージェント（fraud-agent）とaccount-serviceの間に立ってMCPプロトコルとREST/gRPCの変換を担う」役割と定義されている。scope設計（[architecture.md](../architecture.md) 表2）は既にfraud-agent→fraud-mcp-server（`account:read`固定、[ADR 0023](0023-fraud-agent-fraud-mcp-server-hop.md)）・fraud-mcp-server→account-service（`account:read`/`account:propose`）の両ホップとも1ホップ先行検証済みで、Envoy/token-exchangeサイドカー（[ADR 0019](0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md)）は無変更のまま使い回せる。本実装のスコープは`app`コンテナ（MCPサーバー本体）のみであり、fraud-agent・frontend自体は引き続きスタブのままとした。
 
 ## Decision
 
@@ -23,7 +23,7 @@ MCPツール3本を実装した。いずれもaccount-serviceへの単純な中�
 
 - FastMCP（`fastmcp==4.0.5`）の`http_app(path="/mcp")`が返すStarlette ASGIアプリを`Starlette(routes=[...], lifespan=mcp_app.lifespan)`でマウントし`uvicorn`で直接runする。`lifespan`を明示的に共有しないとMCPセッション管理が機能しないこと、`BaseHTTPMiddleware`がMCPのSSEストリーミングと相性が悪くASGIミドルウェアを素で書く必要があることは実機検証で判明した（詳細は[insights.md](../insights.md)「fraud-mcp-server本実装」節）
 - FastMCP自体の認証機能（`auth=`）は設定しない。Envoy ingress（`jwt_authn`+`rbac`、`forward: true`で元のAuthorizationヘッダーも保持）が既にscope検証を完了させているため、アプリはそれを信頼するだけ（account-serviceの`AccountController`と同じ責務分担）
-- 多層防御（ADR 0009 §2、account-serviceの`SecurityHeadersFilter.java`と同じ2点：①接続元loopback再チェック、②合言葉ヘッダー検証）を素のASGIミドルウェアとして移植した。既存のPythonスタブのロジック・環境変数名（`APP_BIND_HOST`/`APP_PORT`/`HANDSHAKE_HEADER_NAME`/`HANDSHAKE_TOKEN_FILE`）をそのまま踏襲した（backlog.mdの命名統一方針を継続）
+- 多層防御（ADR 0009 §2、account-serviceの`SecurityHeadersFilter.java`と同じ2点：①接続元loopback再チェック、②合言葉ヘッダー検証）を素のASGIミドルウェアとして移植した。既存のPythonスタブのロジック・環境変数名（`APP_BIND_HOST`/`APP_PORT`/`HANDSHAKE_HEADER_NAME`/`HANDSHAKE_TOKEN_FILE`）をそのまま踏襲した（architecture.mdの命名統一方針を継続）
 - 各ツール内で`fastmcp.server.dependencies.get_http_headers(include={"authorization"})`（例外を投げない安全なAPI）で受信した元のAuthorizationヘッダーをそのままaccount-serviceへのリクエストに転送する。アプリ自身はToken Exchangeを一切行わない。egressのtoken-exchangeサイドカー（ADR 0019。無変更）がこれをsubject_tokenとして横取りし、新しいトークンへ差し替えてから実際のaccount-serviceへ転送する（account-serviceの`AnalystAttributeClient.java`と同型のパターン）
 - account-service呼び出しは`httpx.AsyncClient(base_url=ACCOUNT_SERVICE_URL)`（既定`http://account-service/`、hostAliasesで127.0.0.1へ横取りされる。新規env var、account-serviceの`ANALYST_ATTRIBUTE_SERVICE_URL`と同型）。非200・接続失敗はいずれも`ToolError`に変換し、account-service側のレスポンス本文（存在秘匿の404・権限不足の403等）をそのまま漏らさない一律のfail-close（ADR 0009の思想を踏襲）
 - 診断用に`GET /healthz`（プレーンJSON 200固定、Envoy ingressの同じscope検証配下）を追加した。理由は後述

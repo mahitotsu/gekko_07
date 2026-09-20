@@ -48,5 +48,5 @@ ADR 0013の実機検証で、Token ExchangeにおけるDPoP拘束は以下の性
 
 - account-serviceへのplaintextでの到達経路が完全に無くなった。ADR 0012 Consequencesが残していた既知の限界(「account-serviceへのplaintext到達経路の残存」)は解消された
 - account-serviceの呼び出し元は全てSPIRE発行のSPIFFE IDを持つワークロードに限定される。今後account-serviceへ新しい呼び出し元を追加する場合、SPIRE registration entryの追加とmTLS対応が前提になる
-- DPoPの実機検証結果(ADR 0013)自体は無駄にはならない。Token ExchangeとDPoP拘束の相互作用(「拘束のスロットは1つ、終端ホップのみ」)という知見は、将来frontendが実装されてDPoPを再検討する際の判断材料としてbacklog.mdに残す
+- DPoPの実機検証結果(ADR 0013)自体は無駄にはならない。Token ExchangeとDPoP拘束の相互作用(「拘束のスロットは1つ、終端ホップのみ」)という知見は、将来frontendが実装されてDPoPを再検討する際の判断材料としてarchitecture.mdに残す
 - `ext-authz-service`はDPoP関連の依存(`ecdsa`のpip install)が無くなり、再び純粋な標準ライブラリのみの実装に戻った

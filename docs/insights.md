@@ -1,6 +1,6 @@
 # 実装で得た気づき・罠
 
-実装を進める過程で見つかった、再発しそうな罠や実機検証で判明した仕様上の落とし穴を記録するナレッジベース。設計判断そのものは[architecture.md](architecture.md)、未着手の改善項目は[backlog.md](backlog.md)を参照。
+実装を進める過程で見つかった、再発しそうな罠や実機検証で判明した仕様上の落とし穴を記録するナレッジベース。設計判断そのものは[architecture.md](architecture.md)、未着手の改善項目は[architecture.md](architecture.md)を参照。
 
 **注意**：以下は発見当時の実装（サービス名・ファイルパス）に基づく記述をそのまま残している。`ext-authz-service`・`ext-authz-service-cc`・`dpop-verifier`は、[ADR 0019](adr/0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md)/[0020](adr/0020-fraud-detection-engine-identity-gap-and-client-credentials-federated-jwt.md)/[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)でいずれも撤去済みで、現在は存在しない（現在の構成は[architecture.md](architecture.md)参照）。ただしEnvoy/Keycloak/SPIREそのものの仕様に関する知見は、後継のサイドカー（`token-exchange`・`client-credentials`）にもそのまま当てはまる。
 
@@ -20,7 +20,7 @@
 
 **原因**：`context_extensions`はgRPCモードのCheckRequest.attributes専用の仕組みで、HTTPモードには伝達経路がない。
 
-**対応**：HTTPモードのext_authzは、`Host`・`Method`・`Path`・`Content-Length`・`Authorization`を`authorization_request.allowed_headers`の設定と無関係に常に自動転送することも確認済み。ext_authzサービス自身が、この自動転送される`Host`（audience）と`Path`+`Method`（access-control-design.md 表2の対応表で解決するscope）だけからToken Exchangeリクエストを組み立てるよう設計を訂正した（現在は[k8s/fraud-mcp-server/token-exchange-app-configmap.yaml](../k8s/fraud-mcp-server/token-exchange-app-configmap.yaml)）。ADR 0010・architecture.md §3を直接訂正済み（決定自体ではなく実装メカニズムの誤りだったため、新ADRは起こしていない）。
+**対応**：HTTPモードのext_authzは、`Host`・`Method`・`Path`・`Content-Length`・`Authorization`を`authorization_request.allowed_headers`の設定と無関係に常に自動転送することも確認済み。ext_authzサービス自身が、この自動転送される`Host`（audience）と`Path`+`Method`（architecture.md 表2の対応表で解決するscope）だけからToken Exchangeリクエストを組み立てるよう設計を訂正した（現在は[k8s/fraud-mcp-server/token-exchange-app-configmap.yaml](../k8s/fraud-mcp-server/token-exchange-app-configmap.yaml)）。ADR 0010・architecture.md §3を直接訂正済み（決定自体ではなく実装メカニズムの誤りだったため、新ADRは起こしていない）。
 
 ### Keycloak Standard Token Exchange V2:audience解決にはclient scope側のAudience protocol mapperが要る
 
@@ -48,7 +48,7 @@
 
 ### ログイントークンに`aud`クレームが実は含まれていなかった（解消済み）
 
-**症状**：`frontend`クライアントでROPCログインして得たトークンをデコードすると、`aud`クレームが一切存在しなかった（`azp: frontend`はあるが`aud`は無し）。access-control-design.md「認証」節は「ログイントークンの`aud`は`frontend`（単一）」と明記している。
+**症状**：`frontend`クライアントでROPCログインして得たトークンをデコードすると、`aud`クレームが一切存在しなかった（`azp: frontend`はあるが`aud`は無し）。architecture.md「認証」節は「ログイントークンの`aud`は`frontend`（単一）」と明記している。
 
 **原因**：`aud`クレームは、要求元クライアントに割り当てられたclient scope上のAudience protocol mapperから生成される（上記「Keycloak Standard Token Exchange V2」の項参照）。ログイン自体（Authorization Code / ROPC）はToken Exchangeではなく、かつfrontend自身への自己audience付与マッパーを持つscopeは一つも定義していなかったため、素のログイントークンには`aud`が乗らなかった。
 
@@ -168,7 +168,7 @@
 
 **原因**：account-serviceのingressリスナーは全呼び出し元が共有する単一のリスナーであり、SPIRE化した呼び出し元専用のmTLS要件を「そのリスナー全体」に課すと、SPIRE化していない他の呼び出し元も等しく拒否される。ADR 0012のスコープはfraud-mcp-server→account-serviceの1ホップのみで、fraud-detection-engineのSPIRE化は明示的にスコープ外としていたため、この副作用は避ける必要があった。
 
-**対応**：`filter_chain_match.transport_protocol`でTLS接続とplaintext接続を別の`filter_chains`エントリに振り分け、同じHTTPフィルタチェーン（jwt_authn/rbac/lua/router）を両方に適用する構成にした。ただしこれには重要な限界がある：**plaintextでの到達自体は依然として可能であり、mTLSは「TLSを選んだ場合にのみ強制される」任意の防御層にとどまる**。account-service側はL4（filter_chain選択）の時点ではHTTPパスを見られないため、「読み取り・提案系のパスだけmTLS必須、freezeパスだけplaintext許可」のようなパス単位の強制はできない。この構成でR2（相互認証）を額面通り満たすのは実質的にfraud-mcp-server経由の呼び出しのみであり、account-service全体としては「plaintextでの到達自体を遮断できていない」ことを既知の限界としてADR 0012・backlog.mdに明記した。
+**対応**：`filter_chain_match.transport_protocol`でTLS接続とplaintext接続を別の`filter_chains`エントリに振り分け、同じHTTPフィルタチェーン（jwt_authn/rbac/lua/router）を両方に適用する構成にした。ただしこれには重要な限界がある：**plaintextでの到達自体は依然として可能であり、mTLSは「TLSを選んだ場合にのみ強制される」任意の防御層にとどまる**。account-service側はL4（filter_chain選択）の時点ではHTTPパスを見られないため、「読み取り・提案系のパスだけmTLS必須、freezeパスだけplaintext許可」のようなパス単位の強制はできない。この構成でR2（相互認証）を額面通り満たすのは実質的にfraud-mcp-server経由の呼び出しのみであり、account-service全体としては「plaintextでの到達自体を遮断できていない」ことを既知の限界としてADR 0012・architecture.mdに明記した。
 
 ### `filter_chain_match.transport_protocol`は`tls_inspector`リスナーフィルタなしでは機能しない
 
@@ -218,7 +218,7 @@
 
 ### kubeletのprobe・kubectl port-forwardは、ノードが属するdocker networkのサブネットからのingress許可で問題なく機能した
 
-**確認内容**：Keycloakのhttp-mgmt:9000（readiness/liveness/startupProbe）とedge-proxyの80番（`kubectl port-forward`経由の外部アクセス、ADR 0004）を、ノードIP単体ではなくk3dのdocker networkサブネット全体（`172.19.0.0/16`）からのingressとして許可した。`make deploy-network-policy`適用後、Keycloak Podに再起動・CrashLoopBackOffは発生せず（probe疎通は継続）、`make keycloak-forward`経由の`scripts/verify-hop.sh`（ROPCログイン等、port-forward前提のステップ含む）も全ステップ成功した。事前にbacklog.mdで「default-denyにすると素朴にはプローブが壊れる」と懸念していた点は、ノードIPを含むCIDR単位での許可で解消できることを確認した。
+**確認内容**：Keycloakのhttp-mgmt:9000（readiness/liveness/startupProbe）とedge-proxyの80番（`kubectl port-forward`経由の外部アクセス、ADR 0004）を、ノードIP単体ではなくk3dのdocker networkサブネット全体（`172.19.0.0/16`）からのingressとして許可した。`make deploy-network-policy`適用後、Keycloak Podに再起動・CrashLoopBackOffは発生せず（probe疎通は継続）、`make keycloak-forward`経由の`scripts/verify-hop.sh`（ROPCログイン等、port-forward前提のステップ含む）も全ステップ成功した。事前にarchitecture.mdで「default-denyにすると素朴にはプローブが壊れる」と懸念していた点は、ノードIPを含むCIDR単位での許可で解消できることを確認した。
 
 **後日談（[ADR 0022](adr/0022-keycloak-mgmt-probe-exec.md)）**：この`ipBlock`許可自体、第三者レビューで「kubeletのhttpGetプローブがService/NetworkPolicyの通常モデルを迂回してPod IPへ直接到達する」という構造的な弱点として指摘され、execプローブ化(下記)によって不要になった。当時は「NetworkPolicyでノードIPからのみ絞る」ことを解決策として採用したが、より根本的には「そもそもネットワークに公開しない」選択肢があったことになる。
 
@@ -335,7 +335,7 @@ federation {
 
 ### `account:read`のaudienceマッパー共有スコープは、requesting client側でaudienceを技術的に制限しない
 
-**症状**：ADR 0024でfrontendのToken Exchange呼び出しを、各サービス自身のtoken-exchangeサイドカー経由に置き換える前は、verify-hop.shがKeycloakへ直接`client_id=frontend`で`audience=fraud-mcp-server`を要求してもエラーにならず成功していた。しかしaccess-control-design.md 表1では、frontend→fraud-mcp-serverの直接exchangeは明示的にDENYとされている（frontendの正しい委任経路はfraud-agent経由のみ）。
+**症状**：ADR 0024でfrontendのToken Exchange呼び出しを、各サービス自身のtoken-exchangeサイドカー経由に置き換える前は、verify-hop.shがKeycloakへ直接`client_id=frontend`で`audience=fraud-mcp-server`を要求してもエラーにならず成功していた。しかしarchitecture.md 表1では、frontend→fraud-mcp-serverの直接exchangeは明示的にDENYとされている（frontendの正しい委任経路はfraud-agent経由のみ）。
 
 **原因**：`account:read`client scopeは、account-service・fraud-agent・fraud-mcp-serverの3つのaudienceに対する`oidc-audience-mapper`を持つ（frontend・fraud-agent・fraud-mcp-serverの3クライアントがこの1つのscopeを共有し、それぞれ自分の正しいaudienceだけを要求する設計。architecture.md §3）。しかしKeycloakのToken Exchangeは、要求元クライアントが`account:read`scopeを持ってさえいれば、`audience`パラメータでその3つのうちどれでも要求でき、要求先のaudience自体がリクエスト元クライアントを制限するような仕組みは無い。つまりtable 1のDENYは、Keycloakのクライアント設定や認可ポリシーによってサーバー側で強制されているわけではなく、**各クライアントの実装（token-exchangeサイドカーが何を要求するか）が正しいaudienceだけを要求することに依存している**。architecture.md §4が明記する「Client Policiesは使わない」設計上、この監査ギャップは現状放置されている。
 
@@ -385,7 +385,7 @@ Lokiは`http_listen_port: 3100`（`/otel-lgtm/loki-config.yaml`）で待ち受�
 
 ### Token ExchangeイベントログのsessionIdが、委任チェーン1インスタンスの相関キーになる
 
-`type="TOKEN_EXCHANGE"`イベントには`sessionId`（Keycloakのログインセッションid）が含まれ、**同一ログインセッション内で発生した全ホップのToken Exchangeイベントで同じ値になる**ことを実機確認した（frontend→fraud-agent、frontend→fraud-mcp-server、account-service→analyst-attribute-service等、1回のfrontend操作に由来する全イベントが同一`sessionId`を持つ）。`sub`/`userId`だけでは「誰か」しか分からず、同一アナリストの複数の並行操作（別タブでの別操作等）を区別できないため、委任チェーン1インスタンスの再構成には`sessionId`を主キーとし、`sub`/`userId`/`username`（誰が）・`token_id`/`scope`/`audience`（各ホップで何をしたか）を組み合わせる設計とした（architecture.md §8参照）。client_credentialsグラント（fraud-detection-engineの自動凍結処理）には`sessionId`自体が存在せず、これはBR7（アナリストの代理ではない）の設計とも整合する。
+`type="TOKEN_EXCHANGE"`イベントには`sessionId`（Keycloakのログインセッションid）が含まれ、**同一ログインセッション内で発生した全ホップのToken Exchangeイベントで同じ値になる**ことを実機確認した（frontend→fraud-agent、frontend→fraud-mcp-server、account-service→analyst-attribute-service等、1回のfrontend操作に由来する全イベントが同一`sessionId`を持つ）。`sub`/`userId`だけでは「誰か」しか分からず、同一アナリストの複数の並行操作（別タブでの別操作等）を区別できないため、委任チェーン1インスタンスの再構成には`sessionId`を主キーとし、`sub`/`userId`/`username`（誰が）・`token_id`/`scope`/`audience`（各ホップで何をしたか）を組み合わせる設計とした（architecture.md §9参照）。client_credentialsグラント（fraud-detection-engineの自動凍結処理）には`sessionId`自体が存在せず、これはBR7（アナリストの代理ではない）の設計とも整合する。
 
 ### edge-proxyの`/admin/`パスがKeycloakではなくfrontendへ誤配送される（ADR 0024の実装漏れ）
 
@@ -413,7 +413,7 @@ Alloyのhostpath収集方式（`/var/log/pods`をDaemonSetでマウント）が�
 
 **原因**：未特定。Secret（`yamada-analyst`）の値と`.secrets/yamada-analyst-password`ファイルの内容は一致しており、生成される認証情報（argon2ハッシュ）自体は存在するため、fixtures.sh側のcreate-user時のパスワード設定手順（インライン`credentials`指定か、Keycloak側の何らかのタイミング要因か）に問題がある可能性がある。
 
-**対応**：今回は範囲外として深追いしなかった（ADR 0025の監査ログ集約とは無関係な既存スクリプトの問題）。backlog.mdに未解決事項として記録する。
+**対応**：今回は範囲外として深追いしなかった（ADR 0025の監査ログ集約とは無関係な既存スクリプトの問題）。architecture.mdに未解決事項として記録する。
 
 ## Postgres mTLS（ADR 0028）
 

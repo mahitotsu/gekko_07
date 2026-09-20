@@ -411,7 +411,7 @@ echo "     6c-4. tanaka-junior(junior・大阪)は大阪のstandard口座(999)�
 TANAKA_999_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X GET "$EDGE/accounts/999/transactions" -b "$TANAKA_JAR")
 [ "$TANAKA_999_STATUS" = "200" ] && echo "        期待通り(200)" || echo "        警告:期待は200だが実際は$TANAKA_999_STATUS" >&2
 
-echo "     6c-5. GET /accounts/frozen はアナリストごとに異なる結果セットを返す(use-cases.md UC3/UC4の「除外」)"
+echo "     6c-5. GET /accounts/frozen はアナリストごとに異なる結果セットを返す(architecture.md UC3/UC4の「除外」)"
 YAMADA_FROZEN=$(curl -s -X GET "$EDGE/accounts/frozen" -b "$YAMADA_JAR")
 SUZUKI_FROZEN=$(curl -s -X GET "$EDGE/accounts/frozen" -b "$SUZUKI_JAR")
 echo "        yamada-analyst(junior・東京): $YAMADA_FROZEN"

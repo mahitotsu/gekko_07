@@ -33,7 +33,7 @@ Token Exchangeを跨いでDPoP拘束がどう振る舞うかを2パターンで�
 - **Proof生成はEnvoyではなくext-authz-serviceに置く**: [ADR 0002](0002-token-exchange-in-envoy-sidecar.md)の「セキュリティクリティカルなロジックをLua/Envoy設定に埋め込まない」という原則をDPoPにも適用する。ext-authz-serviceは既にHost/Path/Methodを見てToken Exchangeを行っているため、同じ場所でES256鍵ペア(Pod起動ごとの使い捨て。ADR 0009の合言葉トークンと同じ簡略化パターン)を保持し、①Keycloakへの自分のexchangeリクエスト用proof、②実際にaccount-serviceへ転送する個別リクエスト用proof(`htm`/`htu`はその具体的なリクエスト、`ath`は交換後トークンのハッシュ)、の2つを都度作る。Python標準ライブラリにEC署名が無いため、`ecdsa`(純Python、コンパイル不要)を起動時にpip installする(Dockerfileは書かない方針を維持)
 - **Proof検証は新しい`dpop-verifier`サービスに置く**: account-serviceのアプリ本体・Envoy Luaのどちらにも検証ロジックを持たせない(前者は既存の「アプリはEnvoyが検証済みのものだけ信頼する」原則、後者はADR 0002の原則)。ext-authz-serviceと同型の共有サービス([k8s/dpop-verifier/](../../k8s/dpop-verifier/))を新設し、account-serviceのingress Envoy(mTLS必須のfilter_chainのみ)で`jwt_authn`の後段・`rbac`の前段に第2の`ext_authz`フィルタとして配線する。`jwt_authn`が既に署名検証済みのAuthorizationヘッダーを自前で再デコードして`cnf.jkt`を取り出し(署名の再検証はしない)、DPoPヘッダーのproof(JWK thumbprint一致・`htm`/`htu`/`iat`window/`ath`)を照合する。`cnf`が無いトークン(fraud-detection-engine等、DPoP対象外の呼び出し元)はそのままALLOWする
 - **jwt_authnの`from_headers`をDPoPスキームに切り替え**: DPoP拘束されたトークンはAuthorizationスキームが`Bearer`ではなく`DPoP`になる(RFC 9449)。account-serviceのTLS filter_chain(fraud-mcp-server専用)のjwt_authnにのみ`from_headers: [{name: Authorization, value_prefix: "DPoP "}]`を設定する。plaintext filter_chain(fraud-detection-engine用)は既定の`Bearer`のままで変更しない
-- **jtiのリプレイキャッシュは持たない**(デモ規模の簡略化。backlog.md参照)
+- **jtiのリプレイキャッシュは持たない**(デモ規模の簡略化。architecture.md参照)
 
 ## Consequences
 

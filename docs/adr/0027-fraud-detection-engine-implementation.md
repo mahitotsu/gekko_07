@@ -7,7 +7,7 @@
 
 [ADR 0026](0026-account-service-analyst-attribute-service-implementation.md)でaccount-service・analyst-attribute-serviceを本実装した時点で、README.mdの残り未着手項目はfraud-mcp-server・fraud-detection-engine・fraud-agent・frontendの4サービスだった。[docs/services.md](../services.md)の記述順・[architecture.md](../architecture.md) §3の実装順序（1ホップ先行検証の順）のいずれでも、fraud-detection-engine→account-serviceはfraud-mcp-server→account-serviceに次ぐ位置にあり、かつaccount-serviceのみに依存する（他の未実装サービスへの依存が無い）ため本実装に着手する最有力候補だった。
 
-fraud-detection-engineは[ADR 0011](0011-scenario-ai-assisted-unfreeze.md)・[UC0](../use-cases.md)で「取引パターンを監視し、疑わしい取引を検知した口座を自動的に凍結する」役割と定義されているが、[access-control-design.md](../access-control-design.md) 表4によりaccount-serviceに対して`account:freeze`のみを持ち`account:read`を一切持たない（BR7）。つまりfraud-detection-engineは構造的にaccount-serviceの取引データを読み返すことができない。この設計は意図的なもの（機械間認証の経路をユーザー委任チェーンの読み取り権限から完全に分離する）であり、覆さない。そのため「何を監視するか」の実データは、account-serviceの取引ではなく、fraud-detection-engine自身が保有する観測シグナルとして独自にモデル化する必要がある。
+fraud-detection-engineは[ADR 0011](0011-scenario-ai-assisted-unfreeze.md)・[UC0](../architecture.md)で「取引パターンを監視し、疑わしい取引を検知した口座を自動的に凍結する」役割と定義されているが、[architecture.md](../architecture.md) 表4によりaccount-serviceに対して`account:freeze`のみを持ち`account:read`を一切持たない（BR7）。つまりfraud-detection-engineは構造的にaccount-serviceの取引データを読み返すことができない。この設計は意図的なもの（機械間認証の経路をユーザー委任チェーンの読み取り権限から完全に分離する）であり、覆さない。そのため「何を監視するか」の実データは、account-serviceの取引ではなく、fraud-detection-engine自身が保有する観測シグナルとして独自にモデル化する必要がある。
 
 これまでaccount-serviceのFlyway `V2__seed.sql`が、デモ用の4口座（123/456/789/999）を`frozen=TRUE`かつ対応する`freeze_records`付きであらかじめ投入していた。これは「fraud-detection-engineが未実装だったための一時的な代用」であり、UC0が想定する「fraud-detection-engineの自動凍結が既に起きている」という前提を、本来の実行者（fraud-detection-engine自身のclient_credentials呼び出し）ではなくaccount-service起動時のシードデータで代用していたものだった。fraud-detection-engineを本実装する以上、この代用は解消し、実際にfraud-detection-engineが起動後まもなく能動的に凍結を実行する形に置き換える。
 
@@ -27,7 +27,7 @@ fraud-detection-engineは[ADR 0011](0011-scenario-ai-assisted-unfreeze.md)・[UC
 
 バックグラウンドタスクが`SCAN_INTERVAL_SECONDS`（既定5秒）ごとに`signals ⋈ detection_rules WHERE score >= threshold AND account_idがdetections未登録`を評価し、該当があればaccount-serviceの`POST /accounts/{id}/freeze`を呼ぶ（自身のPod内client-credentialsサイドカー・Envoy egressは[ADR 0020](0020-fraud-detection-engine-identity-gap-and-client-credentials-federated-jwt.md)のスタブ実装をそのまま使う。呼び出し先URLは`http://account-service/...`とアプリが実サービス名を直接使う原則をそのまま踏襲。Authorizationヘッダーはアプリが持たず、Envoy ext_authzが透過的に付与する）。成功したら`detections`にマークして以後スキャン対象から外す。失敗時はマークせず次周期で再試行する（フェイルオープンにしない）。
 
-一括バッチ処理ではなくポーリングにした理由：このプロジェクトには実際の取引イベントストリームが存在せず「イベント駆動で起動する」入力が無い。ポーリング間隔はデモの応答性（数秒で凍結が観測できること）を優先して短くしたが、実運用相当の値ではない（backlog.mdに残す）。
+一括バッチ処理ではなくポーリングにした理由：このプロジェクトには実際の取引イベントストリームが存在せず「イベント駆動で起動する」入力が無い。ポーリング間隔はデモの応答性（数秒で凍結が観測できること）を優先して短くしたが、実運用相当の値ではない（architecture.mdに残す）。
 
 ### 診断用ループバックAPI（セキュリティ境界外、Envoy ingressなし）
 
@@ -54,5 +54,5 @@ fraud-detection-engineは自身のPostgreSQL（実データ）を持つため、
 - README.mdの「各サービスの実装（本実装）」進捗が3/6になった。残るfraud-mcp-server・fraud-agent・frontendは引き続きスタブのまま
 - docs/services.mdのfraud-detection-engineの記述を「未着手（設計段階）」から実装済みへ更新し、保有データの記述を実際のスキーマ（detection_rules/signals/detections）に合わせて具体化した
 - account-serviceのデモ用凍結データの発生源がFlyway seedからfraud-detection-engineの実際の自動実行に変わったことで、`make deploy`直後は口座が未凍結状態になり、fraud-detection-engineのスキャン間隔（既定5秒）分だけ遅れて凍結される。`scripts/verify-hop.sh`はこの遅延を待ち合わせる
-- 「取引イベントストリームが存在せず、fraud-detection-engineの観測シグナルは固定シードで代用している」という簡略化は残ったままである。実際の取引ストリーム連携（account-serviceからの何らかのイベント供給）を実装したくなった場合は、BR7（fraud-detection-engineはaccount:readを持たない）とどう両立させるかを含めて再検討が必要（backlog.mdに残す）
-- ポーリング間隔（既定5秒）はデモの応答性優先の値であり実運用相当ではない（backlog.mdに残す）
+- 「取引イベントストリームが存在せず、fraud-detection-engineの観測シグナルは固定シードで代用している」という簡略化は残ったままである。実際の取引ストリーム連携（account-serviceからの何らかのイベント供給）を実装したくなった場合は、BR7（fraud-detection-engineはaccount:readを持たない）とどう両立させるかを含めて再検討が必要（architecture.mdに残す）
+- ポーリング間隔（既定5秒）はデモの応答性優先の値であり実運用相当ではない（architecture.mdに残す）

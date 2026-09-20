@@ -5,7 +5,7 @@
 
 ## Context
 
-[ADR 0002](0002-token-exchange-in-envoy-sidecar.md)はEnvoyサイドカーの**egress側**（次ホップへのToken Exchange）の実装方式を決めたが、**ingress側**（自分宛てのリクエストを受けた時に何を検証するか）の責務範囲は未決定だった（[backlog.md](../backlog.md)「scope検証をサイドカー側（受信側）に寄せるか」）。
+[ADR 0002](0002-token-exchange-in-envoy-sidecar.md)はEnvoyサイドカーの**egress側**（次ホップへのToken Exchange）の実装方式を決めたが、**ingress側**（自分宛てのリクエストを受けた時に何を検証するか）の責務範囲は未決定だった（[architecture.md](../architecture.md)「scope検証をサイドカー側（受信側）に寄せるか」）。
 
 各サービスの実装が始まる前に、次の2点を決める必要がある。
 
@@ -21,10 +21,10 @@
 **Envoyに任せる（トークン単体で完結し、業務データに依存しない処理）**：
 
 - **JWT検証**（`jwt_authn`フィルタ）：署名（KeycloakのJWKS）、`iss`、`exp`、そして`aud`がこのサービス自身であることの検証（[ADR 0005](0005-single-audience-tokens-only.md)の機械的強制）
-- **スコープ/RBACチェック**（`rbac`フィルタ）：[access-control-design.md](../access-control-design.md)表2（パス・メソッドと必要スコープの対応）をポリシーとして持たせる。ADR 0006の「第一ゲート（委譲の天井）」
+- **スコープ/RBACチェック**（`rbac`フィルタ）：[architecture.md](../architecture.md)表2（パス・メソッドと必要スコープの対応）をポリシーとして持たせる。ADR 0006の「第一ゲート（委譲の天井）」
 - **検証済みの身元をヘッダーでアプリへ転送**（`x-auth-sub`, `x-auth-scope`, `x-auth-jti`等）。アプリは自前のJWTライブラリを持たない
 
-**アプリに残す**：[access-control-design.md](../access-control-design.md)表5のようなABAC判定（口座の`region`/`tier`とアナリストの担当地域・権限レベルの突合）。業務データに依存するためEnvoyには原理的にできない（ADR 0006の「第二ゲート」）。
+**アプリに残す**：[architecture.md](../architecture.md)表5のようなABAC判定（口座の`region`/`tier`とアナリストの担当地域・権限レベルの突合）。業務データに依存するためEnvoyには原理的にできない（ADR 0006の「第二ゲート」）。
 
 これにより、ADR 0002が扱っていたegress側のToken Exchangeに加え、ingress側のJWT検証・スコープ判定も「言語に依存しない横断的関心事」として同じ理由でサイドカーへ切り出す。
 
@@ -45,7 +45,7 @@
 - Envoy側は、jwt_authn・rbacフィルタを**通過した後**にのみこのファイルの値をヘッダーとして付与する（フィルタチェーンの手前で付けると素通りしたリクエストにも付いてしまい意味がなくなる）。具体的な付与方式（Luaフィルタでのファイル読み込みが有力候補）は[ADR 0002](0002-token-exchange-in-envoy-sidecar.md)が予定する「1ホップ先行検証」のタイミングで実機確認する
 - アプリは、この合言葉ヘッダーが正しいことを検証してから初めて他の認証ヘッダー（`x-auth-sub`等）を信用する。合言葉が無い・不一致の場合と、認証ヘッダーが欠落・不正な場合は、どちらも同じ「fail close」として扱う
 
-**検討したが見送る対策**：mTLS・NetworkPolicyによるゼロトラストメッシュ化（[ADR 0003](0003-k3d-without-istio.md)の方針と一貫）。トークンの署名・audience・scope検証自体が実質的な認可境界であり、①〜③で塞がれない残存リスクは限定的なため、今回のスコープでは見送る。より厳格な代替として、TCPループバックではなくUnixドメインソケット＋ファイルパーミッション（`securityContext.runAsUser`をコンテナごとに変え、ソケットmodeを絞る）でOSレベルにアクセスを制限する手法も確立されたベストプラクティスとして存在するが、appが5言語・5フレームワークそれぞれでUnixソケットのリッスンに対応するコストが、今回防ぎたい脅威（デバッグ誤操作・設定ミス）に対して過大と判断し見送る（[backlog.md](../backlog.md)に記録）。
+**検討したが見送る対策**：mTLS・NetworkPolicyによるゼロトラストメッシュ化（[ADR 0003](0003-k3d-without-istio.md)の方針と一貫）。トークンの署名・audience・scope検証自体が実質的な認可境界であり、①〜③で塞がれない残存リスクは限定的なため、今回のスコープでは見送る。より厳格な代替として、TCPループバックではなくUnixドメインソケット＋ファイルパーミッション（`securityContext.runAsUser`をコンテナごとに変え、ソケットmodeを絞る）でOSレベルにアクセスを制限する手法も確立されたベストプラクティスとして存在するが、appが5言語・5フレームワークそれぞれでUnixソケットのリッスンに対応するコストが、今回防ぎたい脅威（デバッグ誤操作・設定ミス）に対して過大と判断し見送る（[architecture.md](../architecture.md)に記録）。
 
 ### 3. テスト容易性：バイパススイッチを作らない
 
@@ -64,5 +64,5 @@
 - Envoyの具体的なbootstrap設定（jwt_authn/rbac/Luaフィルタの記述）は未着手。[ADR 0002](0002-token-exchange-in-envoy-sidecar.md)の「1ホップ先行検証（fraud-mcp-server→account-service）」で、egress側のToken Exchangeと同時にingress側のこの一式（JWT検証・スコープチェック・合言葉付与）も検証する
 - Pod構成が「アプリ+Envoyの2コンテナ」から「initContainer 1つ+アプリ+Envoyの2コンテナ」に変わる。architecture.md §3を更新した
 - 各サービスの実装時、loopback限定bind・合言葉検証・認証ヘッダー検証を「共通の最小限の起動時ロジック」として最初に書くことになる。5言語それぞれでの具体的な書き方は実装時に決める
-- Unixドメインソケット化・NetworkPolicyは見送ったが、将来「同一Pod内でアプリが侵害された場合」まで守る要求が出てきたら再検討する（backlog.mdに記録）
+- Unixドメインソケット化・NetworkPolicyは見送ったが、将来「同一Pod内でアプリが侵害された場合」まで守る要求が出てきたら再検討する（architecture.mdに記録）
 - アプリのポートがPod外から到達不能であることの実機検証（curlで直接pod IPを叩いて拒否されることの確認等）を、ADR 0002の先行検証項目に追加する
