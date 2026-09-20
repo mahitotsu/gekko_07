@@ -32,11 +32,11 @@ fraud-mcp-server（Python/FastMCP、ADR 0029）と同型の構成（単一ファ
 
 fraud-mcp-serverと同じくマルチステージ・非rootで統一した。`node:22-slim`（distrolessにせず-slimを選ぶ理由もfraud-mcp-serverと同じ：`scripts/verify-hop.sh`のkubectl exec診断で引き続きシェル・ランタイムを使えるようにするため）。ビルド段で`npm ci && npm run build`、実行段で`npm ci --omit=dev`＋コンパイル済み`dist/`のみをコピーする。`@anthropic-ai/claude-agent-sdk`は独自のCLIランタイム（`cli.js`、約11MB）を同梱した自己完結パッケージであり、別途`claude`バイナリのインストールは不要（実機のnpm installで確認済み）。非rootはnode公式イメージ組み込みの`node`ユーザー（uid 1000）を使う。
 
-## 新規アーキテクチャ判断：Anthropic API向けegress
+### 新規アーキテクチャ判断：Anthropic API向けegress
 
 Claude Agent SDK本体が呼ぶAnthropic API（`api.anthropic.com`）は、Keycloakが認識するaudienceでもSPIRE mTLSのメッシュ内ピアでもない。ADR 0010の2パターン（Token Exchange／client_credentials）はいずれもKeycloak登録済みaudience宛てを前提としており、この新しいケースには当てはまらない。
 
-### 検討した選択肢
+#### 検討した選択肢
 
 **1. appコンテナから直接api.anthropic.comへ接続（不採用）**：Envoy・hostAliasesを一切介さず、appが実際のDNS解決・TCP接続を行う方式。実装は最も単純だが、本リポジトリが一貫して守ってきた「appは常に自身のEnvoyサイドカー経由でしか外と通信しない」という構造的な一貫性が崩れる。NetworkPolicyの許可対象もappコンテナ自身のegressになり、Envoy側の監査ログ（access_log）に一切残らなくなる。
 
@@ -52,11 +52,11 @@ Claude Agent SDK本体が呼ぶAnthropic API（`api.anthropic.com`）は、Keycl
 
 最終的に、`/chat`で実際にAnthropic APIを呼び・fraud-mcp-server経由でaccount-serviceのデータを取得し・`RUN_FINISHED`まで到達することを実機（k3dクラスタ内、`CLAUDE_CODE_OAUTH_TOKEN`使用）で確認した。
 
-### APIキー（OAuthトークン）の扱い
+#### APIキー（OAuthトークン）の扱い
 
 `CLAUDE_CODE_OAUTH_TOKEN`はappコンテナ自身がSecret（`secretKeyRef`、`k8s/account-service/deployment.yaml`のDB_PASSWORDと同じパターン）経由で保持する。Envoyはこのトークンの値そのものには関与しない（HTTPヘッダーとして素通しするだけで、Token Exchangeのような書き換え・検証は行わない）。これは本リポジトリが一貫して守ってきた「秘密鍵に触れるのはEnvoyのみ」原則（ADR 0009 §2、SPIRE mTLSの秘密鍵について）からの意図的な逸脱である。理由：この原則はメッシュ内でのmTLS身元証明・Token Exchangeという「委任チェーン上のプロセス間認証」を対象にしたものであり、Anthropic呼び出しはそのどちらでもない、委任チェーン外の単純なAPIキー認証である。
 
-## Envoyのタイムアウト設計：固定`timeout`ではなく`idle_timeout`
+### Envoyのタイムアウト設計：固定`timeout`ではなく`idle_timeout`
 
 `/chat`はLLM呼び出しを含むため実行時間が本質的に不定長であり、リクエスト開始から完了までの総時間に上限を課す固定`timeout`とは相性が悪い。実機検証で以下を確認した。
 
@@ -67,7 +67,7 @@ frontend-stub（`k8s/frontend/app-configmap.yaml`）も、fraud-agentからの�
 
 envoyコンテナの起動コマンドには`ulimit -n 65536`（既定のnofile soft limit 1024を引き上げ）も追加してある。上記のblind tcp_proxy自己参照ループを試していた際に`Too many open files`でのクラッシュを実機で確認した名残りだが、hard limitの範囲内でのsoft limit変更は非特権プロセスでも可能で無害なため、安全側の設定として残した。
 
-### NetworkPolicy
+#### NetworkPolicy
 
 `k8s/fraud-agent/networkpolicy.yaml`に新規egressルールを追加した。Anthropicの実IPは公開レンジとして固定できないため、`ipBlock: 0.0.0.0/0`から RFC1918プライベートレンジ（`10.0.0.0/8`・`172.16.0.0/12`・`192.168.0.0/16`。このクラスタのk3d docker network `172.19.0.0/16`を含む）を`except`で除外した範囲をport 443のみで許可する。既存のfraud-mcp-server向けpodSelectorルールとは独立に論理和で合成されるため、この除外が内部到達性に影響することはない。
 

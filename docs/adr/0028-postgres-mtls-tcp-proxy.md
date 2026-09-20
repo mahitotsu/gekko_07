@@ -28,7 +28,7 @@
 2. Jobは1回だけ動いて終わる処理であり、Envoyサイドカーを付けると、EnvoyがJobの終了を検知して自身も終了しないと、Jobがいつまでも完了しない。これを解決するKubernetesの仕組み（`restartPolicy: Always`のinitContainer＝ネイティブsidecar、1.29+でGA）はこのクラスタ（v1.35）で使えることを確認済みだが、このリポジトリでは一度も使ったことがないパターンである。
 3. 「常駐アプリのmTLS化」と「Jobへの新しいK8sパターン導入」という性質の異なる2つの新規性を1つの変更に混ぜず、常駐アプリ側だけに絞る。db-init/seed Jobは引き続きNetworkPolicyのみで保護する（[docs/architecture.md](../architecture.md)に追加検討事項として記録）。
 
-## Design Decisions
+### Design Decisions
 
 - **ポート設計**：Postgres本体の待受設定（`listen_addresses`等）は変更しない（共有インスタンスへリスクを持ち込まない）。postgres Podに新設したEnvoyサイドカーが`6432`でmTLSを終端し、同一Pod内の`127.0.0.1:5432`（実Postgres）へ平文`tcp_proxy`する。`k8s/postgres/service.yaml`に新しいポート`6432`を追加し、既存の`5432`（実Postgres直結。db-init/seed Job専用）はそのまま残した。
 - **クライアント側**：4サービスとも`hostAliases`で`postgres`を`127.0.0.1`へ横取りし、自身のEnvoyサイドカーに新設したegressリスナー（`127.0.0.1:5432`、`tcp_proxy`）が`postgres.gekko.svc.cluster.local:6432`へmTLSで転送する。account-service→analyst-attribute-serviceの委任（ADR 0019/0020）と同じ透過リダイレクトパターンのため、appコンテナ側の環境変数（`DB_HOST=postgres`等）は一切変更不要。

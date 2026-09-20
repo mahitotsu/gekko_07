@@ -1,6 +1,6 @@
 # ADR 0013: fraud-mcp-server→account-serviceの1ホップにDPoPでトークン送信者拘束を導入する
 
-- **Status**: Superseded by [ADR 0015](0015-dpop-removal-and-fraud-detection-engine-mtls.md)
+- **Status**: Superseded by [0015](0015-dpop-removal-and-fraud-detection-engine-mtls.md)
 - **Date**: 2026-09-16
 
 **訂正(2026-09-16)**: 本ADRで導入したDPoPは、実装・実機検証の直後にADR 0015で撤去した。理由は、このホップが既にSPIRE mTLS(ADR 0012)で呼び出し元の身元を限定済みのため、DPoPが追加で守る範囲がmTLSと大きく重複し実利が乏しい一方、「拘束のスロットは委任チェーンに1箇所(終端ホップ)だけ」という制約(本ADR内で実機検証済み)だけが今後の横展開の足かせとして残ったため。本ADRの実機検証結果(Token Exchangeを跨いだDPoP拘束の挙動)自体は、将来DPoPを再検討する際に有効な知見として残す。撤去の詳細・代替判断はADR 0015を参照。
