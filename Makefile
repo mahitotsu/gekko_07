@@ -4,11 +4,10 @@ NAMESPACE := gekko
 # -------------------------
 # ローカル専用シークレット
 # -------------------------
-# PostgreSQL（ADR 0008）に永続化するようになったため、make deployのたびに値が
-# 変わると既存DBに設定済みのパスワードと食い違って接続できなくなる。そのため
-# 一度だけランダム生成し、$(SECRETS_DIR)（.gitignore済み）に保存して使い回す。
-# ":="（即時展開）で一度だけ評価すること。"?="/"="（再帰展開）だと$(call ...)が
-# 参照のたびに再評価され、Secret作成時と表示時で値がずれるバグになる。
+# PostgreSQL永続化（ADR 0008）以降、値が変わると既存DBのパスワードと食い違うため、
+# 一度だけランダム生成し$(SECRETS_DIR)（.gitignore済み）に保存して使い回す。
+# 呼び出し側は":="（即時展開）で一度だけ評価すること。"?="/"="（再帰展開）だと
+# $(call ...)が参照のたびに再評価され、Secret作成時と表示時で値がずれる。
 SECRETS_DIR := .secrets
 
 define get_secret
@@ -32,9 +31,6 @@ KEYCLOAK_DB_PASSWORD := $(call get_secret,keycloak-db-password)
 
 # 1ホップ先行検証（ADR 0002/0009/0010）専用のテスト用シークレット。本番の認可設計には使わない
 # （deploy-verify-hop/verify-hop参照）。
-# frontend(ADR 0024)・fraud-mcp-server(ADR 0019)・fraud-detection-engine(ADR 0020)はいずれも
-# clientAuthenticatorType: federated-jwtへ移行したためclient_secretは不要
-# (SPIRE発行JWT-SVIDで認証する)。
 YAMADA_ANALYST_PASSWORD := $(call get_secret,yamada-analyst-password)
 SUZUKI_SENIOR_PASSWORD := $(call get_secret,suzuki-senior-password)
 TANAKA_JUNIOR_PASSWORD := $(call get_secret,tanaka-junior-password)
@@ -46,24 +42,20 @@ ACCOUNT_SERVICE_DB_PASSWORD := $(call get_secret,account-service-db-password)
 ANALYST_ATTRIBUTE_SERVICE_DB_PASSWORD := $(call get_secret,analyst-attribute-service-db-password)
 FRAUD_DETECTION_ENGINE_DB_PASSWORD := $(call get_secret,fraud-detection-engine-db-password)
 
-# fraud-agent(ADR 0030)がClaude Agent SDK経由でAnthropic APIを呼ぶための資格情報。
-# `claude setup-token`で取得したOAuthトークン(sk-ant-oat01-...、CLAUDE_CODE_OAUTH_TOKEN環境変数
-# として消費される)であり、keycloak-admin-password等と違いopenssl randで自動生成できない実
-# クレデンシャルのため、get_secretとは別に定義する:$(SECRETS_DIR)/claude-code-oauth-tokenが
-# 既にあればそれを再利用し、無ければ環境変数CLAUDE_CODE_OAUTH_TOKENから読み取って保存する。
-# どちらも無い場合は空文字列のままにし、deployターゲット側で明確なエラーとして早期に止める
-# (Secret未作成のままDeploymentがCrashLoopBackOFFし続けるより早く気づけるようにするため)。
+# fraud-agent(ADR 0030)がAnthropic APIを呼ぶための実クレデンシャル(`claude setup-token`で
+# 取得したOAuthトークン)。openssl randで自動生成できないため、get_secretとは別に定義する:
+# $(SECRETS_DIR)/claude-code-oauth-tokenがあればそれを再利用し、無ければ環境変数
+# CLAUDE_CODE_OAUTH_TOKENから読み取って保存する。どちらも無ければ空文字列のままにし、
+# deployターゲット側で明確なエラーとして早期に停止する。
 CLAUDE_CODE_OAUTH_TOKEN_FILE := $(SECRETS_DIR)/claude-code-oauth-token
 CLAUDE_CODE_OAUTH_TOKEN := $(shell mkdir -p $(SECRETS_DIR) && \
 	if [ -f $(CLAUDE_CODE_OAUTH_TOKEN_FILE) ]; then cat $(CLAUDE_CODE_OAUTH_TOKEN_FILE); \
 	elif [ -n "$$CLAUDE_CODE_OAUTH_TOKEN" ]; then printf '%s' "$$CLAUDE_CODE_OAUTH_TOKEN" > $(CLAUDE_CODE_OAUTH_TOKEN_FILE) && cat $(CLAUDE_CODE_OAUTH_TOKEN_FILE); \
 	else echo ""; fi)
 
-# SPIRE Serverのbundle endpoint（ADR 0019）自身のTLS終端用証明書。SPIRE発行のSVIDではなく
-# （bundle endpointが公開するtrust bundleの中身とは無関係な、この1エンドポイントだけのための
-# 使い捨てのTLS証明書）、ここだけ例外的に自己署名証明書をopensslで生成して使い回す
-# （postgres-superuser-password等と同じ「一度だけ生成し$(SECRETS_DIR)に保存」パターン）。
-# KeycloakがこれをKC_TRUSTSTORE_PATHSで信頼することでbundle endpointをHTTPS越しに検証できる。
+# SPIRE bundle endpoint（ADR 0019）自身のTLS終端用の使い捨て自己署名証明書（SPIRE発行SVIDとは
+# 無関係。KeycloakがKC_TRUSTSTORE_PATHSで信頼する）。get_secretと同じ「一度だけ生成し使い回す」
+# パターンだが、ファイルが2つ（crt/key）あるため専用に定義する。
 SPIRE_BUNDLE_ENDPOINT_CERT_DUMMY := $(shell mkdir -p $(SECRETS_DIR) && \
 	( [ -f $(SECRETS_DIR)/spire-bundle-endpoint.crt ] || \
 	  openssl req -x509 -newkey rsa:2048 -nodes \
@@ -100,40 +92,13 @@ clean: down
 # -------------------------
 # アプリのデプロイ
 # -------------------------
-# 現時点ではPostgreSQL（k8s/postgres/、素の共有エンジンのみ）とKeycloak（k8s/keycloak/、
-# 自分のDB・ロールを自分のJobでプロビジョニングしてから起動する）。他サービスのマニフェストが
-# 増えたら、k8s/postgres/には一切手を入れず、同様に各サービス自身のディレクトリに
-# db-init-job.yaml相当を追加する形で横展開する（ADR 0008）。Postgresを先にreadyにし、
-# 各サービスのDB初期化Jobを完了させてからそのサービス本体を適用する順序に意味がある。
-#
-# SPIRE（k8s/spire/）はADR 0016でKeycloakのEnvoyサイドカー（当時のext-authz-service(-cc)専用の
-# mTLSポート8443、現在はfraud-mcp-server/fraud-detection-engine自身のPod内サイドカーがADR 0019/0020で
-# 同じポートへ接続する）の前提になったため、「1ホップ検証スタブ専用」から「base trackの前提
-# コンポーネント」へ格上げした。deploy-spireはspire-agent DaemonSetのrollout完了まで待つため、
-# Keycloakのデプロイより前に呼べば、KeycloakのEnvoyコンテナがspire-agentソケット
-# （hostPath /run/spire/sockets）を確実にマウントできる。
-#
-# edge-proxy（k8s/edge-proxy/）はADR 0017で追加。Keycloakの8080撤廃に伴い、ブラウザ/kcadm.sh/
-# verify-hop.sh向けの非mTLS経路を代理する。Keycloakのrollout後に適用する（keycloak_upstream
-# クラスタがKeycloakのService DNSを参照するため、順序はどちらでも動くが、依存関係が分かりやすい
-# 順に揃えている）。
-#
-# account-service・analyst-attribute-service（ADR 0007本実装・0026）・fraud-detection-engine
-# （ADR 0007本実装・0027）はいずれもコンパイルを要するサービスのため、build-*ターゲットで
-# docker buildしたイメージを`k3d image import`でクラスタへ持ち込む（レジストリは使わない）。
-# 実データを持つため、SPIRE/edge-proxyと同じ理由でスタブ検証専用のdeploy-verify-hopから、
-# このbase trackへ格上げした（ADR 0026・0027）。
-#
-# fraud-mcp-server（ADR 0007本実装・0029）はコンパイルこそ不要だが、同じくConfigMap embedded
-# scriptからビルド済みイメージへ置き換わったため、同じ理由でbase trackへ格上げした。
-# 自身のDBを持たないためdb-init Job・NetworkPolicy前倒し適用は不要（NetworkPolicyは元々
-# deploy-network-policyで適用済み）。
-#
-# fraud-agent（ADR 0007本実装・0030）も同じ理由でbase trackへ格上げした。TypeScript/Claude
-# Agent SDKでコンパイルを要するためbuild-fraud-agentでビルドする。自身のDBは持たないが、
-# CLAUDE_CODE_OAUTH_TOKEN（`claude setup-token`で取得したOAuthトークン）というKeycloak/SPIRE
-# 経由では用意できない実クレデンシャルを必要とする点が他のbase trackサービスと異なる（未設定
-# なら明確なエラーで早期に停止する）。
+# デプロイ順序：SPIRE(ADR 0016、Keycloak/postgresのEnvoyサイドカーがspire-agentソケットに
+# 依存) → Postgres(ADR 0008、db-init-job.yamlパターンで各サービスが自分のDB・ロールを
+# プロビジョニングする) → Keycloak → edge-proxy(ADR 0017) → 各サービスのDB初期化Job →
+# 各サービス本体。account-service・analyst-attribute-service・fraud-detection-engineは
+# コンパイルを要するためbuild-*ターゲットでdocker buildしたイメージを`k3d image import`で
+# クラスタへ持ち込む（レジストリは使わない）。各サービスの実装経緯・base trackへの格上げ理由は
+# ADR 0026/0027/0029/0030/0031参照。
 
 # services/account-serviceをビルドし、k3dクラスタへイメージを持ち込む
 build-account-service:
@@ -172,19 +137,13 @@ deploy:
 	$(call upsert_secret,keycloak-admin,--from-literal=username=admin --from-literal=password=$(KEYCLOAK_ADMIN_PASSWORD))
 	$(call upsert_secret,postgres-superuser,--from-literal=password=$(POSTGRES_SUPERUSER_PASSWORD))
 	$(call upsert_secret,keycloak-db,--from-literal=username=keycloak --from-literal=password=$(KEYCLOAK_DB_PASSWORD))
-	@# ADR 0028:postgres StatefulSet自身がEnvoyサイドカー(SPIRE Agent Workload APIソケットに
-	@# 依存)を持つようになったため、deploy-spireをpostgresより前倒しした(旧順序ではpostgres起動
-	@# 時にspire-agentがまだ存在せず、EnvoyがSDS接続をリトライし続ける不要な待ち時間が生じるため)。
+	@# postgresもEnvoyサイドカーを持つため、deploy-spireを先に呼ぶ(ADR 0028)。
 	$(MAKE) deploy-spire
 	kubectl apply -f k8s/postgres/envoy-configmap.yaml -f k8s/postgres/statefulset.yaml -f k8s/postgres/service.yaml
 	kubectl -n $(NAMESPACE) rollout status statefulset/postgres --timeout=180s
-	@# insights.mdに記録済みの実装漏れパターンの新しい現れ方：deploy-network-policyはdeploy末尾
-	@# でしか呼ばれないため、default-denyが既に有効な(過去のmake deployで作成済みの)クラスタに
-	@# 新しいサービスを再デプロイすると、更新後のNetworkPolicy(接続元・宛先双方)がまだ反映されて
-	@# おらず、readiness待ちでタイムアウトする恐れがある。ADR 0028でkeycloak/account-service/
-	@# analyst-attribute-service/fraud-detection-engineがpostgres接続にEnvoy経由の新しいポート
-	@# (6432)を使うようになったため、この5つのNetworkPolicyは各Deploymentより前に前倒しして適用する。
-	@# default-deny自体が無いまっさらなクラスタでは許可ルールが単に無害な先行適用になるだけ。
+	@# postgres接続用の新ポート(6432)を使う5サービスのNetworkPolicyは各Deploymentより前倒しで
+	@# 適用する。既存クラスタへの再デプロイ時にdefault-denyへ反映漏れるとconnection refusedに
+	@# なるため(ADR 0028、insights.md参照)。
 	kubectl apply -f k8s/postgres/networkpolicy.yaml -f k8s/keycloak/networkpolicy.yaml \
 		-f k8s/account-service/networkpolicy.yaml -f k8s/analyst-attribute-service/networkpolicy.yaml \
 		-f k8s/fraud-detection-engine/networkpolicy.yaml
@@ -203,9 +162,7 @@ deploy:
 	$(call upsert_secret,account-service-db,--from-literal=username=account_service --from-literal=password=$(ACCOUNT_SERVICE_DB_PASSWORD))
 	$(call upsert_secret,analyst-attribute-service-db,--from-literal=username=analyst_attribute_service --from-literal=password=$(ANALYST_ATTRIBUTE_SERVICE_DB_PASSWORD))
 	$(call upsert_secret,fraud-detection-engine-db,--from-literal=username=fraud_detection_engine --from-literal=password=$(FRAUD_DETECTION_ENGINE_DB_PASSWORD))
-	@# account-service/analyst-attribute-service/fraud-detection-engineのNetworkPolicy
-	@# (db-init Job自身のegress許可を含む。ADR 0018の実装漏れパターン)は上で既に前倒し適用済み
-	@# (ADR 0028)。
+	@# 3サービスのNetworkPolicy(db-init Job自身のegress許可を含む)は上で前倒し適用済み(ADR 0028)。
 	kubectl delete job account-service-db-init analyst-attribute-service-db-init fraud-detection-engine-db-init -n $(NAMESPACE) --ignore-not-found
 	kubectl apply -f k8s/account-service/db-init-configmap.yaml -f k8s/account-service/db-init-envoy-configmap.yaml -f k8s/account-service/db-init-job.yaml
 	kubectl apply -f k8s/analyst-attribute-service/db-init-configmap.yaml -f k8s/analyst-attribute-service/db-init-envoy-configmap.yaml -f k8s/analyst-attribute-service/db-init-job.yaml
@@ -226,10 +183,7 @@ deploy:
 	@# ADR 0029:fraud-mcp-serverはaccount-service/fraud-detection-engineと違いapp-configmap.yaml
 	@# を持たない(ビルド済みイメージで代替)。token-exchange-app-configmap.yamlはADR 0019のまま無変更。
 	kubectl apply -f k8s/fraud-mcp-server/token-exchange-app-configmap.yaml -f k8s/fraud-mcp-server/envoy-configmap.yaml -f k8s/fraud-mcp-server/deployment.yaml -f k8s/fraud-mcp-server/service.yaml
-	@# ADR 0030:fraud-agentも同じくビルド済みイメージで代替。CLAUDE_CODE_OAUTH_TOKENが
-	@# 用意できていなければ、Secret未作成のままDeploymentがCrashLoopBackOFFし続けるより早く
-	@# 気づけるようここで明確に停止する(`claude setup-token`で取得したトークンを
-	@# .secrets/claude-code-oauth-tokenへ書くか、環境変数CLAUDE_CODE_OAUTH_TOKENとして渡すこと)。
+	@# CLAUDE_CODE_OAUTH_TOKEN未設定ならSecret未作成のままCrashLoopBackOFFするより早く停止する。
 	@if [ -z "$(CLAUDE_CODE_OAUTH_TOKEN)" ]; then \
 		echo "CLAUDE_CODE_OAUTH_TOKENが未設定です。'claude setup-token'で取得したトークンを" >&2; \
 		echo "  echo -n 'sk-ant-oat01-...' > $(CLAUDE_CODE_OAUTH_TOKEN_FILE)" >&2; \
@@ -237,14 +191,11 @@ deploy:
 		exit 1; \
 	fi
 	$(call upsert_secret,fraud-agent-claude,--from-literal=oauth-token=$(CLAUDE_CODE_OAUTH_TOKEN))
-	@# fraud-agentはADR 0023でDeployment名"fraud-agent-stub"のスタブとして導入され、ADR 0030で
-	@# "fraud-agent"へリネームして本実装へ昇格した(fraud-mcp-serverと違い元々スタブ専用の別名を
-	@# 持っていたため、リネームに伴う旧オブジェクトの後始末が必要)。
+	@# fraud-agent-stub(ADR 0023)からのリネーム(ADR 0030)に伴う旧Deploymentの後始末。
 	kubectl delete deployment fraud-agent-stub -n $(NAMESPACE) --ignore-not-found
 	kubectl apply -f k8s/fraud-agent/token-exchange-app-configmap.yaml -f k8s/fraud-agent/envoy-configmap.yaml -f k8s/fraud-agent/deployment.yaml -f k8s/fraud-agent/service.yaml
 	$(MAKE) build-frontend
-	@# frontendはADR 0024でDeployment名"frontend-stub"のスタブとして導入され、ADR 0031で
-	@# "frontend"へリネームして本実装へ昇格した(fraud-agent-stub→fraud-agentと同じ移行)。
+	@# frontend-stub(ADR 0024)からのリネーム(ADR 0031)に伴う旧Deploymentの後始末。
 	kubectl delete deployment frontend-stub -n $(NAMESPACE) --ignore-not-found
 	kubectl apply -f k8s/frontend/token-exchange-app-configmap.yaml -f k8s/frontend/envoy-configmap.yaml -f k8s/frontend/deployment.yaml -f k8s/frontend/service.yaml
 	kubectl -n $(NAMESPACE) rollout status deployment/analyst-attribute-service --timeout=180s
@@ -296,14 +247,8 @@ keycloak-forward:
 grafana-forward:
 	kubectl -n observability port-forward svc/otel-lgtm 3000:3000
 
-# realm-configmap.yaml変更後にKeycloakへ反映させる（insights.md参照）。--import-realmは
-# データディレクトリが空の初回起動時のみ有効なため、Postgresへ永続化した状態で
-# realm-configmap.yamlだけ書き換えても自動では反映されない。gekko realmを明示的に削除してから
-# Keycloakを再起動し、次回起動時の--import-realmに新しい内容を再インポートさせる。
-# テストデータ（ユーザー・クライアントシークレット）は消えるため、直後にmake deploy-verify-hopで
-# 再構築すること。realm-configmap.yaml変更のたびに手動で実行する必要がある（自動化しない理由：
-# make deploy自体が毎回realmを作り直す挙動になるとADR 0008が検証したい「Postgresへの永続化」の
-# 意味が薄れるため）。
+# realm-configmap.yaml変更後にKeycloakへ反映させる（--import-realmは初回起動時のみ有効なため。
+# 詳細・実行後にmake deploy-verify-hopが必要な理由はinsights.md参照）。
 keycloak-reimport-realm:
 	kubectl apply -f k8s/keycloak/realm-configmap.yaml
 	kubectl -n $(NAMESPACE) exec deploy/keycloak -- /opt/keycloak/bin/kcadm.sh config credentials \
@@ -315,11 +260,9 @@ keycloak-reimport-realm:
 # -------------------------
 # 1ホップ先行検証（ADR 0002/0009/0010、fraud-mcp-server→account-service）
 # -------------------------
-# account-service・analyst-attribute-service・fraud-detection-engine・fraud-mcp-server・
-# fraud-agent・frontendは全て本実装済みでbase track（make deploy）側に属するため、ここでは
-# 表6のテストアナリスト属性の投入のみを扱う（ADR 0026・0027・0029・0030・0031）。既存の
-# deploy/undeployとは独立させてあるため、Keycloak・Postgresだけを触りたい場合はこの
-# ターゲット群を無視してよい。
+# 各サービスは全て本実装済みでbase track（make deploy）側に属するため、ここでは表6の
+# テストアナリスト属性の投入のみを扱う。deploy/undeployとは独立させてあるため、
+# Keycloak・Postgresだけを触りたい場合はこのターゲット群を無視してよい。
 
 # テスト用Keycloakフィクスチャをデプロイする（make deploy実行済み・クラスタ起動済み前提）
 deploy-verify-hop:
@@ -329,26 +272,18 @@ deploy-verify-hop:
 	kubectl delete job keycloak-test-fixtures -n $(NAMESPACE) --ignore-not-found
 	kubectl apply -f k8s/keycloak/test-fixtures-configmap.yaml -f k8s/keycloak/test-fixtures-job.yaml
 	kubectl -n $(NAMESPACE) wait --for=condition=complete job/keycloak-test-fixtures --timeout=60s
-	@# account-service・analyst-attribute-serviceはADR 0026、fraud-detection-engineはADR 0027、
-	@# fraud-mcp-server/fraud-agent/frontendはADR 0029/0030/0031でbase track(make deploy)へ
-	@# 格上げ済み。ここでは表6のテストアナリスト属性(Keycloakユーザー確定後でないとUUIDが
-	@# 定まらないためフィクスチャ側で投入する)のみを扱う。
+	@# 表6のテストアナリスト属性(Keycloakユーザー確定後でないとUUIDが定まらないためフィクスチャ
+	@# 側で投入する)のみを扱う。SPIRE・各サービス本体はmake deploy側で既にデプロイ済み。
 	kubectl delete job analyst-attribute-service-seed -n $(NAMESPACE) --ignore-not-found
 	kubectl apply -f k8s/analyst-attribute-service/seed-configmap.yaml -f k8s/analyst-attribute-service/seed-job.yaml
 	kubectl -n $(NAMESPACE) wait --for=condition=complete job/analyst-attribute-service-seed --timeout=60s
-	@# SPIRE(server/agent/registration entries)はmake deploy側で既にデプロイ済み(ADR 0016で
-	@# base trackへ格上げ)なので、ここでは呼ばない。
-	@# account-service向け(表3)のext-authz-service共有インスタンスは廃止(または最初から作らず)、
-	@# 呼び出し元自身のPod内サイドカーへ置き換えた。fraud-mcp-server・fraud-agent・frontendは
-	@# いずれもbase track側でデプロイ済み(ADR 0029・0030・0031)のため、ここでは扱わない。
 
 # scripts/verify-hop.shを実行する（deploy-verify-hop実行済み前提）
 verify-hop:
 	./scripts/verify-hop.sh
 
-# 1ホップ先行検証用のテストフィクスチャを削除する(SPIRE自体はmake deploy側の
-# 前提コンポーネントになった(ADR 0016)ため、ここでは削除しない。frontendはADR 0031で
-# base track(make deploy/undeploy)へ移動したため、ここでは扱わない)
+# 1ホップ先行検証用のテストフィクスチャを削除する(SPIRE・各サービス本体はbase track側の
+# 前提コンポーネントのためここでは扱わない)
 undeploy-verify-hop:
 	kubectl delete -f k8s/analyst-attribute-service/seed-job.yaml -f k8s/analyst-attribute-service/seed-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/keycloak/test-fixtures-job.yaml -f k8s/keycloak/test-fixtures-configmap.yaml --ignore-not-found
@@ -377,8 +312,7 @@ deploy-spire:
 	@# entry showで存在確認してから作成するため、冪等に再実行できる）
 	kubectl delete job spire-entries -n spire --ignore-not-found
 	kubectl apply -f k8s/spire/entries-job.yaml
-	@# 60sだと初回実行時（spire-server/agent起動直後でwait-for-spire-server initコンテナの
-	@# ポーリングに時間がかかる）に実測でタイムアウトする例があったため180sへ拡張
+	@# 60sだと初回実行時にタイムアウトする例があったため180sへ拡張（insights.md参照）
 	kubectl -n spire wait --for=condition=complete job/spire-entries --timeout=180s
 
 # SPIRE server/agent/registration entries一式を削除する（spire namespaceごと削除）

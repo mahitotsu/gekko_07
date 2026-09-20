@@ -202,6 +202,14 @@
 
 **対応**：`bash`の`/dev/tcp/<host>/<port>`疑似デバイスで生のTCPソケットを開き、素のHTTPリクエストを`printf`で組み立てて送る方式にした（[scripts/verify-hop.sh](../scripts/verify-hop.sh)）。
 
+### `spire-entries` Jobの完了待ちが60秒だと初回実行時にタイムアウトすることがある
+
+**症状**：`make deploy-spire`実行時、`kubectl wait --for=condition=complete job/spire-entries --timeout=60s`が、特に新規クラスタでの初回実行時にタイムアウトすることがあった。
+
+**原因**：`spire-entries` Jobの`wait-for-spire-server` initコンテナが、spire-server/agentが起動直後でまだ準備できていない状態からポーリングを始めるため、実測で60秒を超えることがある。
+
+**対応**：`Makefile`の`deploy-spire`ターゲットでタイムアウトを180秒に拡張した。
+
 ## NetworkPolicy（gekko namespace全体のL3/4 default-deny、ADR 0018）
 
 ### kube-router netpolはDROPではなくREJECT(即時RST)でブロックする
