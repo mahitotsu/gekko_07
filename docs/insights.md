@@ -544,3 +544,11 @@ fraud-agent-stub（`k8s/fraud-agent/app-configmap.yaml`）は元々fraud-mcp-ser
 **原因**：固定タイムアウトは「リクエスト開始から完了までの総時間」に上限を課す仕組みであり、LLM呼び出し（ツール呼び出しを挟む複数ターンの合計）のように実行時間が本質的に不定長な処理には、どんな値を設定しても「たまたま収まるかどうか」でしかない。
 
 **対応**：`/chat`が通る全ホップ（edge-proxy→frontend、frontend→fraud-agent、fraud-agent自身のingress）のEnvoyルートを`timeout: 0s`（総時間の上限を無効化）＋`idle_timeout: 300s`（無活動時間の上限）に変更した。あわせてfrontend-stub（`k8s/frontend/app-configmap.yaml`）の`/chat`中継を、応答を全部読み切ってから返す`forward()`から、1行ずつ即座に中継する`stream_forward()`に変更した（バッファ方式のままだとfraud-agentの処理中ずっとedge-proxy⇔frontend間の接続が無活動になり、idle_timeout化の恩恵を受けられないため）。`make verify-hop`で`/chat`がタイムアウトせず`RUN_FINISHED`まで完走することを実機確認した。
+
+### account-serviceに新しいPOSTパスを追加する際、ingress側RBAC（account-service自身のenvoy-configmap.yaml）だけでなく、呼び出し元（frontend）のegress側scope解決表も同じパスパターンを知っている必要がある（ADR 0036）
+
+**症状**：凍結解除提案の承認/却下エンドポイント（`POST /accounts/{id}/unfreeze-proposals/{proposalId}/approve`・`.../reject`）を新設し、`k8s/account-service/envoy-configmap.yaml`のingress RBACポリシー（`unfreeze`）にこのパスパターンを追加してPodを再起動したが、frontend経由で実際に叩くと常に403（`DENY 403: no scope mapping for POST /accounts/{id}/unfreeze-proposals/{proposalId}/approve (host=account-service)`）になった。`kubectl logs`でaccount-service側（ingress・app）のアクセスログを見てもリクエスト自体が全く記録されておらず、account-serviceまで到達する前に拒否されていることが分かった。
+
+**原因**：frontend→account-serviceのToken Exchangeで使うscopeは、frontend自身のegress token-exchangeサイドカー（`k8s/frontend/token-exchange-app-configmap.yaml`の`SCOPE_RULES`、[ADR 0010](adr/0010-egress-listener-granularity.md)の方式）が`(host, path, method) → scope`の対応表から機械的に決めている。ingress側のRBACポリシー（account-service自身のenvoy-configmap.yaml）はこの対応表とは別ファイル・別プロセスの設定であり、新しいAPIパスを追加する際は両方を同時に更新しないと、片方だけ更新した状態では「そもそも呼び出し元がそのパスに対応するscopeを持つトークンを要求すらできない」という形で経路の手前で止まる（ingress側の403とは異なる、より早い段階の拒否）。account-service側の変更だけに気を取られ、呼び出し元であるfrontend側の対応表を見落としていた。
+
+**対応**：`k8s/frontend/token-exchange-app-configmap.yaml`の`SCOPE_RULES`にも、account-service側と同じ正規表現（`^/accounts/[^/]+/(unfreeze|unfreeze-proposals/[^/]+/(approve|reject))$` → `account:unfreeze`）を追加し、ConfigMap適用後にfrontend Deploymentを再起動した。**account-serviceに新しいエンドポイントを追加する際は、(1) account-service自身のingress RBAC（`k8s/account-service/envoy-configmap.yaml`）、(2) 呼び出し元each（frontend・fraud-mcp-server等）のegress scope解決表、の両方を同じコミットで更新する必要がある**——architecture.md表2は両方の情報源であるべきだが、実装は2箇所の別ファイルに分かれているため、機械的な同期チェックが存在しない。

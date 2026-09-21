@@ -156,7 +156,7 @@ fraud-detection-engineの client_credentials トークン(scope=account:freeze)
 - fraud-mcp-server→account-serviceの1マス以外、AIエージェント側の経路にはanalyst-attribute-serviceへの到達手段がない。ホップ飛ばし（例：fraud-agentやfraud-mcp-serverが直接account-service・analyst-attribute-serviceを呼ぶ）は構造上不可能（各クライアントへの`optionalClientScopes`の割当のみで実現。Client Policiesは使わない）
 - frontend→fraud-agent、fraud-agent→fraud-mcp-serverいずれの交換で発行されるトークンも`account:read`のみを持ち、`account:unfreeze`は含まれない。これがAIエージェントに凍結解除の実行権限を渡さないための核心の仕組み（表2参照）
 
-### 表2: account-serviceのスコープ別操作可否（BR5・BR6に対応）
+### 表2: account-serviceのスコープ別操作可否（BR5・BR6・BR9に対応）
 
 条件は「トークンが保有するスコープ」と「操作種別」の2軸。パスパターンは、account-service自身のingress側rbacポリシーと、account-serviceを呼ぶ全ての呼び出し元のegress側scope解決（[ADR 0010](adr/0010-egress-listener-granularity.md)）の両方が参照する単一の情報源である。account-serviceの実装時にAPIの詳細（レスポンス形式・ページネーション等）を決める際も、このパスパターン自体は変えない（変える場合はここを直接書き換える）。
 
@@ -165,7 +165,8 @@ fraud-detection-engineの client_credentials トークン(scope=account:freeze)
 | 取引履歴・凍結中口座の照会（read） | `account:read` | `GET /accounts/{id}/**`（get_frozen_accounts・get_account_history・ダッシュボード表示を含む、読み取り系は全てこの配下） |
 | 凍結解除案の記録（propose） | `account:propose` | `POST /accounts/{id}/unfreeze-proposals` |
 | 口座凍結の自動実行（freeze） | `account:freeze`（機械間認証。業務属性チェックなし。表4参照） | `POST /accounts/{id}/freeze` |
-| 口座凍結の解除の実行（unfreeze） | `account:unfreeze`（実行時にanalyst-attribute-serviceへの再照会あり。表5参照） | `POST /accounts/{id}/unfreeze` |
+| 凍結解除提案の承認・却下（decide） | `account:unfreeze`（提案を依頼した本人アナリストのみ。BR9・[ADR 0036](adr/0036-unfreeze-proposal-approval-step.md)） | `POST /accounts/{id}/unfreeze-proposals/{proposalId}/approve`, `.../reject` |
+| 口座凍結の解除の実行（unfreeze） | `account:unfreeze`（実行時にanalyst-attribute-serviceへの再照会あり。表5参照。提案経由の場合は承認済み・依頼者本人であることも検証） | `POST /accounts/{id}/unfreeze` |
 
 #### どのトークンがどのスコープを保有するか
 
@@ -179,7 +180,7 @@ fraud-detection-engineの client_credentials トークン(scope=account:freeze)
 | fraud-mcp-serverが発行するトークン（account-service宛て） | fraud-mcp-serverがToken Exchange | `account:read`, `account:propose` |
 | fraud-detection-engineのclient_credentialsトークン | client_credentials（委任チェーン外） | `account:freeze`のみ |
 
-fraud-agent・fraud-mcp-server（ひいてはAIエージェント）が`account:unfreeze`を持つ経路は存在しない。凍結解除を実行できるのは、frontendが確定パス用に発行するトークンのみであり、これはアナリストがUIで決定論的操作（「凍結解除を確定」ボタン）を行った場合にのみ発行・使用される。
+fraud-agent・fraud-mcp-server（ひいてはAIエージェント）が`account:unfreeze`を持つ経路は存在しない。凍結解除の実行、および提案の承認・却下のいずれも、frontendが確定パス用に発行するトークンのみで到達可能であり、これはアナリストがUIで決定論的操作（承認/却下ボタン、「凍結解除を確定」ボタン）を行った場合にのみ発行・使用される。
 
 #### scopeチェックの実施箇所（MUST）
 
@@ -258,7 +259,7 @@ fraud-detection-engineはユーザー委任チェーンに参加しない機械�
 - **`sub`/`userId`/`username`**：誰が。委任チェーン全体で元のアナリストのまま維持される（Impersonation方式）。client_credentialsグラント（fraud-detection-engineの自動凍結処理）には`sessionId`自体が存在せず、`sub`はその処理自身のサービスアカウントになる（BR7と整合）
 - **`token_id`（jti）/`scope`/`audience`**：各ホップで何をしたか。ホップごとに新しいトークンが発行されるため、`jti`はホップごとに変わる
 
-集約先はKeycloakのイベントログ（`eventsEnabled`、`TOKEN_EXCHANGE`/`LOGIN`等。`userId`/`username`/`sessionId`/`token_id`/`scope`/`audience`/`subject_token_client_id`を含む）を主軸とし、全ホップのEnvoyアクセスログ（`x-auth-sub`/`x-auth-scope`/`x-auth-jti`）を補助的に併用する。`proposal_id`（AIの提案と人間の確定を紐付けるための識別子）はaccount-serviceの本実装（[ADR 0026](adr/0026-account-service-analyst-attribute-service-implementation.md)）でDB永続化済み：`unfreeze_proposals.id`として発行され、`unfreeze_executions.proposal_id`（NULL可、AIの提案に基づかない実行を許すため）で突合する。
+集約先はKeycloakのイベントログ（`eventsEnabled`、`TOKEN_EXCHANGE`/`LOGIN`等。`userId`/`username`/`sessionId`/`token_id`/`scope`/`audience`/`subject_token_client_id`を含む）を主軸とし、全ホップのEnvoyアクセスログ（`x-auth-sub`/`x-auth-scope`/`x-auth-jti`）を補助的に併用する。`proposal_id`（AIの提案と人間の確定を紐付けるための識別子）はaccount-serviceの本実装（[ADR 0026](adr/0026-account-service-analyst-attribute-service-implementation.md)）でDB永続化済み：`unfreeze_proposals.id`として発行され、`unfreeze_executions.proposal_id`（NULL可、AIの提案に基づかない実行を許すため）で突合する。提案の承認・却下（BR9、[ADR 0036](adr/0036-unfreeze-proposal-approval-step.md)）は`unfreeze_proposals.status`/`decided_by_sub`/`decided_at`に記録され、「誰が提案し・誰がいつ承認し・誰がいつ実行したか」の3点を事後に区別して追跡できる。
 
 ## 10. 実行時シナリオ（ユースケース）
 
@@ -291,11 +292,16 @@ fraud-detection-engineはユーザー委任チェーンに参加しない機械�
 4. fraud-mcp-server: Token Exchange（audience=account-service, scope=account:read）
 5. account-service: Token Exchange（audience=analyst-attribute-service, scope=analyst:read）でyamada-analystの属性（東京, junior）を取得
 6. account-service: 東京の standard 口座のうち凍結中のものを、凍結根拠とともに返す（表5）
-7. fraud-agentが凍結理由・取引履歴を分析し「この口座は誤検知の疑いがあり、凍結を解除すべきです」と提案。fraud-mcp-serverのpropose_unfreezeツールで提案を記録（scope=account:propose）
-8. yamada-analystがfrontendのダッシュボードで提案内容・根拠を確認し、「凍結解除を確定」ボタンを押す
-9. frontend: 自身のログイントークン（aud=frontend）を`subject_token`に別のToken Exchangeを実行（audience=account-service, scope=account:unfreeze）し、そのトークンでaccount-serviceの凍結解除APIを呼ぶ
-10. account-service: 再度analyst-attribute-serviceへ照会し（多層防御）、東京・standard・junior → ALLOW。凍結解除を実行し、手順7の提案IDと紐付けて記録
+7. fraud-agentが凍結理由・取引履歴を分析し「この口座は誤検知の疑いがあり、凍結を解除すべきです」と提案。fraud-mcp-serverのpropose_unfreezeツールで提案を記録（scope=account:propose、status=pending）
+8. yamada-analystがチャット画面で提案内容・根拠を確認し、「承認」ボタンを押す
+   → frontend: 自身のログイントークン（aud=frontend）を`subject_token`に別のToken Exchangeを実行（audience=account-service, scope=account:unfreeze）し、承認APIを呼ぶ
+   → account-service: 再度analyst-attribute-serviceへ照会し（多層防御）ALLOW。かつ手順7の提案を依頼したのがyamada-analyst本人であることを確認した上で（BR9）、提案のstatusをapprovedに更新する
+9. yamada-analystが（チャット画面またはダッシュボードで）「凍結解除を確定」ボタンを押す
+   → frontend: 同様にToken Exchangeを実行し、そのトークンでaccount-serviceの凍結解除APIを呼ぶ（手順8で承認済みの提案IDを添えて）
+10. account-service: 再度analyst-attribute-serviceへ照会し（多層防御）、東京・standard・junior → ALLOW。かつ提案のstatusがapproved・依頼者=実行者本人であることを確認した上で、凍結解除を実行し提案IDと紐付けて記録
 ```
+
+却下の場合：手順8で「却下」ボタンを押すと、account-serviceは提案のstatusをrejectedに更新するのみで、手順9以降は発生しない。ダッシュボードは「AIによる精査を依頼」ボタンを再表示し、手順2からやり直せる。
 
 #### UC2: 正常系（AIがhigh-value口座の凍結解除を提案し、seniorアナリストが確定する）
 

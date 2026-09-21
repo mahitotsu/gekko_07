@@ -2,14 +2,15 @@
 
 本ディレクトリは、設計判断1件ごとの根拠・選択経緯を記録する。[architecture.md](../architecture.md) は現在有効な設計断面のみを記載し、個々の判断の根拠はここに委譲する。
 
-決定が覆った場合は、旧ADRのStatusを`Superseded by NNNN`に更新し、新しいADRを追加する。35件のうち24件は今も覆っていないAccepted——後続ADRによる修正は「Token Exchangeの実行主体・宛先指定」「身元検証（mTLS/SPIFFE/SPIRE）」「frontendの本実装内での段階的置き換え」の3テーマに偏っており、乱発しているわけではない。以下はテーマ別の索引。同じテーマのADRを続けて読むと、1つの関心事がどう変遷したかを追いやすい。
+決定が覆った場合は、旧ADRのStatusを`Superseded by NNNN`に更新し、新しいADRを追加する。36件のうち24件は今も覆っていないAccepted——後続ADRによる修正は「シナリオ選定（凍結解除の確定操作の精緻化）」「Token Exchangeの実行主体・宛先指定」「身元検証（mTLS/SPIFFE/SPIRE）」「frontendの本実装内での段階的置き換え」の4テーマに偏っており、乱発しているわけではない。以下はテーマ別の索引。同じテーマのADRを続けて読むと、1つの関心事がどう変遷したかを追いやすい。
 
 ## シナリオ選定
 
 | # | タイトル | Status |
 |---|---|---|
 | [0001](0001-scenario-fraud-detection-with-agent-assist.md) | シナリオにAIエージェント支援付き金融不正検知・口座凍結を採用 | Superseded by 0011 |
-| [0011](0011-scenario-ai-assisted-unfreeze.md) | シナリオを「AI支援による口座凍結解除」に変更（凍結は自動検知エンジンが実行） | Accepted |
+| [0011](0011-scenario-ai-assisted-unfreeze.md) | シナリオを「AI支援による口座凍結解除」に変更（凍結は自動検知エンジンが実行） | Partially superseded by 0036 |
+| [0036](0036-unfreeze-proposal-approval-step.md) | 凍結解除提案に承認/却下の状態遷移を導入し、確定操作を精緻化 | Accepted |
 
 ## Token Exchangeの実装方式（サイドカー集約・トークン設計原則）
 

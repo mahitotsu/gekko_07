@@ -51,11 +51,17 @@ public class AccountController {
         Optional<AnalystAttributes> attributes = analystAttributeClient.fetch(sub, authorization);
         return repository.findFrozen().stream()
                 .filter(account -> accessControl.isAllowed(attributes, account))
-                .map(account -> new FrozenAccountView(
-                        account.id(),
-                        account.region(),
-                        account.tier(),
-                        repository.findLatestFreezeRecord(account.id()).map(FreezeRecord::reason).orElse(null)))
+                .map(account -> {
+                    Optional<UnfreezeProposal> proposal = repository.findLatestProposal(account.id());
+                    return new FrozenAccountView(
+                            account.id(),
+                            account.region(),
+                            account.tier(),
+                            repository.findLatestFreezeRecord(account.id()).map(FreezeRecord::reason).orElse(null),
+                            proposal.map(UnfreezeProposal::id).orElse(null),
+                            proposal.map(UnfreezeProposal::status).orElse(null),
+                            proposal.map(UnfreezeProposal::reasoning).orElse(null));
+                })
                 .toList();
     }
 
@@ -95,7 +101,54 @@ public class AccountController {
 
         String reasoning = (request != null && request.reasoning() != null) ? request.reasoning() : "";
         UnfreezeProposal proposal = repository.saveProposal(id, reasoning, sub);
-        return new ProposalView(proposal.id(), proposal.accountId());
+        return new ProposalView(proposal.id(), proposal.accountId(), proposal.status());
+    }
+
+    // 提案の承認・却下(ADR 0036)。account:unfreezeスコープ配下の人間専用操作とし、
+    // fraud-agent/fraud-mcp-server(account:proposeのみ)には付与しない(k8s/account-service/
+    // envoy-configmap.yaml)。承認者は提案を依頼した本人アナリストに限る(4-eyesは導入しない)。
+    @PostMapping("/accounts/{id}/unfreeze-proposals/{proposalId}/approve")
+    public ProposalView approveProposal(
+            @PathVariable String id,
+            @PathVariable String proposalId,
+            @RequestHeader("x-auth-sub") String sub,
+            @RequestHeader("Authorization") String authorization) {
+        return decide(id, proposalId, sub, authorization, "approved");
+    }
+
+    @PostMapping("/accounts/{id}/unfreeze-proposals/{proposalId}/reject")
+    public ProposalView rejectProposal(
+            @PathVariable String id,
+            @PathVariable String proposalId,
+            @RequestHeader("x-auth-sub") String sub,
+            @RequestHeader("Authorization") String authorization) {
+        return decide(id, proposalId, sub, authorization, "rejected");
+    }
+
+    private ProposalView decide(String id, String proposalId, String sub, String authorization, String newStatus) {
+        Account account = repository.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+
+        Optional<AnalystAttributes> attributes = analystAttributeClient.fetch(sub, authorization);
+        if (!accessControl.isAllowed(attributes, account)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+        }
+
+        UnfreezeProposal proposal = repository.findProposal(proposalId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        if (!proposal.accountId().equals(id)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "proposalId does not match account");
+        }
+        // 承認者は提案を依頼した本人アナリスト(4-eyesは導入しない。BR9)。
+        if (!proposal.proposedBySub().equals(sub)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "only the requesting analyst may decide this proposal");
+        }
+        if (!"pending".equals(proposal.status())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "proposal already decided");
+        }
+
+        UnfreezeProposal decided = repository.decideProposal(proposalId, newStatus, sub);
+        return new ProposalView(decided.id(), decided.accountId(), decided.status());
     }
 
     // fraud-detection-engineのclient_credentials呼び出し(表4・BR7)。x-auth-subは存在しない
@@ -133,6 +186,14 @@ public class AccountController {
                     .orElseThrow(() -> new ResponseStatusException(HttpStatus.BAD_REQUEST, "unknown proposalId"));
             if (!proposal.accountId().equals(id)) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "proposalId does not match account");
+            }
+            // 提案経由の実行は、承認済み(ADR 0036)・承認した本人による実行であることを要求する。
+            // proposalId省略時の「提案に基づかないアナリスト独自の実行」経路(BR8)はこの検証の対象外。
+            if (!"approved".equals(proposal.status())) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT, "proposal is not approved");
+            }
+            if (!proposal.proposedBySub().equals(sub)) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN, "only the requesting analyst may execute this proposal");
             }
         }
 

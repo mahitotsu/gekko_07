@@ -1,6 +1,6 @@
 # ADR 0024: frontendを新規実装し、edge-proxy配線・簡易ログインでaccount-service/fraud-agentへ横展開する
 
-- **Status**: Partially superseded by [0031](0031-frontend-implementation.md)
+- **Status**: Partially superseded by [0031](0031-frontend-implementation.md)・[0036](0036-unfreeze-proposal-approval-step.md)（SCOPE_RULESに承認/却下パスを追加）
 - **Date**: 2026-09-17
 
 ## Context
@@ -20,7 +20,7 @@ frontendは他5サービスと異なり、SPIFFE mTLSを持てないブラウザ
 1. **ingressの呼び出し元はedge-proxy（mTLS）であり、jwt_authnは`/login`パスのみ免除する**。`/login`はログイン前で当然トークンを持たないため、jwt_authnの`rules`に`{match: {path: "/login"}}`（要件なし）を`{match: {prefix: "/"}, requires: {provider_name: keycloak}}`より先に置いた。rbacフィルタは付けない——ログイントークンはscopeをほとんど持たないため、scopeによる差別化はここでは行わず、実際の認可はaccount-service/fraud-agent側の受け側で行う
 2. **ADR 0002の原則（appはKeycloakと直接通信しない）をログインにも一貫適用する**。`/login`はappからtoken-exchangeサイドカー（127.0.0.1:9002）への単純なリレーで、ROPC（`grant_type=password`）の実行とSPIRE JWT-SVIDの取り扱いはサイドカーの責務。サイドカーは同じHTTPサーバーで、Envoyのegress ext_authzからのcheck-request（`do_check`、account-service/fraud-agentへのToken Exchange）と、appからの直接POST（`do_login`、ROPCログイン）の両方を扱う
 
-egressはaccount-service・fraud-agentの2つの実サービスへhostAliasesで横取りする。token-exchangeサイドカーはfraud-mcp-serverのSCOPE_RULES方式（[ADR 0019](0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md)）を踏襲しつつ、frontendは2つの異なるaudienceへ委任するため、解決キーに`host`を加えた：`(account-service, GET /accounts/**) → account:read`、`(account-service, POST /accounts/{id}/unfreeze) → account:unfreeze`、`(fraud-agent, POST /chat) → account:read`。
+egressはaccount-service・fraud-agentの2つの実サービスへhostAliasesで横取りする。token-exchangeサイドカーはfraud-mcp-serverのSCOPE_RULES方式（[ADR 0019](0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md)）を踏襲しつつ、frontendは2つの異なるaudienceへ委任するため、解決キーに`host`を加えた：`(account-service, GET /accounts/**) → account:read`、`(account-service, POST /accounts/{id}/unfreeze) → account:unfreeze`、`(fraud-agent, POST /chat) → account:read`。〔[ADR 0036](0036-unfreeze-proposal-approval-step.md)で追加：`(account-service, POST /accounts/{id}/unfreeze-proposals/{proposalId}/approve|reject) → account:unfreeze`も同じ対応表に追加〕
 
 Keycloakの`frontend`クライアントは`clientAuthenticatorType: federated-jwt`へ変更し、`jwt.credential.issuer`/`jwt.credential.sub`を追加した（fraud-mcp-server/fraud-detection-engine/account-service/fraud-agentと同じパターン）。`directAccessGrantsEnabled`はrealm-configmap.yamlで直接`true`にして恒久化した（従来`k8s/keycloak/test-fixtures-configmap.yaml`が一時的に`kcadm update`していたものを、簡易ログインの実装そのものとして正式採用。`FRONTEND_CLIENT_SECRET`は不要になり、Makefile/test-fixtures/verify-hop.shから削除した）。
 

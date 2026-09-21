@@ -1,8 +1,10 @@
 <script setup lang="ts">
-// UC1手順2〜10のfrontend側入口。POST /chat(fraud-agentへプロキシ、ADR 0030のAG-UI SSE
+// UC1手順2〜11のfrontend側入口。POST /chat(fraud-agentへプロキシ、ADR 0030のAG-UI SSE
 // イベントストリーム)を最小限のクライアント側パーサで読み、アシスタントのテキストを逐次
 // 表示する。propose_unfreezeのTOOL_CALL_RESULTを検出したら、対象口座・提案IDでその場から
-// 「凍結解除を確定」できるようにし(UC1手順8〜10をチャット画面内で完結させる)。
+// 承認/却下、承認後は「凍結解除を確定」ができるようにし(UC1手順8〜11をチャット画面内で
+// 完結させる。ADR 0036)。dashboard.vueから`?accountId=`付きで遷移してきた場合は、精査を
+// 依頼する文面を自動送信して開始する(ボタン起点の構造化フロー)。
 //
 // AG-UIプロトコルの型・SSEフレーミングは公式SDK(@ag-ui/*)がサーバー側(services/fraud-agent)
 // で担っており、ここではその出力(`data: {...}\n\n`)をイベント種別だけ見て最小限に解釈する
@@ -16,12 +18,24 @@ interface ChatMessage {
 }
 
 interface ProposalHint {
-  toolCallId: string;
+  toolCallId: string | null;
   accountId: string;
   proposalId: string;
-  confirmed: boolean;
+  reasoning: string | null;
+  status: "pending" | "approved" | "rejected";
+  executed: boolean;
   error: string | null;
 }
+
+interface FrozenAccount {
+  id: string;
+  proposalId: string | null;
+  proposalStatus: "pending" | "approved" | "rejected" | null;
+  proposalReasoning: string | null;
+}
+
+const route = useRoute();
+const accountId = typeof route.query.accountId === "string" ? route.query.accountId : null;
 
 const threadId = crypto.randomUUID();
 const messages = ref<ChatMessage[]>([]);
@@ -62,11 +76,16 @@ function handleAgUiEvent(event: any) {
         try {
           const parsed = JSON.parse(event.content);
           if (parsed.proposalId && parsed.accountId) {
+            // reasoningはこの応答に含まれない(account-serviceのProposalViewはid/accountId/statusの
+            // み)。AIの根拠説明は直前のテキストメッセージとして既にmessagesに表示されているため、
+            // ここでは複製しない。
             proposals.value.push({
               toolCallId: event.toolCallId,
               accountId: parsed.accountId,
               proposalId: parsed.proposalId,
-              confirmed: false,
+              reasoning: null,
+              status: parsed.status === "approved" || parsed.status === "rejected" ? parsed.status : "pending",
+              executed: false,
               error: null,
             });
           }
@@ -96,8 +115,8 @@ function handleFrame(frame: string) {
   }
 }
 
-async function send() {
-  const text = input.value.trim();
+async function send(overrideText?: string) {
+  const text = (overrideText ?? input.value).trim();
   if (!text || sending.value) {
     return;
   }
@@ -151,7 +170,27 @@ async function send() {
   }
 }
 
-async function confirmProposal(proposal: ProposalHint) {
+async function decideProposal(proposal: ProposalHint, decision: "approve" | "reject") {
+  proposal.error = null;
+  try {
+    const res = await fetch(`/accounts/${proposal.accountId}/unfreeze-proposals/${proposal.proposalId}/${decision}`, {
+      method: "POST",
+    });
+    if (res.status === 401) {
+      window.location.href = "/login";
+      return;
+    }
+    if (!res.ok) {
+      proposal.error = `${decision === "approve" ? "承認" : "却下"}に失敗しました (HTTP ${res.status})`;
+      return;
+    }
+    proposal.status = decision === "approve" ? "approved" : "rejected";
+  } catch {
+    proposal.error = "処理中にエラーが発生しました。";
+  }
+}
+
+async function confirmUnfreeze(proposal: ProposalHint) {
   proposal.error = null;
   try {
     const res = await fetch(`/accounts/${proposal.accountId}/unfreeze`, {
@@ -167,11 +206,45 @@ async function confirmProposal(proposal: ProposalHint) {
       proposal.error = `確定に失敗しました (HTTP ${res.status})`;
       return;
     }
-    proposal.confirmed = true;
+    proposal.executed = true;
   } catch {
     proposal.error = "確定中にエラーが発生しました。";
   }
 }
+
+// dashboard.vueから`?accountId=`付きで遷移してきた場合の入口。既にpending/approvedの提案が
+// あれば(チャットへ戻ってきたケース)それを復元表示し、無ければ(未着手/rejected)精査を自動
+// で開始する(UC1手順2〜7相当。ボタン押下起点の構造化フロー)。
+onMounted(async () => {
+  if (!accountId) {
+    return;
+  }
+  try {
+    const res = await fetch("/accounts/frozen");
+    if (!res.ok) {
+      throw new Error(`failed to fetch accounts (HTTP ${res.status})`);
+    }
+    const accounts: FrozenAccount[] = await res.json();
+    const account = accounts.find((a) => a.id === accountId);
+    if (account?.proposalId && (account.proposalStatus === "pending" || account.proposalStatus === "approved")) {
+      proposals.value.push({
+        toolCallId: null,
+        accountId: account.id,
+        proposalId: account.proposalId,
+        reasoning: account.proposalReasoning,
+        status: account.proposalStatus,
+        executed: false,
+        error: null,
+      });
+      return;
+    }
+  } catch {
+    // 復元に失敗しても自動精査の開始は妨げない(以下にフォールスルー)
+  }
+  await send(
+    `口座${accountId}が凍結されています。凍結理由と取引履歴を確認し、誤検知の疑いがあれば根拠とともに解除を提案してください。`,
+  );
+});
 </script>
 
 <template>
@@ -184,14 +257,25 @@ async function confirmProposal(proposal: ProposalHint) {
     </div>
     <p v-if="runError" class="error">{{ runError }}</p>
 
-    <div v-for="p in proposals" :key="p.toolCallId" class="proposal">
-      <span>口座 {{ p.accountId }} の凍結解除案(提案ID: {{ p.proposalId }})</span>
-      <button v-if="!p.confirmed" @click="confirmProposal(p)">この提案を確定</button>
-      <span v-else>確定済み</span>
+    <div v-for="p in proposals" :key="p.toolCallId ?? p.proposalId" class="proposal">
+      <span>口座 {{ p.accountId }} の凍結解除案(提案ID: {{ p.proposalId }})<template v-if="p.reasoning">: {{ p.reasoning }}</template></span>
+      <template v-if="p.executed">
+        <span>確定済み</span>
+      </template>
+      <template v-else-if="p.status === 'approved'">
+        <button @click="confirmUnfreeze(p)">凍結解除を確定</button>
+      </template>
+      <template v-else-if="p.status === 'rejected'">
+        <span>却下済み(ダッシュボードから再度精査を依頼できます)</span>
+      </template>
+      <template v-else>
+        <button @click="decideProposal(p, 'approve')">承認</button>
+        <button @click="decideProposal(p, 'reject')">却下</button>
+      </template>
       <span v-if="p.error" class="error">{{ p.error }}</span>
     </div>
 
-    <form @submit.prevent="send">
+    <form @submit.prevent="send()">
       <textarea v-model="input" :disabled="sending" rows="3" placeholder="凍結中の口座について質問する" />
       <button type="submit" :disabled="sending || !input.trim()">送信</button>
     </form>

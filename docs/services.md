@@ -12,7 +12,8 @@ frontendはAuthorization Code + PKCEブラウザフローでログインする�
 - **提供機能**：
   - ログイン（Authorization Code + PKCE）。発行される直後のトークンは`aud=frontend`のみ（スコープなし。[ADR 0005](adr/0005-single-audience-tokens-only.md)）
   - 取引ダッシュボード：ログイントークンを`subject_token`にToken Exchange（audience=account-service, scope=account:read）を行い、そのトークンでaccount-serviceにアクセスする
-  - 「凍結解除を確定」ボタン：同様にToken Exchange（audience=account-service, scope=account:unfreeze）を行い、そのトークンでaccount-serviceにアクセスする。決定論的操作の起点
+  - 「AIによる精査を依頼」ボタン：チャット画面へ遷移し、AIエージェントによる凍結事由の精査を自動的に開始する
+  - チャット画面の「承認」「却下」「凍結解除を確定」ボタン：いずれもToken Exchange（audience=account-service, scope=account:unfreeze）を行い、そのトークンでaccount-serviceにアクセスする。承認済みの提案がある場合のみ「凍結解除を確定」ボタンが有効になる（[ADR 0036](adr/0036-unfreeze-proposal-approval-step.md)）。決定論的操作の起点
   - チャットUI：AIエージェント（fraud-agent）とのやり取り。開始時にログイントークンを`subject_token`に別のToken Exchange（audience=fraud-agent, scope=account:read）を行い、そのトークンでfraud-agentのチャット開始APIを呼ぶ（他の全ホップと同じ、実サービスへの透過的呼び出し。[ADR 0014](adr/0014-fraud-agent-token-exchange.md)）
 - **保有データ**：ログインセッション（アナリストのログイントークン）。サーバー側データストアは持たず、暗号化・署名付きCookieでステートレスに保持する（[ADR 0008](adr/0008-per-service-datastore-strategy.md)）
 - **連携相手**：Keycloak（認証、用途ごとのToken Exchangeの実行）、account-service（交換後のトークンで）、fraud-agent（Token Exchangeで得たトークンによる実呼び出し）
@@ -51,7 +52,7 @@ frontendはAuthorization Code + PKCEブラウザフローでログインする�
   - 口座凍結の自動実行（`account:freeze`）。fraud-detection-engineからの機械間認証リクエストのみを受け付け、業務属性チェックは行わない
   - 口座凍結の解除の実行（`account:unfreeze`）。実行時にanalyst-attribute-serviceへ再照会し業務属性を再検証する（多層防御）
   - アナリスト経由のリクエストでは、呼び出し元の担当地域・権限レベルに応じて閲覧・凍結解除可能な口座を制限する（architecture.md 表5）
-- **保有データ**：口座（地域`region`、ティア`standard`/`high-value`）、取引履歴、口座凍結記録（fraud-detection-engineがいつ・何を根拠に凍結したか）、凍結解除提案（誰が・何を根拠に提案したか）、凍結解除実行記録（誰が・どの提案を確定したか）。PostgreSQL（[ADR 0008](adr/0008-per-service-datastore-strategy.md)）
+- **保有データ**：口座（地域`region`、ティア`standard`/`high-value`）、取引履歴、口座凍結記録（fraud-detection-engineがいつ・何を根拠に凍結したか）、凍結解除提案（誰が・何を根拠に提案したか、承認/却下の状態と決定者・決定日時。[ADR 0036](adr/0036-unfreeze-proposal-approval-step.md)）、凍結解除実行記録（誰が・どの提案を確定したか）。PostgreSQL（[ADR 0008](adr/0008-per-service-datastore-strategy.md)）
 - **連携相手**：fraud-mcp-server・fraud-detection-engine・frontendから呼ばれる。アナリスト経由のリクエストではanalyst-attribute-serviceへさらに委任する
 - **技術スタック**：Java / Spring Boot（選定理由は[ADR 0007](adr/0007-per-service-language-selection.md)）
 

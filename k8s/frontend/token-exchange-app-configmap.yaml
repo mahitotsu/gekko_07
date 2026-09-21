@@ -57,7 +57,8 @@ data:
     # frontend→account-serviceはpathでscopeが変わる(読み取り/確定操作)、frontend→fraud-agent
     # はscopeが1つだけ(チャット開始)。
     SCOPE_RULES = [
-        ("account-service", re.compile(r"^/accounts/[^/]+/unfreeze$"), "POST", "account:unfreeze"),
+        # ADR 0036: 提案の承認/却下も確定操作(unfreeze)と同じ人間専用scopeの配下に置く。
+        ("account-service", re.compile(r"^/accounts/[^/]+/(unfreeze|unfreeze-proposals/[^/]+/(approve|reject))$"), "POST", "account:unfreeze"),
         ("account-service", re.compile(r"^/accounts/[^/]+(/.*)?$"), "GET", "account:read"),
         ("fraud-agent", re.compile(r"^/chat$"), "POST", "account:read"),
     ]

@@ -8,6 +8,9 @@ interface FrozenAccount {
   region: string;
   tier: string;
   freezeReason: string | null;
+  proposalId: string | null;
+  proposalStatus: "pending" | "approved" | "rejected" | null;
+  proposalReasoning: string | null;
 }
 
 // server: false固定。SSR側のuseFetchはevent.$fetch経由のプロセス内呼び出しになり、
@@ -21,14 +24,14 @@ const { data: accounts, pending, refresh, error } = await useFetch<FrozenAccount
 const unfreezingId = ref<string | null>(null);
 const unfreezeError = ref<string | null>(null);
 
-async function confirmUnfreeze(accountId: string) {
+async function confirmUnfreeze(accountId: string, proposalId: string | null) {
   unfreezingId.value = accountId;
   unfreezeError.value = null;
   try {
     const res = await fetch(`/accounts/${accountId}/unfreeze`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ proposalId }),
     });
     if (res.status === 401) {
       window.location.href = "/login";
@@ -68,7 +71,21 @@ async function confirmUnfreeze(accountId: string) {
           <td>{{ account.tier }}</td>
           <td>{{ account.freezeReason ?? "-" }}</td>
           <td>
-            <button :disabled="unfreezingId === account.id" @click="confirmUnfreeze(account.id)">
+            <NuxtLink
+              v-if="!account.proposalStatus || account.proposalStatus === 'rejected'"
+              :to="`/chat?accountId=${account.id}`"
+            >
+              AIによる精査を依頼
+            </NuxtLink>
+            <template v-else-if="account.proposalStatus === 'pending'">
+              <span class="badge">精査中</span>
+              <NuxtLink :to="`/chat?accountId=${account.id}`">チャットで確認</NuxtLink>
+            </template>
+            <button
+              v-else
+              :disabled="unfreezingId === account.id"
+              @click="confirmUnfreeze(account.id, account.proposalId)"
+            >
               凍結解除を確定
             </button>
           </td>
@@ -92,5 +109,14 @@ td {
 }
 .error {
   color: #b00020;
+}
+.badge {
+  display: inline-block;
+  margin-right: 0.5rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 0.25rem;
+  background: #f0ad4e;
+  color: #fff;
+  font-size: 0.85rem;
 }
 </style>

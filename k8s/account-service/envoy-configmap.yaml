@@ -190,6 +190,9 @@ data:
                                 principals:
                                   - header: { name: "x-auth-scope", string_match: { contains: "account:freeze" } }
                               # ADR 0024: frontendが最初の呼び出し元(確定パス、決定論的操作)。
+                              # ADR 0036: 提案の承認/却下も同じ人間専用スコープの配下に置く
+                              # (fraud-agent/fraud-mcp-serverはaccount:proposeのみでaccount:unfreeze
+                              # を持たないため、承認/却下エンドポイントにも到達できない)。
                               unfreeze:
                                 permissions:
                                   - and_rules:
@@ -199,7 +202,7 @@ data:
                                             path:
                                               safe_regex:
                                                 google_re2: {}
-                                                regex: "^/accounts/[^/]+/unfreeze$"
+                                                regex: "^/accounts/[^/]+/(unfreeze|unfreeze-proposals/[^/]+/(approve|reject))$"
                                 principals:
                                   - header: { name: "x-auth-scope", string_match: { contains: "account:unfreeze" } }
                       - name: envoy.filters.http.lua
