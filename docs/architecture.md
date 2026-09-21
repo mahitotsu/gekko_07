@@ -236,6 +236,7 @@ fraud-detection-engineはユーザー委任チェーンに参加しない機械�
 - 外部公開はIngressではなく`kubectl port-forward`で行う（[ADR 0004](adr/0004-external-access-via-port-forward.md)）。edge-proxy相当のServiceに直接port-forwardし、`KC_HOSTNAME`はホストからブラウザで到達する固定URL（`http://localhost:3000`を想定）に固定する
 - クラスタのup/down/stop/start/statusは`make`タスクで操作する（[Makefile](../Makefile)）
 - 実行に必要なWSL2側の前提条件（cgroup v2化）とその対応経緯は[insights.md](insights.md)を参照
+- Keycloakは`kc.sh build`済みイメージ（[services/keycloak/Dockerfile](../services/keycloak/Dockerfile)）を`start --optimized`で起動する。起動のたびにaugmentationをやり直す`start-dev`と比べ起動時間を約半分に短縮している（[ADR 0035](adr/0035-keycloak-optimized-build.md)）
 
 ## 8. データストア
 

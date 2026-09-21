@@ -1,4 +1,5 @@
-# ローカル実行用のKeycloak（start-devモード）。
+# ローカル実行用のKeycloak。services/keycloak/Dockerfileで`kc.sh build`済みイメージを使い、
+# `start --optimized`で起動する(起動時の再augmentationを省略し起動を短縮する)。
 # PostgreSQLに永続化する（ADR 0008。k8s/postgres/参照）。realmインポート
 # （--import-realm）はデータディレクトリが空の初回起動時のみ実質的な効果を持つ
 # （既存realmに対してはIGNORE_EXISTING戦略のため、2回目以降の起動でrealm-configmap.yaml
@@ -98,8 +99,12 @@ spec:
               exit 1
       containers:
         - name: keycloak
-          image: quay.io/keycloak/keycloak:26.7.0
-          args: ["start-dev", "--import-realm", "--features=spiffe,client-auth-federated"]
+          image: gekko07/keycloak:local
+          imagePullPolicy: IfNotPresent
+          # services/keycloak/Dockerfileで`kc.sh build`済みのイメージなので--optimizedで
+          # 再augmentationを省略する(起動短縮)。--featuresはbuild時にKC_FEATURESとして
+          # 焼き込み済みのためここでは指定しない(services/keycloak/Dockerfile参照)。
+          args: ["start", "--optimized", "--import-realm"]
           env:
             - name: KC_TRUSTSTORE_PATHS
               value: "/run/spire-bundle-ca/ca.crt"

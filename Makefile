@@ -65,7 +65,7 @@ SPIRE_BUNDLE_ENDPOINT_CERT_DUMMY := $(shell mkdir -p $(SECRETS_DIR) && \
 	    -addext "subjectAltName=DNS:spire-server.spire.svc.cluster.local,DNS:spire-server" \
 	    >/dev/null 2>&1 ) )
 
-.PHONY: up down stop start status network-status clean deploy undeploy keycloak-forward keycloak-reimport-realm deploy-verify-hop undeploy-verify-hop verify-hop deploy-spire undeploy-spire deploy-network-policy undeploy-network-policy deploy-observability undeploy-observability grafana-forward verify-observability build-account-service build-analyst-attribute-service build-fraud-detection-engine build-fraud-mcp-server build-fraud-agent build-frontend
+.PHONY: up down stop start status network-status clean deploy undeploy keycloak-forward keycloak-reimport-realm deploy-verify-hop undeploy-verify-hop verify-hop deploy-spire undeploy-spire deploy-network-policy undeploy-network-policy deploy-observability undeploy-observability grafana-forward verify-observability build-account-service build-analyst-attribute-service build-fraud-detection-engine build-fraud-mcp-server build-fraud-agent build-frontend build-keycloak
 
 # -------------------------
 # クラスタ操作
@@ -130,6 +130,11 @@ build-frontend:
 	docker build -t gekko07/frontend:local services/frontend
 	k3d image import gekko07/frontend:local -c $(CLUSTER)
 
+# services/keycloakで`kc.sh build`済みの最適化イメージをビルドし、k3dクラスタへ持ち込む
+build-keycloak:
+	docker build -t gekko07/keycloak:local services/keycloak
+	k3d image import gekko07/keycloak:local -c $(CLUSTER)
+
 # PostgreSQL・SPIRE・Keycloak・edge-proxy・account-service・analyst-attribute-service・
 # fraud-detection-engine・fraud-mcp-server・fraud-agent・frontendをデプロイ（クラスタが起動済みであること）
 deploy:
@@ -155,6 +160,7 @@ deploy:
 	@# spire-bundle-endpoint.crtの秘密鍵は含めない(検証側は証明書のみで足りる)
 	kubectl create secret generic spire-bundle-endpoint-ca -n $(NAMESPACE) \
 		--from-file=ca.crt=$(SECRETS_DIR)/spire-bundle-endpoint.crt --dry-run=client -o yaml | kubectl apply -f -
+	$(MAKE) build-keycloak
 	kubectl apply -f k8s/keycloak/realm-configmap.yaml -f k8s/keycloak/envoy-configmap.yaml -f k8s/keycloak/deployment.yaml -f k8s/keycloak/service.yaml
 	kubectl -n $(NAMESPACE) rollout status deployment/keycloak --timeout=180s
 	kubectl apply -f k8s/edge-proxy/envoy-configmap.yaml -f k8s/edge-proxy/deployment.yaml -f k8s/edge-proxy/service.yaml
