@@ -10,7 +10,14 @@ interface FrozenAccount {
   freezeReason: string | null;
 }
 
-const { data: accounts, refresh, error } = await useFetch<FrozenAccount[]>("/accounts/frozen");
+// server: false固定。SSR側のuseFetchはevent.$fetch経由のプロセス内呼び出しになり、
+// Envoy(0.0.0.0:8080)のlua filterが付与するx-gekko-handshakeヘッダーを経由しないため、
+// server/middleware/0.security.tsのhandshake検証に必ず落ちる(実機で再現・確認済み)。
+// クライアント側からのfetchはbrowser→edge-proxy→frontendのEnvoy ingressを経由するため
+// 正しくhandshakeが付与される。
+const { data: accounts, pending, refresh, error } = await useFetch<FrozenAccount[]>("/accounts/frozen", {
+  server: false,
+});
 const unfreezingId = ref<string | null>(null);
 const unfreezeError = ref<string | null>(null);
 
@@ -41,9 +48,10 @@ async function confirmUnfreeze(accountId: string) {
 <template>
   <section>
     <h1>凍結中口座</h1>
-    <p v-if="error">口座一覧の取得に失敗しました。</p>
+    <p v-if="pending">読み込み中...</p>
+    <p v-else-if="error">口座一覧の取得に失敗しました。</p>
     <p v-if="unfreezeError" class="error">{{ unfreezeError }}</p>
-    <table v-if="accounts && accounts.length">
+    <table v-if="!pending && accounts && accounts.length">
       <thead>
         <tr>
           <th>口座ID</th>
@@ -67,7 +75,7 @@ async function confirmUnfreeze(accountId: string) {
         </tr>
       </tbody>
     </table>
-    <p v-else-if="!error">担当範囲内に凍結中の口座はありません。</p>
+    <p v-else-if="!pending && !error">担当範囲内に凍結中の口座はありません。</p>
   </section>
 </template>
 
