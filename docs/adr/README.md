@@ -2,7 +2,7 @@
 
 本ディレクトリは、設計判断1件ごとの根拠・選択経緯を記録する。[architecture.md](../architecture.md) は現在有効な設計断面のみを記載し、個々の判断の根拠はここに委譲する。
 
-決定が覆った場合は、旧ADRのStatusを`Superseded by NNNN`に更新し、新しいADRを追加する。31件のうち23件は今も覆っていないAccepted——後続ADRによる修正は「Token Exchangeの実行主体・宛先指定」と「身元検証（mTLS/SPIFFE/SPIRE）」の2テーマに偏っており、乱発しているわけではない。以下はテーマ別の索引。同じテーマのADRを続けて読むと、1つの関心事がどう変遷したかを追いやすい。
+決定が覆った場合は、旧ADRのStatusを`Superseded by NNNN`に更新し、新しいADRを追加する。32件のうち23件は今も覆っていないAccepted——後続ADRによる修正は「Token Exchangeの実行主体・宛先指定」「身元検証（mTLS/SPIFFE/SPIRE）」「frontendの本実装内での段階的置き換え」の3テーマに偏っており、乱発しているわけではない。以下はテーマ別の索引。同じテーマのADRを続けて読むと、1つの関心事がどう変遷したかを追いやすい。
 
 ## シナリオ選定
 
@@ -75,4 +75,5 @@
 | [0027](0027-fraud-detection-engine-implementation.md) | fraud-detection-engineを本実装し、デモ用凍結データの発生源をaccount-serviceのシードから切り替える | Accepted |
 | [0029](0029-fraud-mcp-server-implementation.md) | fraud-mcp-serverを本実装し、account-serviceの読み取り・提案系機能をMCPツールとして公開する | Accepted |
 | [0030](0030-fraud-agent-implementation.md) | fraud-agentを本実装し、Anthropic API向けに初めてのクラスタ外egressを設ける | Accepted |
-| [0031](0031-frontend-implementation.md) | frontendを本実装し、簡易ログイン(ROPC)を本物のAuthorization Code + PKCEへ置き換える | Accepted |
+| [0031](0031-frontend-implementation.md) | frontendを本実装し、簡易ログイン(ROPC)を本物のAuthorization Code + PKCEへ置き換える | Partially superseded by 0032 |
+| [0032](0032-frontend-oidc-callback-form-post.md) | frontendのOIDCコールバックをresponse_mode=form_postへ変更し、認可コード・stateのURL露出を無くす | Accepted |

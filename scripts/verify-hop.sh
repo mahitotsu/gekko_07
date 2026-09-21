@@ -99,6 +99,9 @@ urlencode() {
 # 最終的なリダイレクト先URL全体(code=...&state=...を含む)を返す。テストフィクスチャで
 # email/firstName/lastNameを埋めてあるため(k8s/keycloak/test-fixtures-configmap.yaml)
 # 追加の確認画面は出ず、ログインフォームのPOST1回でcodeまで到達する。
+#
+# raw_login_token()専用(response_mode=query、既定値)。login_via_frontend()は
+# response_mode=form_post(ADR 0032)のため下記keycloak_login_form_post()を使う。
 keycloak_login_redirect() {
   local authorize_url="$1" username="$2" password="$3" jar="$4"
   local login_page form_action
@@ -116,26 +119,61 @@ keycloak_login_redirect() {
     "$form_action" | awk -F': ' 'tolower($1)=="location"{print $2}' | tr -d '\r'
 }
 
+# login_via_frontend()専用。response_mode=form_post(ADR 0032、server/routes/login.get.ts)
+# ではKeycloakはログインフォームPOST後302ではなく200+自動送信フォーム(<FORM METHOD="POST"
+# ACTION=".../callback"><INPUT TYPE="HIDDEN" NAME="code" VALUE="...">...)を返す
+# (ブラウザはonload="document.forms[0].submit()"でこれを自動的にPOSTする)。ヘッドレス
+# ブラウザを持たないこのスクリプトでは、隠しinputをHTMLから抽出してそのまま/callbackへ
+# POSTすることでブラウザのJS自動送信を代替する。成功すればgekko_session Cookieが$jarに
+# 確立される(callback.post.tsが302 /dashboardを返すが、ここでは戻り値は使わない)。
+keycloak_login_form_post() {
+  local authorize_url="$1" username="$2" password="$3" jar="$4"
+  local login_page form_action body callback_action code state session_state iss
+  login_page=$(curl -s -c "$jar" -b "$jar" "$authorize_url")
+  form_action=$(printf '%s' "$login_page" | grep -o 'action="[^"]*"' | head -1 | sed -E 's/^action="//; s/"$//' | sed 's/&amp;/\&/g')
+  if [ -z "$form_action" ]; then
+    echo "Keycloakログインフォームのaction属性を取得できませんでした" >&2
+    return 1
+  fi
+  form_action="$EDGE$(echo "$form_action" | sed -E 's#^https?://[^/]+##')"
+  body=$(curl -s -c "$jar" -b "$jar" \
+    --data-urlencode "username=$username" --data-urlencode "password=$password" \
+    "$form_action")
+  # form_post応答はKeycloakのFreeMarkerテンプレート由来で大文字タグ(<FORM>/<INPUT>)のため
+  # 大文字小文字を区別しない(-i)。
+  callback_action=$(printf '%s' "$body" | grep -ioP 'action="\K[^"]+' | head -1 | sed 's/&amp;/\&/g')
+  if [ -z "$callback_action" ]; then
+    echo "response_mode=form_postの自動送信フォームを取得できませんでした($username)" >&2
+    return 1
+  fi
+  callback_action="$EDGE$(echo "$callback_action" | sed -E 's#^https?://[^/]+##')"
+  code=$(printf '%s' "$body" | grep -ioP 'name="code"\s+value="\K[^"]*')
+  state=$(printf '%s' "$body" | grep -ioP 'name="state"\s+value="\K[^"]*')
+  session_state=$(printf '%s' "$body" | grep -ioP 'name="session_state"\s+value="\K[^"]*')
+  iss=$(printf '%s' "$body" | grep -ioP 'name="iss"\s+value="\K[^"]*')
+  if [ -z "$code" ] || [ -z "$state" ]; then
+    echo "frontend経由のログインでcode/stateを取得できませんでした($username)" >&2
+    return 1
+  fi
+  curl -s -o /dev/null -c "$jar" -b "$jar" \
+    --data-urlencode "code=$code" --data-urlencode "state=$state" \
+    --data-urlencode "session_state=$session_state" --data-urlencode "iss=$iss" \
+    "$callback_action"
+}
+
 # パターン⓪:本物のAuthorization Code + PKCEブラウザフロー(ADR 0031)でログインし、
 # gekko_session Cookieを$jarに確立する。以降のfrontend呼び出しは全てこの$jarを使う。
 login_via_frontend() {
   local username="$1" password="$2" jar="$3"
   rm -f "$jar"
-  local authorize_url redirect_location code state
+  local authorize_url
   authorize_url=$(curl -s -D - -o /dev/null -c "$jar" "$EDGE/login" | awk -F': ' 'tolower($1)=="location"{print $2}' | tr -d '\r')
   # KC_HOSTNAME固定(http://localhost:3000、ADR 0004)によりfrontendの/loginが返すLocationは
   # 常にlocalhost:3000だが、verify-hop.sh自身のport-forwardは$LOCAL_EDGE_PORT(18080)。
   # edge-proxyのルーティングはpathのみで決まる(Host非依存)ため、ホスト部分だけ$EDGEへ
   # 付け替えて実際に到達可能なURLにする。
   authorize_url="$EDGE$(echo "$authorize_url" | sed -E 's#^https?://[^/]+##')"
-  redirect_location=$(keycloak_login_redirect "$authorize_url" "$username" "$password" "$jar")
-  code=$(echo "$redirect_location" | grep -oE '[?&]code=[^&]+' | head -1 | cut -d= -f2-)
-  state=$(echo "$redirect_location" | grep -oE '[?&]state=[^&]+' | head -1 | cut -d= -f2-)
-  if [ -z "$code" ] || [ -z "$state" ]; then
-    echo "frontend経由のログインでcode/stateを取得できませんでした($username)" >&2
-    return 1
-  fi
-  curl -s -o /dev/null -c "$jar" -b "$jar" "$EDGE/callback?code=${code}&state=${state}"
+  keycloak_login_form_post "$authorize_url" "$username" "$password" "$jar"
 }
 
 # パターン①検証(1a/1b/2c)向けに、frontendの/loginを経由せず独自のPKCEパラメータで直接

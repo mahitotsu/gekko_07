@@ -1,6 +1,6 @@
 # ADR 0031: frontendを本実装し、簡易ログイン(ROPC)を本物のAuthorization Code + PKCEへ置き換える
 
-- **Status**: Accepted
+- **Status**: Partially superseded by [0032](0032-frontend-oidc-callback-form-post.md)（`/callback`をGET→POST(form_post)化。それ以外のAuthorization Code + PKCE設計・BFFパターン・セッションCookie設計は本ADRのまま有効）
 - **Date**: 2026-09-19
 
 ## Context
@@ -50,11 +50,11 @@ CSRF対策として`/logout`はGETリンクではなくPOST専用にする（`Sa
 
 ### PKCEの`code_verifier`/`state`/`nonce`は短命Cookieに保持する
 
-`gekko_pkce`（HMAC署名付き、10分TTL）に`code_verifier`・`state`・`nonce`をまとめて保持する。署名鍵はセッション暗号鍵と同じくプロセス内生成。`/login`（GET）で生成・設定し、`/callback`（GET）で検証・削除する。`nonce`はid_token検証で照合する。
+`gekko_pkce`（HMAC署名付き、10分TTL）に`code_verifier`・`state`・`nonce`をまとめて保持する。署名鍵はセッション暗号鍵と同じくプロセス内生成。`/login`（GET）で生成・設定し、`/callback`（GET）で検証・削除する。`nonce`はid_token検証で照合する。〔[ADR 0032](0032-frontend-oidc-callback-form-post.md)で訂正：`/callback`はresponse_mode=form_postによりPOSTに変更。GETは迷い込み時のfail-close専用〕
 
 ### Cookie属性
 
-`httpOnly`・`SameSite=Lax`・`secure=false`（ローカルk3d port-forwardがhttpのため。本番相当環境対応時の検討事項としてarchitecture.mdに記録）。`SameSite=Lax`はOAuthのトップレベルリダイレクト（Keycloak→`/callback`のGET）では送信されるが他サイトからのPOSTでは送信されないため、追加のCSRFトークンなしで妥当な保護になる。
+`httpOnly`・`SameSite=Lax`・`secure=false`（ローカルk3d port-forwardがhttpのため。本番相当環境対応時の検討事項としてarchitecture.mdに記録）。`SameSite=Lax`はOAuthのトップレベルリダイレクト（Keycloak→`/callback`のGET）では送信されるが他サイトからのPOSTでは送信されないため、追加のCSRFトークンなしで妥当な保護になる。〔[ADR 0032](0032-frontend-oidc-callback-form-post.md)で訂正：`/callback`はresponse_mode=form_postによりPOSTに変更されたが、edge-proxyが同一オリジン(`http://localhost:3000`)でKeycloak・frontendの両方を配信しているため、Keycloakからのform_post submitは同一オリジン遷移であり`SameSite=Lax`でも送信される。追加のCSRFトークン不要という結論自体は変わらない〕
 
 ### `directAccessGrantsEnabled`を`false`に戻し、ROPCコードを完全に削除する
 
@@ -67,7 +67,7 @@ Nitro（Nuxtサーバー）の`server/routes`/`server/middleware`で実装した
 - `server/middleware/0.security.ts`：①loopback限定bind②接続元loopback再チェック③合言葉ヘッダー検証（ADR 0009 §2、fraud-agentの`app.ts`と同型）。全リクエストに一律適用
 - `server/middleware/1.auth.ts`：ページ読み込み(GET)のセッションゲート。`/login`・`/callback`・`/logout`・`/me`・`/accounts/**`・静的アセット以外の全GETに有効なセッションを要求し、無ければ`/login`へ302する
 - `server/utils/crypto.ts`・`session.ts`・`jwks.ts`・`pkce.ts`：前述の暗号・検証処理
-- `server/routes/login.get.ts`・`callback.get.ts`・`logout.post.ts`：Authorization Code + PKCEの起点・終点・ログアウト
+- `server/routes/login.get.ts`・`callback.get.ts`・`logout.post.ts`：Authorization Code + PKCEの起点・終点・ログアウト〔[ADR 0032](0032-frontend-oidc-callback-form-post.md)で訂正：終点は`callback.post.ts`に変更。`callback.get.ts`は迷い込みGETのfail-close専用に縮小〕
 - `server/routes/accounts/[...].ts`・`chat.post.ts`：account-service・fraud-agentへのプロキシ（セッションの`access_token`を`Authorization: Bearer`として付与）。`/chat`はfraud-agentのAG-UI SSEストリームをレスポンスを読み切らず都度書き込む方式で中継する（スタブの`stream_forward()`・ADR 0030のidle_timeout設計を踏襲）
 - `pages/dashboard.vue`：凍結中口座一覧（`GET /accounts/frozen`）と「凍結解除を確定」ボタン（`POST /accounts/{id}/unfreeze`）
 - `pages/chat.vue`：AG-UI SSEイベントを最小限のクライアント側パーサで読み、アシスタントのテキストを逐次表示する。`propose_unfreeze`の`TOOL_CALL_RESULT`を検出したら該当`accountId`/`proposalId`で「この提案を確定」ボタンを表示し、UC1手順8〜10をチャット画面内で完結できるようにした

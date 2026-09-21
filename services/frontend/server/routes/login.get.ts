@@ -42,6 +42,11 @@ export default defineEventHandler((event) => {
   authorizeUrl.searchParams.set("code_challenge_method", "S256");
   authorizeUrl.searchParams.set("state", state);
   authorizeUrl.searchParams.set("nonce", nonce);
+  // response_mode=form_post(OAuth 2.0 Form Post Response Mode)。既定のquery modeだと
+  // 認可コード・stateがcallback URLのクエリ文字列としてブラウザのアドレスバー・履歴・
+  // Refererヘッダーに残る(RFC 9700 §4.1.2が言及するリスク)。form_postではKeycloakが
+  // これらをPOST bodyで返すため、/callbackのURLは常にクエリ無しの状態になる。
+  authorizeUrl.searchParams.set("response_mode", "form_post");
 
   return sendRedirect(event, authorizeUrl.toString(), 302);
 });
