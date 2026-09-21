@@ -3,17 +3,16 @@
 # k8s/ext-authz/envoy-configmap.yamlの同名クラスタと同一構成(呼び出し元が異なるだけ)。
 #
 # ADR 0024:frontend実装にあわせてroute_configをパスベースで分割した。`/realms/`配下(Keycloakの
-# OIDCエンドポイント。Authorization Code + PKCE(ADR 0031)・Token Exchangeのいずれも配下)と
-# `/admin/`配下(Keycloak Admin REST API)はkeycloak_upstreamへ、それ以外は新設のfrontend_upstreamへ。
-# keycloak向けルートを先に置く必要がある(Envoyのroute matchは列挙順で最初にマッチしたものが勝つため、
-# 後段のcatch-all "/"より前)。
+# OIDCエンドポイント。Authorization Code + PKCE(ADR 0031)・Token Exchangeのいずれも配下)・
+# `/admin/`配下(Keycloak Admin REST API)・`/resources/`配下(ログインテーマの静的CSS/JS/画像)
+# はkeycloak_upstreamへ、それ以外は新設のfrontend_upstreamへ。keycloak向けルートを先に置く
+# 必要がある(Envoyのroute matchは列挙順で最初にマッチしたものが勝つため、後段のcatch-all
+# "/"より前)。
 #
-# `/admin/`は当初「kcadm.sh等はKeycloak Pod内へkubectl execで直接到達するため対象外」としていたが、
-# 実際にはk8s/keycloak/test-fixtures-configmap.yamlのkcadm.shがSERVER=edge-proxy経由で
-# `/admin/realms/gekko/users`等を叩いており、frontendへの誤配送(401)で失敗することが実機で
-# 判明した(ADR 0025の監査ログ集約作業でrealmを再importした際に発覚)。ADR 0024の想定漏れの
-# 是正であり、edge-proxyの役割自体(Keycloakへの非mTLS外部窓口)は変わらないため新規ADRは
-# 起こさず、この場でコメントとroute_configを修正する。
+# `/admin/`・`/resources/`はいずれもADR 0024策定時の想定漏れで、catch-allにマッチして
+# frontendへ誤配送されていた(前者はkcadm.shの401、後者はログイン画面のスタイル欠落として
+# 顕在化。詳細はinsights.md参照)。edge-proxyの役割自体(Keycloakへの非mTLS外部窓口)は
+# 変わらないため、いずれも新規ADRは起こさずこの場でroute_configを修正した。
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -64,6 +63,9 @@ data:
                             - match: { prefix: "/realms/" }
                               route: { cluster: keycloak_upstream }
                             - match: { prefix: "/admin/" }
+                              route: { cluster: keycloak_upstream }
+                            # ログインテーマの静的アセット(CSS/JS/画像)。上部コメント・insights.md参照。
+                            - match: { prefix: "/resources/" }
                               route: { cluster: keycloak_upstream }
                             # ADR 0030:frontend→fraud-agentの/chatはAG-UIプロトコルのSSE
                             # ストリーム(実行時間が不定長)を返す。総時間の上限ではなく無活動

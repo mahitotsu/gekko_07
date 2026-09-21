@@ -395,6 +395,14 @@ Lokiは`http_listen_port: 3100`（`/otel-lgtm/loki-config.yaml`）で待ち受�
 
 **対応**：`k8s/edge-proxy/envoy-configmap.yaml`のroute_configに`{match: {prefix: "/admin/"}, route: {cluster: keycloak_upstream}}`を`/realms/`ルートの次に追加した。ADR 0025の監査ログ集約作業（realm再import）で偶然発覚したが、ADR 0024自体のバグであり新規ADRは起こさず、このADRのコミットで一緒に是正した。
 
+### edge-proxyの`/resources/`パスがKeycloakではなくfrontendへ誤配送される（`/admin/`と同種、ADR 0024の実装漏れ）
+
+**症状**：ブラウザでKeycloakのログイン画面を開くと、PatternFlyのスタイルが一切当たらない状態で表示され、パスワード表示切替ボタン（`aria-label="Show password"`のアイコンボタン）がラベルもアイコンも無い小さな空のボタンに見える。ログイン自体（フォーム送信）は成功する。
+
+**原因**：`/admin/`誤配送（上記）と同じ根本原因の再発。Keycloakのログインテーマは静的アセット（CSS/JS/画像）を`/realms/`配下ではなくトップレベルの`/resources/`配下から配信するが、ADR 0024のedge-proxy route_configは`/realms/`・`/admin/`の2プレフィックスしかKeycloak宛てにしておらず、`/resources/`はcatch-allの`/`ルートにマッチしてfrontendへ配送されていた。frontendの`server/middleware/1.auth.ts`はセッション未確立の全GETを`/login`へ302するため、CSS/JSへのリクエストが`Content-Type: text/html`の`/login`ページ本文に置き換わり、ブラウザはスタイルシートとして解釈できずログイン画面がスタイル無しで表示されていた。
+
+**対応**：`k8s/edge-proxy/envoy-configmap.yaml`のroute_configに`{match: {prefix: "/resources/"}, route: {cluster: keycloak_upstream}}`を`/admin/`ルートの次に追加した。修正後、`/resources/`配下の全アセットが`keycloak_upstream`から`200`・正しい`Content-Type`で返ることを実機確認した。`/admin/`のときと同様、ADR 0024自体の実装漏れであり新規ADRは起こさずこの場で是正した。
+
 ### k3d(kube-router)のNetworkPolicyは、KubernetesのAPIサーバー(`kubernetes` Service)宛てのegressをClusterIPではなくDNAT後の実IPで評価する
 
 **症状**：Alloyの`discovery.kubernetes`（Podメタデータ取得用）に`kubernetes` ServiceのClusterIP（`10.43.0.1/32:443`）へのegressを許可するNetworkPolicyを追加しても、`observability` namespaceにdefault-denyを適用したままだと`discovery.kubernetes.pods`のtargetsが0件のまま変化しなくなった（RBAC＝ClusterRoleは正しく、`kubectl auth can-i`も許可を返す）。Alloy Pod内の`/proc/net/tcp`を見ると、APIサーバーへのTCP接続試行自体が一切記録されておらず（SYN_SENTすら無い）、NetworkPolicyがDROPしているというより経路自体が塞がれているように見えた。
