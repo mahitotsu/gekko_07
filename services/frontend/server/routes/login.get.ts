@@ -10,12 +10,67 @@ import { setPkceCookie } from "../utils/session";
 const EDGE_PROXY_BASE_URL = process.env.EDGE_PROXY_BASE_URL ?? "http://localhost:3000";
 const CLIENT_ID = "frontend";
 
+// 失敗理由(state不一致・PKCE検証失敗・id_token検証失敗等)はここでは一切区別しない
+// (ADR 0009の「詳細を漏らさない」fail close方針をUI表示でも維持する)。
+// Pod再起動をまたいだ一過性の失敗(gekko_pkce・gekko_sessionの暗号鍵がPod内生成のため)
+// でもユーザーがクリックし直す必要がないよう、3秒後に/loginへ自動的に戻す
+// (meta refresh。このページ自体がfail close専用の生HTMLでVueを使っていないため、
+// JS不要でブラウザ標準機能だけで完結するmeta refreshを採用した)。
+//
+// 文言は「もう一度ログインする」ではなく「再試行する」にする。KeycloakのSSOセッションが
+// 生きている場合、/loginへ戻ると認証情報の再入力なしでそのままダッシュボードへ進むことが
+// あり(OIDC SSOの通常の挙動)、「ログインする」という予告と実際の遷移が食い違って
+// ユーザーを混乱させるため。
 const ERROR_PAGE = `<!doctype html>
 <html lang="ja">
-<head><meta charset="utf-8"><title>ログインエラー</title></head>
+<head>
+  <meta charset="utf-8">
+  <title>ログインエラー</title>
+  <meta http-equiv="refresh" content="3;url=/login">
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      background: #f7f7f8;
+      color: #222;
+    }
+    .card {
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 2rem 2.5rem;
+      text-align: center;
+      max-width: 26rem;
+    }
+    .card p {
+      margin: 0.5rem 0;
+    }
+    .card a {
+      display: inline-block;
+      margin-top: 1rem;
+      padding: 0.5rem 1.25rem;
+      background: #2563eb;
+      color: #fff;
+      text-decoration: none;
+      border-radius: 4px;
+    }
+    .hint {
+      color: #666;
+      font-size: 0.875rem;
+    }
+  </style>
+</head>
 <body>
-  <p>ログインに失敗しました。</p>
-  <p><a href="/login">もう一度ログインする</a></p>
+  <div class="card">
+    <p>ログイン処理を完了できませんでした。</p>
+    <p class="hint">お手数ですが、もう一度お試しください。</p>
+    <a href="/login">再試行する</a>
+    <p class="hint">3秒後に自動的に再試行します…</p>
+  </div>
 </body>
 </html>`;
 
