@@ -21,6 +21,11 @@
 # このマッパーを追加する前から`sub`を正しく引き継いでいたため(実機確認済み)、frontend以外の
 # クライアントには同じマッパーを追加していない。
 #
+# `preferred-username-claim`はダッシュボード画面ヘッダーの「〜としてログイン中」表示用
+# ([ADR 0034](../../docs/adr/0034-frontend-display-username-instead-of-sub.md))。`sub`と異なり
+# `preferred_username`はOIDC Core標準のid_token必須クレームではないため、id_tokenにも
+# 明示的なdedicated protocol mapperが要る(`id.token.claim: true`)。
+#
 # clientScope/clientのdescriptionはKeycloakのDB上VARCHAR(255)相当の列に格納されるため、
 # 255文字を超えると--import-realm自体が"ERROR: value too long for type character
 # varying(255)"で失敗する（実機確認済み。account:readのdescriptionが303文字あり再現した）。
@@ -220,6 +225,20 @@ data:
                 "jsonType.label": "String",
                 "id.token.claim": "false",
                 "access.token.claim": "true",
+                "userinfo.token.claim": "false"
+              }
+            },
+            {
+              "name": "preferred-username-claim",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-usermodel-property-mapper",
+              "consentRequired": false,
+              "config": {
+                "user.attribute": "username",
+                "claim.name": "preferred_username",
+                "jsonType.label": "String",
+                "id.token.claim": "true",
+                "access.token.claim": "false",
                 "userinfo.token.claim": "false"
               }
             }

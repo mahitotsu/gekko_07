@@ -124,6 +124,7 @@ fraud-detection-engineの client_credentials トークン(scope=account:freeze)
 | クレーム | 値 |
 |---|---|
 | `sub` | アナリストの一意識別子（uid）。以降の全てのToken Exchangeを通じて維持され、委任チェーン全体を追跡するキーになる |
+| `preferred_username` | アナリストがログインに使った読める名前（例: `yamada-analyst`）。`sub`と異なりid_tokenのみに含まれ、画面表示等の人間可読な用途にのみ使う（[ADR 0034](adr/0034-frontend-display-username-instead-of-sub.md)） |
 | `aud` | `frontend`（単一。[ADR 0005](adr/0005-single-audience-tokens-only.md)） |
 | `iss` | Keycloakのrealm発行者 |
 | scope | 最小限（`openid`程度）。`account:read`・`account:unfreeze`等のスコープはこの時点では一切持たない |
@@ -391,7 +392,7 @@ fraud-mcp-server・fraud-detection-engine・account-service・analyst-attribute-
 ### Keycloak
 
 - **`standard.token.exchange.enabled`属性の機能的検証**：1ホップ先行検証（frontend→fraud-mcp-server、fraud-mcp-server→account-service、account-service→analyst-attribute-service）でRFC 8693トークン交換リクエストが実際に通ることを確認済み（[insights.md](insights.md)・[ADR 0021](adr/0021-account-service-analyst-attribute-service-spiffe-jwt-svid.md)参照）。ただしaudience解決には対象audience向けの`oidc-audience-mapper`がclient scope側に必要という追加の前提が判明した（同insights.md）
-- **標準client scope（profile/email/roles等）の要否**：`--import-realm`での直接importでは自動生成されないため現状未定義（詳細はrealm-configmap.yamlのコメント参照）。ログイントークンに`preferred_username`等が必要になった時点でclientScopesに明示定義を追加する
+- **標準client scope（profile/email/roles等）の要否**：`--import-realm`での直接importでは自動生成されないため現状未定義（詳細はrealm-configmap.yamlのコメント参照）。`preferred_username`は画面表示用に必要になったため[ADR 0034](adr/0034-frontend-display-username-instead-of-sub.md)でdedicated protocol mapperとして解決済み（`profile`スコープ自体は導入していない）。email/roles等、他の標準クレームが必要になった場合は改めてclientScopesへの追加を検討する
 
 ### インフラ
 

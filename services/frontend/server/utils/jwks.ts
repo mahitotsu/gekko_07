@@ -18,6 +18,7 @@ const jwks = createRemoteJWKSet(new URL(JWKS_URL));
 
 export interface VerifiedIdentity {
   sub: string;
+  username: string;
   exp: number;
 }
 
@@ -28,10 +29,13 @@ export async function verifyIdToken(idToken: string, expectedNonce: string): Pro
     if (typeof payload.sub !== "string" || typeof payload.exp !== "number") {
       return null;
     }
+    if (typeof payload.preferred_username !== "string") {
+      return null;
+    }
     if (payload.nonce !== expectedNonce) {
       return null;
     }
-    return { sub: payload.sub, exp: payload.exp };
+    return { sub: payload.sub, username: payload.preferred_username, exp: payload.exp };
   } catch {
     return null;
   }

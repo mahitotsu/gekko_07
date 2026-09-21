@@ -61,6 +61,7 @@ export default defineEventHandler(async (event) => {
 
   setSessionCookie(event, {
     sub: identity.sub,
+    username: identity.username,
     accessToken: tokenResponse.access_token,
     idToken: tokenResponse.id_token,
     exp: identity.exp,

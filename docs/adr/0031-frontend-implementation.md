@@ -1,6 +1,6 @@
 # ADR 0031: frontendを本実装し、簡易ログイン(ROPC)を本物のAuthorization Code + PKCEへ置き換える
 
-- **Status**: Partially superseded by [0032](0032-frontend-oidc-callback-form-post.md)（`/callback`をGET→POST(form_post)化。それ以外のAuthorization Code + PKCE設計・BFFパターン・セッションCookie設計は本ADRのまま有効）
+- **Status**: Partially superseded by [0032](0032-frontend-oidc-callback-form-post.md)（`/callback`をGET→POST(form_post)化）・[0034](0034-frontend-display-username-instead-of-sub.md)（`layouts/authenticated.vue`のヘッダー表示をsub→usernameに変更）。それ以外のAuthorization Code + PKCE設計・BFFパターン・セッションCookie設計は本ADRのまま有効
 - **Date**: 2026-09-19
 
 ## Context
@@ -71,7 +71,7 @@ Nitro（Nuxtサーバー）の`server/routes`/`server/middleware`で実装した
 - `server/routes/accounts/[...].ts`・`chat.post.ts`：account-service・fraud-agentへのプロキシ（セッションの`access_token`を`Authorization: Bearer`として付与）。`/chat`はfraud-agentのAG-UI SSEストリームをレスポンスを読み切らず都度書き込む方式で中継する（スタブの`stream_forward()`・ADR 0030のidle_timeout設計を踏襲）
 - `pages/dashboard.vue`：凍結中口座一覧（`GET /accounts/frozen`）と「凍結解除を確定」ボタン（`POST /accounts/{id}/unfreeze`）
 - `pages/chat.vue`：AG-UI SSEイベントを最小限のクライアント側パーサで読み、アシスタントのテキストを逐次表示する。`propose_unfreeze`の`TOOL_CALL_RESULT`を検出したら該当`accountId`/`proposalId`で「この提案を確定」ボタンを表示し、UC1手順8〜10をチャット画面内で完結できるようにした
-- `layouts/authenticated.vue`：ログイン中の`sub`表示とログアウトボタンの共通ヘッダー
+- `layouts/authenticated.vue`：ログイン中の`sub`表示とログアウトボタンの共通ヘッダー〔[ADR 0034](0034-frontend-display-username-instead-of-sub.md)で訂正：表示を`sub`から`username`に変更〕
 
 ### `services/frontend/Dockerfile`
 

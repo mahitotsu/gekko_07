@@ -1,5 +1,5 @@
-// GET /me：ログイン中のアナリストのsubだけを返す(画面ヘッダー表示用)。トークン自体は
-// 返さない(BFFパターン、ADR 0031 設計判断0。ブラウザはトークンに一切触れない)。
+// GET /me：ログイン中のアナリストのusernameだけを返す(画面ヘッダー表示用、ADR 0034)。
+// トークン自体は返さない(BFFパターン、ADR 0031 設計判断0。ブラウザはトークンに一切触れない)。
 //
 // 401はthrow createError()ではなくsetResponseStatus+JSONで直接返す。createError()を投げると
 // NitroがNuxtのエラーページを描画するため内部的に/__nuxt_error へ再ディスパッチし、その仮想
@@ -14,5 +14,5 @@ export default defineEventHandler((event) => {
     setResponseStatus(event, 401);
     return { error: "no active session" };
   }
-  return { sub: session.sub };
+  return { username: session.username };
 });

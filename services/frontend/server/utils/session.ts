@@ -21,6 +21,7 @@ function nowSeconds(): number {
 
 export interface Session {
   sub: string;
+  username: string;
   accessToken: string;
   idToken: string;
   exp: number; // access_tokenのexp(unix seconds)。リフレッシュトークンは扱わない(設計判断3)。
