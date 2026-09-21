@@ -1,6 +1,6 @@
 # ADR 0032: frontendのOIDCコールバックをresponse_mode=form_postへ変更し、認可コード・stateのURL露出を無くす
 
-- **Status**: Accepted
+- **Status**: Partially superseded by [0033](0033-frontend-logout-post.md)（ログアウトの`id_token_hint`もPOSTへ変更。callback側のresponse_mode=form_post化は本ADRのまま有効）
 - **Amends**: [0031](0031-frontend-implementation.md)（`/callback`をGET→POST(form_post)化。`/callback`（GET）に触れた記述の訂正はADR 0031本文の該当箇所参照）
 - **Date**: 2026-09-21
 
@@ -33,12 +33,12 @@ Keycloakのログインフォームpost後の応答が302→200(自動送信フ�
 
 ### ログアウト（`id_token_hint`）はform_postの対象外のまま残す
 
-OIDC RP-Initiated Logoutの仕様上、`id_token_hint`はKeycloakの`end_session_endpoint`への**開始**リダイレクトのクエリパラメータとして送る以外の手段が定義されておらず、form_postはあくまで認可エンドポイントの**応答**（response_mode）にのみ存在する概念のため、そもそも適用対象にならない。`id_token`自体は`aud=frontend`専用でaccount-service/fraud-agent等のAPI呼び出しには使えず（BFFパターン、ADR 0031）、5分で失効するため、ブラウザ履歴に残るリスクは限定的と判断し、追加対応は見送った。
+OIDC RP-Initiated Logoutの仕様上、`id_token_hint`はKeycloakの`end_session_endpoint`への**開始**リダイレクトのクエリパラメータとして送る以外の手段が定義されておらず、form_postはあくまで認可エンドポイントの**応答**（response_mode）にのみ存在する概念のため、そもそも適用対象にならない。`id_token`自体は`aud=frontend`専用でaccount-service/fraud-agent等のAPI呼び出しには使えず（BFFパターン、ADR 0031）、5分で失効するため、ブラウザ履歴に残るリスクは限定的と判断し、追加対応は見送った。〔[ADR 0033](0033-frontend-logout-post.md)で訂正：「有効期限が短いので対応不要」という判断根拠が誤りだった（露出してから悪用されるまでの時間としては5分は短くない）。また「form_postの対象外だから手段が無い」という認識も誤りで、OIDC RP-Initiated Logout 1.0はend_session_endpoint自体がPOST（Form Serialization）を仕様上サポートしており、response_mode=form_postとは別の解決手段が存在した〕
 
 ## Consequences
 
 - ログイン成功後、ブラウザのアドレスバー・履歴に認可コード・stateが残らなくなった（実機確認：`/callback`は常にPOSTで到達し、最終的な着地点`/dashboard`のURLにクエリは一切付かない）
 - `/callback`へのGETアクセス（ブックマーク・戻る/進む・リロード等の再訪）は常に`/login?error=1`へfail closeするようになった
 - `/login`→Keycloak認可エンドポイントの初回リダイレクトに残る`client_id`・`redirect_uri`・`code_challenge`・`state`・`nonce`は、OAuth標準の前段リクエストとして引き続きURLに現れる（値自体は非秘密であり、主要IdPも同型のURLを使う。RFC 9700もこの部分の秘匿は要求していない）
-- ログアウト時の`id_token_hint`は引き続きクエリパラメータとして露出する。OIDC仕様上の代替手段が無く、露出するid_token自体のリスクも限定的なため現状維持とした
+- ログアウト時の`id_token_hint`は引き続きクエリパラメータとして露出する。OIDC仕様上の代替手段が無く、露出するid_token自体のリスクも限定的なため現状維持とした〔[ADR 0033](0033-frontend-logout-post.md)で訂正：POSTで送る解決手段があったため、ここは対応した〕
 - `scripts/verify-hop.sh`を更新し、`make verify-hop`で全ステップ（ログイン含む）が成功することを実機確認した
