@@ -136,6 +136,11 @@ build-frontend:
 	docker build $(DOCKER_BUILD_FLAGS) -t gekko07/frontend:local services/frontend
 	k3d image import gekko07/frontend:local -c $(CLUSTER)
 
+# services/audit-serviceをビルドし、k3dクラスタへイメージを持ち込む(ADR 0040/0041)
+build-audit-service:
+	docker build $(DOCKER_BUILD_FLAGS) -t gekko07/audit-service:local services/audit-service
+	k3d image import gekko07/audit-service:local -c $(CLUSTER)
+
 # services/keycloakで`kc.sh build`済みの最適化イメージをビルドし、k3dクラスタへ持ち込む
 build-keycloak:
 	docker build $(DOCKER_BUILD_FLAGS) -t gekko07/keycloak:local services/keycloak
@@ -187,6 +192,7 @@ deploy:
 	$(MAKE) build-fraud-detection-engine
 	$(MAKE) build-fraud-mcp-server
 	$(MAKE) build-fraud-agent
+	$(MAKE) build-audit-service
 	kubectl apply -f k8s/analyst-attribute-service/envoy-configmap.yaml -f k8s/analyst-attribute-service/deployment.yaml -f k8s/analyst-attribute-service/service.yaml
 	kubectl apply -f k8s/account-service/token-exchange-app-configmap.yaml -f k8s/account-service/envoy-configmap.yaml -f k8s/account-service/deployment.yaml -f k8s/account-service/service.yaml
 	@# ADR 0027:fraud-detection-engineはingressを持たないためService(k8s/fraud-detection-engine/
@@ -195,6 +201,8 @@ deploy:
 	@# ADR 0029:fraud-mcp-serverはaccount-service/fraud-detection-engineと違いapp-configmap.yaml
 	@# を持たない(ビルド済みイメージで代替)。token-exchange-app-configmap.yamlはADR 0019のまま無変更。
 	kubectl apply -f k8s/fraud-mcp-server/token-exchange-app-configmap.yaml -f k8s/fraud-mcp-server/envoy-configmap.yaml -f k8s/fraud-mcp-server/deployment.yaml -f k8s/fraud-mcp-server/service.yaml
+	@# ADR 0040/0041:audit-serviceは自身のPostgresを持たない(ステートレス)ためdb-init Jobは無い。
+	kubectl apply -f k8s/audit-service/client-credentials-app-configmap.yaml -f k8s/audit-service/envoy-configmap.yaml -f k8s/audit-service/deployment.yaml -f k8s/audit-service/service.yaml
 	@# CLAUDE_CODE_OAUTH_TOKEN未設定ならSecret未作成のままCrashLoopBackOFFするより早く停止する。
 	@if [ -z "$(CLAUDE_CODE_OAUTH_TOKEN)" ]; then \
 		echo "CLAUDE_CODE_OAUTH_TOKENが未設定です。'claude setup-token'で取得したトークンを" >&2; \
@@ -216,6 +224,7 @@ deploy:
 	kubectl -n $(NAMESPACE) rollout status deployment/fraud-mcp-server --timeout=180s
 	kubectl -n $(NAMESPACE) rollout status deployment/fraud-agent --timeout=180s
 	kubectl -n $(NAMESPACE) rollout status deployment/frontend --timeout=180s
+	kubectl -n $(NAMESPACE) rollout status deployment/audit-service --timeout=180s
 	$(MAKE) deploy-observability
 	$(MAKE) deploy-network-policy
 	@echo "---"
@@ -240,6 +249,7 @@ undeploy:
 	kubectl delete -f k8s/fraud-detection-engine/deployment.yaml -f k8s/fraud-detection-engine/envoy-configmap.yaml -f k8s/fraud-detection-engine/client-credentials-app-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/fraud-detection-engine/db-init-job.yaml -f k8s/fraud-detection-engine/db-init-envoy-configmap.yaml -f k8s/fraud-detection-engine/db-init-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/fraud-mcp-server/service.yaml -f k8s/fraud-mcp-server/deployment.yaml -f k8s/fraud-mcp-server/envoy-configmap.yaml -f k8s/fraud-mcp-server/token-exchange-app-configmap.yaml --ignore-not-found
+	kubectl delete -f k8s/audit-service/service.yaml -f k8s/audit-service/deployment.yaml -f k8s/audit-service/envoy-configmap.yaml -f k8s/audit-service/client-credentials-app-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/fraud-agent/service.yaml -f k8s/fraud-agent/deployment.yaml -f k8s/fraud-agent/envoy-configmap.yaml -f k8s/fraud-agent/token-exchange-app-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/frontend/service.yaml -f k8s/frontend/deployment.yaml -f k8s/frontend/envoy-configmap.yaml -f k8s/frontend/token-exchange-app-configmap.yaml --ignore-not-found
 	kubectl delete secret fraud-agent-claude -n $(NAMESPACE) --ignore-not-found
@@ -370,6 +380,11 @@ undeploy-observability:
 verify-observability:
 	./scripts/verify-observability.sh
 
+# scripts/verify-audit-service.shを実行する（deploy-observability・deploy-verify-hop・
+# verify-hop実行済み前提。ADR 0040/0041）
+verify-audit-service:
+	./scripts/verify-audit-service.sh
+
 # -------------------------
 # NetworkPolicy（ADR 0018。gekko namespace全体のL3/4 default-deny）
 # -------------------------
@@ -383,7 +398,8 @@ deploy-network-policy:
 		-f k8s/edge-proxy/networkpolicy.yaml \
 		-f k8s/account-service/networkpolicy.yaml -f k8s/fraud-mcp-server/networkpolicy.yaml \
 		-f k8s/fraud-detection-engine/networkpolicy.yaml -f k8s/analyst-attribute-service/networkpolicy.yaml \
-		-f k8s/fraud-agent/networkpolicy.yaml -f k8s/frontend/networkpolicy.yaml
+		-f k8s/fraud-agent/networkpolicy.yaml -f k8s/frontend/networkpolicy.yaml \
+		-f k8s/audit-service/networkpolicy.yaml
 
 # NetworkPolicy一式を削除する
 undeploy-network-policy:
@@ -391,7 +407,8 @@ undeploy-network-policy:
 		-f k8s/edge-proxy/networkpolicy.yaml \
 		-f k8s/account-service/networkpolicy.yaml -f k8s/fraud-mcp-server/networkpolicy.yaml \
 		-f k8s/fraud-detection-engine/networkpolicy.yaml -f k8s/analyst-attribute-service/networkpolicy.yaml \
-		-f k8s/fraud-agent/networkpolicy.yaml -f k8s/frontend/networkpolicy.yaml --ignore-not-found
+		-f k8s/fraud-agent/networkpolicy.yaml -f k8s/frontend/networkpolicy.yaml \
+		-f k8s/audit-service/networkpolicy.yaml --ignore-not-found
 	kubectl delete -f k8s/network-policy/default-deny.yaml -f k8s/network-policy/allow-dns.yaml --ignore-not-found
 
 # クラスタのコンテナを停止する（状態は保持したまま。再開はstartで）

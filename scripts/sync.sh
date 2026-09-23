@@ -14,7 +14,7 @@ set -euo pipefail
 
 NAMESPACE=gekko
 
-SERVICES=(account-service analyst-attribute-service fraud-detection-engine fraud-mcp-server fraud-agent frontend keycloak)
+SERVICES=(account-service analyst-attribute-service fraud-detection-engine fraud-mcp-server fraud-agent frontend keycloak audit-service)
 
 image_id() {
   docker image inspect --format '{{.Id}}' "gekko07/$1:local" 2>/dev/null || true

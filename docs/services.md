@@ -63,3 +63,11 @@ frontendはAuthorization Code + PKCEブラウザフローでログインする�
 - **保有データ**：アナリスト（担当地域の配列、権限レベル`junior`/`senior`）。PostgreSQL（account-service/fraud-detection-engineと同一インスタンス内の別データベース。[ADR 0008](adr/0008-per-service-datastore-strategy.md)）
 - **連携相手**：account-serviceから委任で呼ばれる。他のどこからも呼ばれない
 - **技術スタック**：Go（標準ライブラリの`net/http`。選定理由は[ADR 0007](adr/0007-per-service-language-selection.md)）
+
+## audit-service（[ADR 0040](adr/0040-audit-service-reconciliation.md)/[0041](adr/0041-audit-service-implementation.md)）
+
+- **存在意義**：AI支援・人間の判断を行うコンポーネント（fraud-agent/fraud-mcp-server/account-service/frontend）とは別の独立したコンポーネントとして、account-service自身の自己申告とKeycloak/Envoyの第三者記録を突合し、BR8（事後追跡可能性）の裏付けを検証する
+- **提供機能**：`GET /reconcile?since=`のみ。呼び出しの都度、(a) account-serviceの`/audit/unfreeze-proposals`・`/audit/unfreeze-executions`（`account:audit`スコープ、機械間認証）から自己申告（承認・実行の`sub`/時刻）を、(b) Lokiの第三者記録（KeycloakイベントログのTOKEN_EXCHANGE、`account:unfreeze`）を取得し、`sub`+時刻近接（既定60秒）の決定的なキー一致のみで突合する（LLM不使用）。対応する第三者記録が見つからない自己申告を`unverified`として返す
+- **保有データ**：なし（ステートレス。呼び出しの都度取得するのみ、永続化しない）
+- **連携相手**：account-service（機械間認証で読み取り専用API呼び出し）、Loki（otel-lgtm、Keycloak/Envoyログの第三者記録取得元。OAuth/mTLSのメッシュには参加せず、NetworkPolicyのみで到達を制御する）。ingressにjwt_authn/rbacを持たず、`kubectl port-forward`での到達のみを前提にする（誰が結果を閲覧できるかは未決定。architecture.md §11参照）
+- **技術スタック**：Go（標準ライブラリのみ、外部依存パッケージなし。「検証者は決定的で再現可能である」という設計意図と、analyst-attribute-serviceと同じ「単一の役割にフレームワークは要らない」という理由。選定理由は[ADR 0041](adr/0041-audit-service-implementation.md)）

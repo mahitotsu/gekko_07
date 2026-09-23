@@ -116,6 +116,22 @@ data:
     create_if_missing_by_selectors "spiffe://${TRUST_DOMAIN}/ns/gekko/sa/default/fraud-detection-engine" \
       k8s:ns:gekko k8s:sa:default k8s:pod-label:app:fraud-detection-engine k8s:container-name:client-credentials
 
+    echo "==> audit-service entry (envoy container only)"
+    create_if_missing "spiffe://${TRUST_DOMAIN}/ns/gekko/sa/default/audit-service" \
+      -parentID "$NODE_ALIAS_ID" \
+      -spiffeID "spiffe://${TRUST_DOMAIN}/ns/gekko/sa/default/audit-service" \
+      -selector k8s:ns:gekko \
+      -selector k8s:sa:default \
+      -selector k8s:pod-label:app:audit-service \
+      -selector k8s:container-name:envoy
+
+    # ADR 0040/0041: client_credentialsトークン取得実行主体(client-credentialsサイドカー)も
+    # 同じSPIFFE IDで動く必要がある(JWT-SVID取得のため。fraud-detection-engine(ADR 0020)と
+    # 同じ理由)。
+    echo "==> audit-service entry (client-credentials container only)"
+    create_if_missing_by_selectors "spiffe://${TRUST_DOMAIN}/ns/gekko/sa/default/audit-service" \
+      k8s:ns:gekko k8s:sa:default k8s:pod-label:app:audit-service k8s:container-name:client-credentials
+
     echo "==> keycloak entry (envoy container only)"
     create_if_missing "spiffe://${TRUST_DOMAIN}/ns/gekko/sa/default/keycloak" \
       -parentID "$NODE_ALIAS_ID" \

@@ -9,7 +9,9 @@
 # default-deny適用後にdiscovery.kubernetes.podsのtargetsが0件のまま変化しなくなる
 # (=Podがログの絞り込み対象に一切現れない。RBACは正しくても経路自体が塞がれ、TCP接続の
 # 試行自体が/proc/net/tcpに一切現れない)という形で発覚した。edge-proxy(ADR 0004)の
-# k3dノードCIDR(172.19.0.0/16)ipBlock例外と同じCIDRを、ポートだけ6443にして流用する。
+# k3dノードCIDR ipBlock例外と同じCIDRを、ポートだけ6443にして流用する(値は`docker network
+# inspect k3d-gekko07`の実値と一致させる。クラスタ再作成等でドリフトしうる。insights.md
+# 「k3d docker networkサブネットのドリフト」参照)。
 #
 # Grafana UI(3000)へのkubectl port-forwardは、keycloak-forward(edge-proxy、gekko namespace)と
 # 同様にkubeletがPodのネットワーク名前空間へ直接接続する経路のため、NetworkPolicyのingressルールは
@@ -35,7 +37,7 @@ spec:
           port: 3100
     - to:
         - ipBlock:
-            cidr: 172.19.0.0/16
+            cidr: 172.18.0.0/16
       ports:
         - protocol: TCP
           port: 6443
@@ -56,6 +58,20 @@ spec:
         - podSelector:
             matchLabels:
               app: alloy
+      ports:
+        - protocol: TCP
+          port: 3100
+    # ADR 0040/0041: audit-service(gekko namespace)がLoki query API(3100)を第三者記録の
+    # 取得元として叩く。namespaceSelector+podSelectorの組み合わせ(同一from要素内=AND)で
+    # gekko namespaceのaudit-service Podのみに絞る。gekko namespace自体の許可ラベルは
+    # Kubernetesが自動付与する`kubernetes.io/metadata.name`を使う(実機で存在確認済み)。
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: gekko
+          podSelector:
+            matchLabels:
+              app: audit-service
       ports:
         - protocol: TCP
           port: 3100

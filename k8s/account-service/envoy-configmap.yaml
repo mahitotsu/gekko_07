@@ -79,6 +79,10 @@ data:
                           - san_type: URI
                             matcher:
                               exact: "spiffe://gekko.internal/ns/gekko/sa/default/frontend"
+                          # ADR 0040/0041: audit-serviceの機械間認証(account:audit)を許可する。
+                          - san_type: URI
+                            matcher:
+                              exact: "spiffe://gekko.internal/ns/gekko/sa/default/audit-service"
                       validation_context_sds_secret_config:
                         # "ROOTCA"はSPIRE Agent SDSの既定マジック名(default_bundle_name)。
                         # 信頼ドメイン名等の任意文字列を指定すると、SPIRE側はそれを特定の
@@ -165,6 +169,17 @@ data:
                                             path: { prefix: "/accounts/" }
                                 principals:
                                   - header: { name: "x-auth-scope", string_match: { contains: "account:read" } }
+                              # ADR 0040/0041: audit-serviceのみが持つ、自己申告記録の読み取り専用API。
+                              # x-auth-subを要求しない機械間認証(freezeポリシーと同じ形)。
+                              audit:
+                                permissions:
+                                  - and_rules:
+                                      rules:
+                                        - header: { name: ":method", string_match: { exact: "GET" } }
+                                        - url_path:
+                                            path: { prefix: "/audit/" }
+                                principals:
+                                  - header: { name: "x-auth-scope", string_match: { contains: "account:audit" } }
                               propose:
                                 permissions:
                                   - and_rules:

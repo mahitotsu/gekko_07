@@ -2,7 +2,7 @@
 
 本ディレクトリは、設計判断1件ごとの根拠・選択経緯を記録する。[architecture.md](../architecture.md) は現在有効な設計断面のみを記載し、個々の判断の根拠はここに委譲する。
 
-決定が覆った場合は、旧ADRのStatusを`Superseded by NNNN`に更新し、新しいADRを追加する。40件のうち26件は今も覆っていないAccepted——後続ADRによる修正は「シナリオ選定（凍結解除の確定操作の精緻化）」「Token Exchangeの実行主体・宛先指定」「身元検証（mTLS/SPIFFE/SPIRE）」「frontendの本実装内での段階的置き換え」「fraud-agentの実装詳細（Anthropic呼び出し失敗時の挙動）」の5テーマに偏っており、乱発しているわけではない。以下はテーマ別の索引。同じテーマのADRを続けて読むと、1つの関心事がどう変遷したかを追いやすい。
+決定が覆った場合は、旧ADRのStatusを`Superseded by NNNN`に更新し、新しいADRを追加する。41件のうち27件は今も覆っていないAccepted——後続ADRによる修正は「シナリオ選定（凍結解除の確定操作の精緻化）」「Token Exchangeの実行主体・宛先指定」「身元検証（mTLS/SPIFFE/SPIRE）」「frontendの本実装内での段階的置き換え」「fraud-agentの実装詳細（Anthropic呼び出し失敗時の挙動）」の5テーマに偏っており、乱発しているわけではない。以下はテーマ別の索引。同じテーマのADRを続けて読むと、1つの関心事がどう変遷したかを追いやすい。
 
 ## シナリオ選定
 
@@ -85,3 +85,4 @@
 | [0034](0034-frontend-display-username-instead-of-sub.md) | ログイン表示をKeycloakのsub(UUID)からpreferred_username(ログインに使った文字列)に変更する | Accepted |
 | [0037](0037-fraud-agent-anthropic-stream-retry.md) | fraud-agentがAnthropic応答ストリーミング中の切断を検知し、ターン単位で1回自動リトライする | Accepted |
 | [0038](0038-fraud-agent-anthropic-route-timeout.md) | fraud-agent→Anthropic egressルートにtimeout: 0s / idle_timeout: 300sを設定する | Accepted |
+| [0041](0041-audit-service-implementation.md) | audit-serviceを本実装し、account-serviceの自己申告とKeycloakの第三者記録の突合を実機で成立させる | Accepted |

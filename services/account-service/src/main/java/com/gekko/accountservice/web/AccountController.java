@@ -15,6 +15,7 @@ import com.gekko.accountservice.web.dto.ProposalView;
 import com.gekko.accountservice.web.dto.ProposeRequest;
 import com.gekko.accountservice.web.dto.TransactionsView;
 import com.gekko.accountservice.web.dto.UnfreezeRequest;
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.http.HttpStatus;
@@ -23,6 +24,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -207,6 +209,20 @@ public class AccountController {
         }
 
         return repository.unfreeze(id, proposalId, sub);
+    }
+
+    // audit-service向け(表2 account:auditスコープ。ADR 0040/0041)。自己申告記録の読み取り専用API。
+    // fraud-detection-engineのfreeze()と同じく機械間認証のみでx-auth-subは受け取らない(analyst-
+    // attribute-serviceへの照会は行わない)。account-serviceのDBを直接参照させない(§8)ための唯一の
+    // 経路であり、Keycloak/Envoyの第三者記録との突合はaudit-service側の責務。
+    @GetMapping("/audit/unfreeze-proposals")
+    public List<UnfreezeProposal> auditUnfreezeProposals(@RequestParam OffsetDateTime since) {
+        return repository.findDecidedProposals(since);
+    }
+
+    @GetMapping("/audit/unfreeze-executions")
+    public List<UnfreezeExecution> auditUnfreezeExecutions(@RequestParam OffsetDateTime since) {
+        return repository.findExecutions(since);
     }
 
     private AccountView toView(Account account) {

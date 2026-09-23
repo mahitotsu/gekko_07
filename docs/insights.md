@@ -411,6 +411,14 @@ Lokiは`http_listen_port: 3100`（`/otel-lgtm/loki-config.yaml`）で待ち受�
 
 **対応**：`k8s/observability/networkpolicy.yaml`のAlloy向けegressルールを、k3dノードのCIDR（`172.19.0.0/16`、edge-proxy（ADR 0004/0017）のingress例外と同じCIDR）宛て・ポート6443へのipBlockに変更した。他のNetworkPolicy（`k8s/network-policy/`・各サービスの`networkpolicy.yaml`）はいずれもPod間通信（podSelector）のみで完結しており、KubernetesのAPIサーバー自体にegressする必要があるコンポーネントはAlloyが最初だったため、この罠はこれまで顕在化していなかった。
 
+### k3d docker networkサブネットのドリフト（ADR 0018が明記した通り、環境再構築で実際にずれた）
+
+**症状**：ADR 0040/0041（audit-service）の実機検証中、Alloyの`discovery.kubernetes.pods`が再び0件のまま変化しなくなり、Lokiに`container`/`namespace`ラベルの値が一切無い（=Envoy/Keycloakのログが全く集約されていない）状態になっていた。上記「k3d(kube-router)のNetworkPolicyは...」の罠と同一の症状。
+
+**原因**：`docker network inspect k3d-gekko07`の実サブネットが`172.18.0.0/16`になっていた（`kubectl get endpoints kubernetes`の実体も`172.18.0.3:6443`）。[ADR 0018](adr/0018-network-policy-default-deny.md)のContext自身が「別のdocker network構成でクラスタを再作成した場合は実機で再確認が必要」と明記していた通り、クラスタの停止/再作成やホスト環境（Docker Desktop/WSL2）側の他のdocker network割り当ての変化で、k3dが確保するサブネットは`172.19.0.0/16`から`172.18.0.0/16`へ実際にずれていた。`k8s/observability/networkpolicy.yaml`（Alloy egress）・`k8s/edge-proxy/networkpolicy.yaml`（ingress）の両方が旧サブネットの`ipBlock`を持ったままだったため、Alloyの`discovery.kubernetes`向けegressが黙って遮断されていた。
+
+**対応**：両ファイルの`ipBlock.cidr`を`172.18.0.0/16`に更新し、`kubectl -n observability rollout restart daemonset/alloy`後に`discovery.kubernetes.pods`が即座にターゲットを発見し、Lokiへのログ集約が復旧することを実機確認した。ADR 0018/0022/0025/0030の本文（Accepted当時の事実の記録）はこの環境固有の値をそのまま残し、書き換えていない（決定の変更ではなく環境ドリフトのため。CLAUDE.md「ADR運用ルール」）。この値は`docker network inspect k3d-gekko07`で都度再確認できる環境依存値であり、クラスタを再作成する運用（`make down && make up`等）のたびにずれうる。恒久対策（`kubectl get endpoints kubernetes`から動的に解決する等）は今回のスコープ外。
+
 ### k3d(containerd)のPodログは`/var/log/pods/<namespace>_<podname>_<uid>/<container>/<restart>.log`に標準CRI形式で実在する
 
 Alloyのhostpath収集方式（`/var/log/pods`をDaemonSetでマウント）が実際に機能するか未検証だった点について、k3dノードコンテナ内を直接確認し、標準的なkubelet/containerdのログレイアウト（`<timestamp> <stream> <F|P> <line>`のCRI形式）で存在することを確認した。Alloyの`stage.cri`でエンベロープを剥がすだけで中身（Envoyのjson_formatアクセスログ・Keycloakのjson出力）をそのまま扱える。

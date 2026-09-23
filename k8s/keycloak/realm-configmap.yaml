@@ -175,6 +175,28 @@ data:
               }
             }
           ]
+        },
+        {
+          "name": "account:audit",
+          "description": "凍結解除の自己申告記録の読み取り（機械間認証。対象audience: account-service。audit-serviceのみに付与。ADR 0040/0041）",
+          "protocol": "openid-connect",
+          "attributes": {
+            "include.in.token.scope": "true",
+            "display.on.consent.screen": "false"
+          },
+          "protocolMappers": [
+            {
+              "name": "audience-account-service",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-audience-mapper",
+              "consentRequired": false,
+              "config": {
+                "included.client.audience": "account-service",
+                "id.token.claim": "false",
+                "access.token.claim": "true"
+              }
+            }
+          ]
         }
       ],
       "clients": [
@@ -308,6 +330,27 @@ data:
           },
           "defaultClientScopes": [],
           "optionalClientScopes": ["account:freeze"]
+        },
+        {
+          "clientId": "audit-service",
+          "name": "audit-service",
+          "description": "凍結解除の自己申告記録とKeycloak/Envoyの第三者記録を突合する監査サービス。account-serviceへ機械間認証（client_credentials）でアクセスする（ADR 0040/0041）",
+          "enabled": true,
+          "protocol": "openid-connect",
+          "publicClient": false,
+          "standardFlowEnabled": false,
+          "implicitFlowEnabled": false,
+          "directAccessGrantsEnabled": false,
+          "serviceAccountsEnabled": true,
+          "authorizationServicesEnabled": false,
+          "fullScopeAllowed": false,
+          "clientAuthenticatorType": "federated-jwt",
+          "attributes": {
+            "jwt.credential.issuer": "spire-gekko",
+            "jwt.credential.sub": "spiffe://gekko.internal/ns/gekko/sa/default/audit-service"
+          },
+          "defaultClientScopes": [],
+          "optionalClientScopes": ["account:audit"]
         },
         {
           "clientId": "account-service",

@@ -1,0 +1,16 @@
+# Envoyのリスナーポートのみを公開する。アプリ(127.0.0.1:9000)は一切公開しない
+# (ADR 0009 主対策①:KubernetesのServiceはアプリのポートではなくEnvoyのリスナーだけを指す)。
+# 「誰が突合結果を閲覧できるか」は未決定のため(architecture.md §11)、今回はkubectl
+# port-forward(k8s/observability/のGrafanaと同じ位置づけ)での到達のみを前提にする。
+apiVersion: v1
+kind: Service
+metadata:
+  name: audit-service
+  namespace: gekko
+spec:
+  selector:
+    app: audit-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

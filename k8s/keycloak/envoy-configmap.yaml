@@ -88,6 +88,11 @@ data:
                           - san_type: URI
                             matcher:
                               exact: "spiffe://gekko.internal/ns/gekko/sa/default/frontend"
+                          # ADR 0040/0041: audit-serviceのclient-credentialsサイドカーが
+                          # 自身でKeycloakへ直接mTLS接続する(fraud-detection-engineと同じ理由)。
+                          - san_type: URI
+                            matcher:
+                              exact: "spiffe://gekko.internal/ns/gekko/sa/default/audit-service"
                       validation_context_sds_secret_config:
                         name: "ROOTCA"
                         sds_config:

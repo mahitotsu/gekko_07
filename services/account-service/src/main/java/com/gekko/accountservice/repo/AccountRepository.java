@@ -155,6 +155,30 @@ public class AccountRepository {
         return findProposal(proposalId).orElseThrow();
     }
 
+    // audit-service向け(ADR 0040/0041)。自己申告記録のうち、Keycloakのaccount:unfreeze Token
+    // Exchangeイベントと突合すべき「人間による決定的操作」だけを対象にする(decided_at/executed_atの
+    // 両方ともaccount:unfreezeスコープ配下。表2)。提案の新規作成(account:propose)は対象外。
+    public List<UnfreezeProposal> findDecidedProposals(OffsetDateTime since) {
+        return jdbc.query(
+                "SELECT " + PROPOSAL_COLUMNS + " FROM unfreeze_proposals "
+                        + "WHERE decided_at IS NOT NULL AND decided_at >= :since ORDER BY decided_at",
+                new MapSqlParameterSource("since", since),
+                AccountRepository::mapProposal);
+    }
+
+    public List<UnfreezeExecution> findExecutions(OffsetDateTime since) {
+        return jdbc.query(
+                "SELECT id, account_id, proposal_id, executed_by_sub, executed_at FROM unfreeze_executions "
+                        + "WHERE executed_at >= :since ORDER BY executed_at",
+                new MapSqlParameterSource("since", since),
+                (rs, rowNum) -> new UnfreezeExecution(
+                        rs.getLong("id"),
+                        rs.getString("account_id"),
+                        rs.getString("proposal_id"),
+                        rs.getString("executed_by_sub"),
+                        rs.getObject("executed_at", OffsetDateTime.class)));
+    }
+
     public UnfreezeExecution unfreeze(String accountId, String proposalId, String executedBySub) {
         jdbc.update("UPDATE accounts SET frozen = FALSE WHERE id = :id",
                 new MapSqlParameterSource("id", accountId));

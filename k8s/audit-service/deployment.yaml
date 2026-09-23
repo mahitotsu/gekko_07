@@ -1,0 +1,128 @@
+# audit-serviceの本実装Deployment(Go標準ライブラリ。ADR 0007/0009/0010/0020/0040/0041)。
+# account-service・fraud-detection-engineと異なり自身のPostgresデータベースを持たない
+# (ADR 0040:ステートレス)ため、wait-for-postgres initContainer・db-init/seed Jobは無い。
+#
+# ingressにjwt_authn/rbacが無い(k8s/audit-service/envoy-configmap.yaml参照)ため、
+# handshake-init initContainer・合言葉のemptyDirも持たない(rbac通過後にのみ付与する
+# ADR 0009 §2③の前提が成立しないため。architecture.md §11参照)。
+#
+# appコンテナのイメージはservices/audit-service/のGoプロジェクトをMakefileの
+# build-audit-serviceターゲットでビルドし、`k3d image import`でクラスタへ持ち込む
+# (レジストリは使わない。account-service/analyst-attribute-serviceと同じADR 0026のパターン)。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: audit-service
+  namespace: gekko
+  labels:
+    app: audit-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: audit-service
+  template:
+    metadata:
+      labels:
+        app: audit-service
+    spec:
+      hostAliases:
+        - ip: "127.0.0.1"
+          hostnames: ["account-service", "keycloak"]
+      initContainers:
+        # ネイティブsidecar(restartPolicy: Always)。appコンテナより先にSVIDのSDS配信を
+        # 受けて起動・待受させる(他サービスと同じパターン)。
+        - name: envoy
+          restartPolicy: Always
+          image: envoyproxy/envoy:v1.31.5
+          command: ["envoy", "-c", "/etc/envoy/envoy.yaml"]
+          ports:
+            - name: http
+              containerPort: 8080
+          volumeMounts:
+            - name: envoy-config
+              mountPath: /etc/envoy
+              readOnly: true
+            - name: spire-agent-socket
+              mountPath: /run/spire/sockets
+              readOnly: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "300m"
+              memory: "128Mi"
+      containers:
+        - name: app
+          image: gekko07/audit-service:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: APP_BIND_HOST
+              value: "127.0.0.1" # ADR 0009 主対策①と同じ考え方:Pod外から直接到達不能にする
+            - name: APP_PORT
+              value: "9000"
+            - name: ACCOUNT_SERVICE_URL
+              value: "http://account-service"
+            - name: LOKI_URL
+              value: "http://otel-lgtm.observability.svc.cluster.local:3100"
+            - name: TOLERANCE_SECONDS
+              value: "60"
+          resources:
+            requests:
+              cpu: "20m"
+              memory: "32Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+        # ADR 0020と同じパターン。account-serviceの/audit/*向けclient_credentialsトークン
+        # (scope=account:audit)取得実行主体。envoyコンテナと同じくWorkload API UDSソケットへ
+        # アクセスする(JWT-SVID取得のため)。SPIRE registration entryもenvoyコンテナと並んで
+        # このコンテナ名をselectorに持つ(k8s/spire/entries-configmap.yaml参照)。
+        - name: client-credentials
+          image: python:3.12-alpine
+          command: ["python3", "/scripts/app.py"]
+          env:
+            - name: CLIENT_ID
+              value: "audit-service"
+            - name: FIXED_SCOPE
+              value: "account:audit"
+            - name: JWT_SVID_AUDIENCE
+              value: "http://localhost:3000/realms/gekko"
+            - name: LISTEN_HOST
+              value: "127.0.0.1"
+            - name: LISTEN_PORT
+              value: "9002"
+            - name: KEYCLOAK_TOKEN_URL
+              value: "http://keycloak/realms/gekko/protocol/openid-connect/token"
+          volumeMounts:
+            - name: client-credentials-app-script
+              mountPath: /scripts
+              readOnly: true
+            - name: spire-agent-socket
+              mountPath: /run/spire/sockets
+              readOnly: true
+            - name: spire-agent-bin
+              mountPath: /spire-bin
+              readOnly: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+      volumes:
+        - name: envoy-config
+          configMap:
+            name: audit-service-envoy
+        - name: client-credentials-app-script
+          configMap:
+            name: audit-service-client-credentials-app
+        - name: spire-agent-socket
+          hostPath:
+            path: /run/spire/sockets
+            type: Directory
+        - name: spire-agent-bin
+          image:
+            reference: ghcr.io/spiffe/spire-agent:1.15.3

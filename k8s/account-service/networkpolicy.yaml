@@ -1,8 +1,8 @@
-# ADR 0018。呼び出し元(fraud-mcp-server・fraud-detection-engine・frontend(ADR 0024))からの
-# ingressと、KeycloakのJWKS取得(mTLS)・analyst-attribute-serviceへのToken Exchange委任(表3。
-# ADR 0019/0020のパターンを最初から適用)・自身のPostgresデータベース(ADR 0008・0026)への
-# egressを許可する。ADR 0028で自身のEnvoyサイドカー経由のmTLS接続に切り替えたため、宛先ポートは
-# postgresのmTLS終端Envoy(6432)。
+# ADR 0018。呼び出し元(fraud-mcp-server・fraud-detection-engine・frontend(ADR 0024)・
+# audit-service(ADR 0040/0041))からのingressと、KeycloakのJWKS取得(mTLS)・
+# analyst-attribute-serviceへのToken Exchange委任(表3。ADR 0019/0020のパターンを最初から適用)・
+# 自身のPostgresデータベース(ADR 0008・0026)へのegressを許可する。ADR 0028で自身のEnvoyサイドカー
+# 経由のmTLS接続に切り替えたため、宛先ポートはpostgresのmTLS終端Envoy(6432)。
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -26,6 +26,9 @@ spec:
         - podSelector:
             matchLabels:
               app: frontend
+        - podSelector:
+            matchLabels:
+              app: audit-service
       ports:
         - protocol: TCP
           port: 8080
