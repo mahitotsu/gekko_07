@@ -65,7 +65,7 @@ SPIRE_BUNDLE_ENDPOINT_CERT_DUMMY := $(shell mkdir -p $(SECRETS_DIR) && \
 	    -addext "subjectAltName=DNS:spire-server.spire.svc.cluster.local,DNS:spire-server" \
 	    >/dev/null 2>&1 ) )
 
-.PHONY: up down stop start status network-status clean deploy undeploy keycloak-forward keycloak-reimport-realm deploy-verify-hop undeploy-verify-hop verify-hop deploy-spire undeploy-spire deploy-network-policy undeploy-network-policy deploy-observability undeploy-observability grafana-forward verify-observability build-account-service build-analyst-attribute-service build-fraud-detection-engine build-fraud-mcp-server build-fraud-agent build-frontend build-keycloak
+.PHONY: up down stop start status network-status clean deploy undeploy sync keycloak-forward keycloak-reimport-realm deploy-verify-hop undeploy-verify-hop verify-hop deploy-spire undeploy-spire deploy-network-policy undeploy-network-policy deploy-observability undeploy-observability grafana-forward verify-observability build-account-service build-analyst-attribute-service build-fraud-detection-engine build-fraud-mcp-server build-fraud-agent build-frontend build-keycloak
 
 # -------------------------
 # クラスタ操作
@@ -100,39 +100,45 @@ clean: down
 # クラスタへ持ち込む（レジストリは使わない）。各サービスの実装経緯・base trackへの格上げ理由は
 # ADR 0026/0027/0029/0030/0031参照。
 
+# provenance/SBOM attestationはデフォルトで毎回ビルドし直され、全レイヤーがキャッシュヒットして
+# 中身が一切変わらなくても最終的なイメージID(manifest)が毎回変わってしまう(buildx/BuildKitの
+# 既定動作)。make syncがイメージIDの差分で「実際に変更があったサービスだけ」を判定する前提が
+# 崩れるため、無効化して中身が同じビルドは同じIDになるようにする。
+DOCKER_BUILD_FLAGS := --provenance=false --sbom=false
+
 # services/account-serviceをビルドし、k3dクラスタへイメージを持ち込む
 build-account-service:
-	docker build -t gekko07/account-service:local services/account-service
+	docker build $(DOCKER_BUILD_FLAGS) -t gekko07/account-service:local services/account-service
 	k3d image import gekko07/account-service:local -c $(CLUSTER)
 
 # services/analyst-attribute-serviceをビルドし、k3dクラスタへイメージを持ち込む
 build-analyst-attribute-service:
-	docker build -t gekko07/analyst-attribute-service:local services/analyst-attribute-service
+	docker build $(DOCKER_BUILD_FLAGS) -t gekko07/analyst-attribute-service:local services/analyst-attribute-service
 	k3d image import gekko07/analyst-attribute-service:local -c $(CLUSTER)
 
 # services/fraud-detection-engineをビルドし、k3dクラスタへイメージを持ち込む
 build-fraud-detection-engine:
-	docker build -t gekko07/fraud-detection-engine:local services/fraud-detection-engine
+	docker build $(DOCKER_BUILD_FLAGS) -t gekko07/fraud-detection-engine:local services/fraud-detection-engine
 	k3d image import gekko07/fraud-detection-engine:local -c $(CLUSTER)
 
 # services/fraud-mcp-serverをビルドし、k3dクラスタへイメージを持ち込む
 build-fraud-mcp-server:
-	docker build -t gekko07/fraud-mcp-server:local services/fraud-mcp-server
+	docker build $(DOCKER_BUILD_FLAGS) -t gekko07/fraud-mcp-server:local services/fraud-mcp-server
 	k3d image import gekko07/fraud-mcp-server:local -c $(CLUSTER)
 
 # services/fraud-agentをビルドし、k3dクラスタへイメージを持ち込む
 build-fraud-agent:
-	docker build -t gekko07/fraud-agent:local services/fraud-agent
+	docker build $(DOCKER_BUILD_FLAGS) -t gekko07/fraud-agent:local services/fraud-agent
 	k3d image import gekko07/fraud-agent:local -c $(CLUSTER)
 
 # services/frontendをビルドし、k3dクラスタへイメージを持ち込む(ADR 0031)
 build-frontend:
-	docker build -t gekko07/frontend:local services/frontend
+	docker build $(DOCKER_BUILD_FLAGS) -t gekko07/frontend:local services/frontend
 	k3d image import gekko07/frontend:local -c $(CLUSTER)
 
 # services/keycloakで`kc.sh build`済みの最適化イメージをビルドし、k3dクラスタへ持ち込む
 build-keycloak:
-	docker build -t gekko07/keycloak:local services/keycloak
+	docker build $(DOCKER_BUILD_FLAGS) -t gekko07/keycloak:local services/keycloak
 	k3d image import gekko07/keycloak:local -c $(CLUSTER)
 
 # PostgreSQL・SPIRE・Keycloak・edge-proxy・account-service・analyst-attribute-service・
@@ -218,6 +224,11 @@ deploy:
 	@echo "(.secrets/に保存されているため次回make deploy以降も同じ値。ADR 0008でPostgresへ永続化したため"
 	@echo " 実際に有効なのはKeycloakの初回起動時にブートストラップされた値のみ。.secrets/を消してPVCも"
 	@echo " 作り直した場合のみこの値でのブートストラップが再度行われる)"
+
+# scripts/sync.shを実行する(deploy済みのクラスタへ、編集後の再ビルド・再反映を素早く行う開発
+# ループ用。全サービスをビルドし、イメージが実際に変わったサービスだけrollout restartする)
+sync:
+	./scripts/sync.sh
 
 # アプリ層を削除する（クラスタ自体は残す。PVCも削除するためPostgresのデータも消える）
 undeploy:
