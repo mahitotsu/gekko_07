@@ -343,6 +343,22 @@ federation {
 
 **実際に通った検証**：`client_credentials`グラントでは`{"error":"unauthorized_client","error_description":"Client not enabled to retrieve service account"}`（=クライアント認証自体は成功、fraud-mcp-serverの`serviceAccountsEnabled: false`が理由でグラント自体が拒否されただけ）。既存のverify-hop.sh同様の2段階委任（frontendでログイン→frontendがfraud-mcp-server宛てにToken Exchange→そのDELEGATED_TOKENをsubject_tokenにfraud-mcp-server自身がaccount-service宛てにToken Exchange、ただし`client_secret`の代わりに`client_assertion_type=...jwt-spiffe`＋`client_assertion=<JWT-SVID>`を使用）を実行したところ、**HTTP 200でaccount-service向けアクセストークンが発行された**。RFC 8705が不成立と判明した際の懸念（Keycloakネイティブpreview機能が実際に機能するか）は、この実クラスタでの成功により解消したと判断できる。
 
+### チャット画面の自由入力欄は、最初の自動送信メッセージ以降は口座IDの文脈を持たない
+
+**症状**：pending提案が依頼者本人以外には決定不能になったケース（後述「realm再importでユーザーIDが変わり、既存のpending提案が誰にも承認・却下できなくなる」参照）の回避策として、`/chat?accountId=999`の画面下部にある自由入力欄から「もう一度調べてください」とだけ送ったところ、口座999だけでなく、ログイン中のアナリストが担当範囲内でアクセスできる凍結中口座**全て**が新たに調査され、それぞれに新しい提案が作られてしまった。
+
+**原因**：fraud-agentはリクエストごとに新しい`ClaudeAgentAdapter`インスタンスを作る単発実行で、会話履歴を一切保持しない（同じ`threadId`でも毎回新規セッション。architecture.md §11「複数ターン会話の永続化」参照）。`chat.vue`のダッシュボード起点の自動送信（「口座{accountId}が凍結されています…」）だけが口座IDを明示しており、以降に人間が自由入力欄から送る追加発話（`send()`）はユーザーの生入力（`content: text`）をそのまま送っていたため口座の文脈を一切含んでいなかった。文脈の無いメッセージを受け取ったfraud-agentは`get_frozen_accounts`（口座指定なしで担当範囲内の凍結中口座を返すツール）を呼び、見える範囲を丸ごと調査対象にした。BR4の範囲（本人がアクセスできる口座）を超えたわけではなく権限的な逸脱ではないが、「1回のチャットは1口座に閉じる」というUXが崩れ、意図しない口座にまで新しい提案が作られてしまう。
+
+**対応**：`services/frontend/pages/chat.vue`の`send()`を変更し、`accountId`がある限り毎回の送信内容に`[口座{accountId}についての会話です] `を前置して送るようにした（画面上の吹き出しには元の発話のみを表示し、AIへの送信内容にのみ文脈を付与する）。実機で、この前置つきメッセージでは指定した1口座のみが調査対象になり、他の口座の提案IDが変化しないことを確認した。
+
+### realm再importでユーザーIDが変わり、既存のpending提案が誰にも承認・却下できなくなる
+
+**症状**：ADR 0041/0042の作業でKeycloakのrealmを`make keycloak-reimport-realm`で複数回再import（新規クライアント・スコープ追加のため）した後、それ以前に作成した凍結解除提案（pending）を、提案を依頼したのと同じユーザー名（例：`suzuki-senior`）で再ログインして承認しようとすると403になった。
+
+**原因**：`unfreeze_proposals.proposed_by_sub`はKeycloakが発行するユーザーの内部識別子（UUID）を保持するが、realmの再import（`kubectl exec ... kcadm.sh delete realms/gekko`後の`--import-realm`再起動）はユーザーを含め全データを作り直すため、同じユーザー名でも新しいUUIDが割り当てられる。BR9（提案の承認は依頼者本人に限る。4-eyesは導入しない）の判定は`sub`の完全一致で行われるため、ユーザー名が同じでも「別人」として扱われ、以前の提案は誰にも決定できなくなる（提案自体をキャンセル・再割当てする手段も無い）。account-serviceの`propose()`は同一口座への複数回の提案作成を妨げないため、同じ口座について改めて「AIによる精査を依頼」すればブロックされずに新しい提案が作られ、それは現在のユーザーIDで承認・却下できる。
+
+**対応**：デモ環境ではrealm再import後に`make deploy-verify-hop`でテストフィクスチャを作り直す運用が既に確立している（既存のinsights.md「`k8s/keycloak/test-fixtures-configmap.yaml`」節参照）が、既存のpending提案そのものを救済する手段は無いままである。実運用でも「提案した本人が退職・異動した」といった形で同種の詰みが起こり得るため、pending提案が依頼者本人以外には決定不能になった場合の救済導線（例：一定期間で失効させる、上長が代理決定できるようにする等）は今後の検討課題として残る（architecture.md §11参照）。
+
 ## 監査ログ集約（ADR 0025）
 
 ### Grafana Alloyの設定言語（River）の行コメントは`//`であり、`#`ではない
@@ -562,3 +578,11 @@ fraud-agent-stub（`k8s/fraud-agent/app-configmap.yaml`）は元々fraud-mcp-ser
 **原因**：frontend→account-serviceのToken Exchangeで使うscopeは、frontend自身のegress token-exchangeサイドカー（`k8s/frontend/token-exchange-app-configmap.yaml`の`SCOPE_RULES`、[ADR 0010](adr/0010-egress-listener-granularity.md)の方式）が`(host, path, method) → scope`の対応表から機械的に決めている。ingress側のRBACポリシー（account-service自身のenvoy-configmap.yaml）はこの対応表とは別ファイル・別プロセスの設定であり、新しいAPIパスを追加する際は両方を同時に更新しないと、片方だけ更新した状態では「そもそも呼び出し元がそのパスに対応するscopeを持つトークンを要求すらできない」という形で経路の手前で止まる（ingress側の403とは異なる、より早い段階の拒否）。account-service側の変更だけに気を取られ、呼び出し元であるfrontend側の対応表を見落としていた。
 
 **対応**：`k8s/frontend/token-exchange-app-configmap.yaml`の`SCOPE_RULES`にも、account-service側と同じ正規表現（`^/accounts/[^/]+/(unfreeze|unfreeze-proposals/[^/]+/(approve|reject))$` → `account:unfreeze`）を追加し、ConfigMap適用後にfrontend Deploymentを再起動した。**account-serviceに新しいエンドポイントを追加する際は、(1) account-service自身のingress RBAC（`k8s/account-service/envoy-configmap.yaml`）、(2) 呼び出し元each（frontend・fraud-mcp-server等）のegress scope解決表、の両方を同じコミットで更新する必要がある**——architecture.md表2は両方の情報源であるべきだが、実装は2箇所の別ファイルに分かれているため、機械的な同期チェックが存在しない。
+
+### fraud-agentのcanUseToolコールバックは、MCPサーバー提供ツールに対して呼ばれない（`@ag-ui/claude-agent-sdk`のClaudeAgentAdapter経由。ADR 0043）
+
+**症状**：「1回のチャットは1口座に閉じる」という制約を、プロンプト文字列への埋め込み（指示追従頼み、不確実）ではなくツール呼び出しレベルで強制するため、`ClaudeAgentAdapter`のコンストラクタに`canUseTool`コールバック（`@anthropic-ai/claude-agent-sdk`が公開する、ツール実行直前に呼ばれる許可判定フック）を実装した。`permissionMode: "dontAsk"`のままではコールバック内に仕込んだ`console.log`が一度も出力されず、実際に`get_frozen_accounts`（口座横断の一覧ツール）が呼ばれ`fraud-mcp-server`側にリクエストが到達していることは`kubectl logs`で確認できるのに、`canUseTool`だけが素通りされていた。
+
+**原因**：`sdk.d.ts`の`tool_use`自動拒否イベントの説明に「'ask' path surfaces via a can_use_tool control_request; this event covers the 'deny' short-circuit in canUseTool」と明記されている通り、`permissionMode: "dontAsk"`は許可リスト（`allowedTools`）内のツールに対する判定を「askパス」（`canUseTool`が呼ばれる経路）自体を経由せずショートサーキットする。`permissionMode: "default"`に変更しても（`canUseTool`をコンストラクタに渡した状態で）同じく一度も呼ばれないことを実機で確認した——MCPサーバー（`fraud-mcp-server`のような外部プロセス）が提供するツールは、SDK本体の`canUseTool`フックの対象になっていないと考えられる（`@ag-ui/claude-agent-sdk`のラッパー経由でこのオプションを渡す限りでは。SDK本体の一次ソースまでは未確認）。
+
+**対応**：fraud-agent自身によるツール呼び出しレベルの強制は諦め、実装を削除した（動かないコードを「多層防御」と称して残すと誤解を招くため）。代わりに、強制はfraud-mcp-server側（実際にaccount-serviceを呼ぶツール実装そのもの）でのみ行う設計に一本化した：frontendが`?accountId=`クエリパラメータで渡す口座IDを`X-Gekko-Session-Account-Id`ヘッダーとしてfraud-agent→fraud-mcp-serverへ転送し（fraud-agentはこの値を検証せず中継するだけ）、`fraud-mcp-server`の各ツール関数の先頭で`account_id`引数と突合してToolErrorを投げる。実機で、「全ての凍結口座を調べ直してください」という明示的な逸脱指示を与えても、指定口座以外の提案が一切作られないこと、`kubectl logs`で`get_frozen_accounts`が実際に拒否されていることを確認した。

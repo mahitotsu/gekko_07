@@ -180,14 +180,26 @@ async function send(overrideText?: string) {
   sending.value = true;
   runError.value = null;
 
+  // fraud-agentはメッセージ単位で毎回新規セッションを作る(会話履歴を保持しない。architecture.md
+  // §11参照)ため、最初の自動送信メッセージ以降に人間が自由入力欄から送るメッセージには
+  // 口座IDの文脈が一切乗らない。accountIdがある限り毎回のメッセージにその文脈を明示的に含めて
+  // 送ることで、モデルが不要な口座まで調査するのを未然に防ぐ(画面上の吹き出し(text)には元の
+  // 発話のみを表示し、口座文脈はAIへの送信内容(promptText)にのみ付与する)。
+  //
+  // ただしこれはあくまでモデルへのヒントであり、指示追従に依存する不確実な制約にすぎない。
+  // 確実な制約は`?accountId=`クエリパラメータ経由でfraud-agent/fraud-mcp-serverのツール呼び出し
+  // そのものに強制する(server/routes/chat.post.ts→X-Gekko-Session-Account-Idヘッダー、ADR 0043)。
+  const promptText = accountId ? `[口座${accountId}についての会話です] ${text}` : text;
+  const chatUrl = accountId ? `/chat?accountId=${encodeURIComponent(accountId)}` : "/chat";
+
   try {
-    const res = await fetch("/chat", {
+    const res = await fetch(chatUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         threadId,
         runId: crypto.randomUUID(),
-        messages: [{ id: userMessageId, role: "user", content: text }],
+        messages: [{ id: userMessageId, role: "user", content: promptText }],
       }),
     });
     if (res.status === 401) {

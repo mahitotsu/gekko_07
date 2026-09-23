@@ -9,6 +9,11 @@
 # token-exchangeサイドカー(ADR 0019)がそれをsubject_tokenとして横取りし、新しいトークンへ
 # 差し替えてから実際のaccount-serviceへ転送する(architecture.md §3。account-serviceの
 # AnalystAttributeClient.javaと同型)。
+#
+# 1回のチャットが1口座に閉じるという制約(frontend/chat.vue)は、fraud-agentのcanUseTool
+# コールバックで一次防御されているが、ここでも同じ突合を行う(多層防御、ADR 0009 §2の思想。
+# ADR 0043)。X-Gekko-Session-Account-Idヘッダー(frontend→fraud-agent→fraud-mcp-serverと転送
+# される)と各ツールのaccount_id引数を突合し、不一致ならToolErrorで拒否する。
 from __future__ import annotations
 
 import os
@@ -32,6 +37,9 @@ HANDSHAKE_FILE = Path(os.environ.get("HANDSHAKE_TOKEN_FILE", "/handshake/token")
 ACCOUNT_SERVICE_URL = os.environ.get("ACCOUNT_SERVICE_URL", "http://account-service/")
 
 
+SESSION_ACCOUNT_ID_HEADER = "x-gekko-session-account-id"
+
+
 def _delegated_authorization() -> str:
     headers = get_http_headers(include={"authorization"})
     authorization = headers.get("authorization")
@@ -39,6 +47,21 @@ def _delegated_authorization() -> str:
         # 委任トークンが無い呼び出しは通さない(fail close。ADR 0009の思想を踏襲)。
         raise ToolError("missing delegated authorization")
     return authorization
+
+
+def _session_account_id() -> str | None:
+    # frontend(chat.vue)→fraud-agentが会話の紐付く口座IDを転送する(ADR 0043)。fraud-agent側の
+    # canUseToolコールバックで一次防御済みだが、ここでも同じ突合を行う(多層防御、ADR 0009 §2の
+    # 思想)。値が無い呼び出し(frontend以外からの直接呼び出し等)は既存の挙動を維持する(fail open。
+    # fraud-agent側と同じ意図的な選択)。
+    headers = get_http_headers(include={SESSION_ACCOUNT_ID_HEADER})
+    return headers.get(SESSION_ACCOUNT_ID_HEADER) or None
+
+
+def _require_scoped_account(account_id: str) -> None:
+    session_account_id = _session_account_id()
+    if session_account_id is not None and session_account_id != account_id:
+        raise ToolError(f"account_id must be {session_account_id} in this conversation")
 
 
 async def _call_account_service(method: str, path: str, json_body: dict[str, Any] | None = None) -> Any:
@@ -62,18 +85,25 @@ mcp = FastMCP("fraud-mcp-server")
 @mcp.tool()
 async def get_frozen_accounts() -> Any:
     """凍結中口座とその凍結根拠を照会する(account:read)。"""
+    # ADR 0043: 会話が1口座に紐付いている場合、この一覧系ツールはそもそも不要
+    # (get_account_historyで凍結理由・取引履歴の両方が取れる)なので呼び出し自体を拒否する。
+    session_account_id = _session_account_id()
+    if session_account_id is not None:
+        raise ToolError(f"this conversation is scoped to account {session_account_id}")
     return await _call_account_service("GET", "/accounts/frozen")
 
 
 @mcp.tool()
 async def get_account_history(account_id: str) -> Any:
     """指定口座の取引履歴・凍結根拠を照会する(account:read)。"""
+    _require_scoped_account(account_id)  # ADR 0043
     return await _call_account_service("GET", f"/accounts/{account_id}/transactions")
 
 
 @mcp.tool()
 async def propose_unfreeze(account_id: str, reasoning: str = "") -> Any:
     """精査の結論として指定口座の凍結解除を推奨する場合に呼ぶ(account:propose)。"""
+    _require_scoped_account(account_id)  # ADR 0043
     return await _call_account_service(
         "POST",
         f"/accounts/{account_id}/unfreeze-proposals",
@@ -86,6 +116,7 @@ async def conclude_no_unfreeze(account_id: str, reasoning: str = "") -> Any:
     """精査の結論として指定口座の凍結解除に根拠がないと判断した場合に呼ぶ(account:propose、ADR 0039)。
     凍結を維持するという結論自体も、propose_unfreezeと同様に依頼したアナリスト本人の確認を経て確定する。
     """
+    _require_scoped_account(account_id)  # ADR 0043
     return await _call_account_service(
         "POST",
         f"/accounts/{account_id}/unfreeze-proposals",

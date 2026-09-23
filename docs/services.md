@@ -14,7 +14,7 @@ frontendはAuthorization Code + PKCEブラウザフローでログインする�
   - 取引ダッシュボード：ログイントークンを`subject_token`にToken Exchange（audience=account-service, scope=account:read）を行い、そのトークンでaccount-serviceにアクセスする
   - 「AIによる精査を依頼」ボタン：チャット画面へ遷移し、AIエージェントによる凍結事由の精査を自動的に開始する
   - チャット画面の「承認」「却下」「凍結解除を確定」ボタン：いずれもToken Exchange（audience=account-service, scope=account:unfreeze）を行い、そのトークンでaccount-serviceにアクセスする。承認済みの提案がある場合のみ「凍結解除を確定」ボタンが有効になる（[ADR 0036](adr/0036-unfreeze-proposal-approval-step.md)）。決定論的操作の起点
-  - チャットUI：AIエージェント（fraud-agent）とのやり取り。開始時にログイントークンを`subject_token`に別のToken Exchange（audience=fraud-agent, scope=account:read）を行い、そのトークンでfraud-agentのチャット開始APIを呼ぶ（他の全ホップと同じ、実サービスへの透過的呼び出し。[ADR 0014](adr/0014-fraud-agent-token-exchange.md)）
+  - チャットUI：AIエージェント（fraud-agent）とのやり取り。開始時にログイントークンを`subject_token`に別のToken Exchange（audience=fraud-agent, scope=account:read）を行い、そのトークンでfraud-agentのチャット開始APIを呼ぶ（他の全ホップと同じ、実サービスへの透過的呼び出し。[ADR 0014](adr/0014-fraud-agent-token-exchange.md)）。会話の紐付く口座IDを`POST /chat?accountId=`のクエリパラメータで都度渡し、fraud-agent→fraud-mcp-serverへヘッダー転送することで、自由入力の追加発話も含め1回のチャットが1口座に閉じることを強制する（[ADR 0043](adr/0043-chat-account-scoping.md)）
   - 監査画面（`/audit`）：ログイントークンを`subject_token`にToken Exchange（audience=audit-service, scope=audit:read）を行い、そのトークンでaudit-serviceの`GET /reconcile`を呼ぶ。senior analyst限定（BR11）だが、判定はaudit-service側で行うため画面のリンク自体は全ログインユーザーに表示する（junior analystは403を受けて画面上にその旨を表示する。[ADR 0042](adr/0042-audit-service-senior-gate.md)）
 - **保有データ**：ログインセッション（アナリストのログイントークン）。サーバー側データストアは持たず、暗号化・署名付きCookieでステートレスに保持する（[ADR 0008](adr/0008-per-service-datastore-strategy.md)）
 - **連携相手**：Keycloak（認証、用途ごとのToken Exchangeの実行）、account-service（交換後のトークンで）、fraud-agent（Token Exchangeで得たトークンによる実呼び出し）、audit-service（監査画面、Token Exchangeで得たトークンによる実呼び出し。[ADR 0042](adr/0042-audit-service-senior-gate.md)）
@@ -31,7 +31,7 @@ frontendはAuthorization Code + PKCEブラウザフローでログインする�
 ## fraud-mcp-server（[ADR 0029](adr/0029-fraud-mcp-server-implementation.md)）
 
 - **存在意義**：account-serviceの読み取り・提案系機能をMCPツールとして公開する。AIエージェントとaccount-serviceの間に立ち、MCPプロトコルとREST/gRPCの変換を担う
-- **提供機能**：MCPツール`get_frozen_accounts`（凍結中口座とその凍結根拠の照会）、`get_account_history`（取引履歴照会）、`propose_unfreeze`（凍結解除案の記録）、`conclude_no_unfreeze`（解除の根拠なしという結論の記録。[ADR 0039](adr/0039-unfreeze-recommendation-axis.md)）
+- **提供機能**：MCPツール`get_frozen_accounts`（凍結中口座とその凍結根拠の照会）、`get_account_history`（取引履歴照会）、`propose_unfreeze`（凍結解除案の記録）、`conclude_no_unfreeze`（解除の根拠なしという結論の記録。[ADR 0039](adr/0039-unfreeze-recommendation-axis.md)）。会話が1口座に紐付いている場合（`X-Gekko-Session-Account-Id`ヘッダー）、`get_account_history`・`propose_unfreeze`・`conclude_no_unfreeze`はその口座以外の`account_id`引数を、`get_frozen_accounts`は呼び出し自体を拒否する（プロンプトの指示追従に依存しない、ツール実装そのものでの強制。[ADR 0043](adr/0043-chat-account-scoping.md)）
 - **保有データ**：なし。account-serviceへの中継のみ
 - **連携相手**：fraud-agentからMCPで呼ばれる。account-serviceへは自身のEnvoy/token-exchangeサイドカー経由でToken Exchange（audience=account-service, scope=account:read/account:propose）を行った上で委任する（アプリ本体は受信した委任トークンをそのまま転送するだけで、Token Exchange自体は一切意識しない。[ADR 0002](adr/0002-token-exchange-in-envoy-sidecar.md)・[ADR 0019](adr/0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md)）
 - **技術スタック**：Python / FastMCP（選定理由は[ADR 0007](adr/0007-per-service-language-selection.md)）

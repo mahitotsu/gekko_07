@@ -5,7 +5,11 @@
 // 401はthrow createError()ではなくsetResponseStatus+JSONで直接返す(server/routes/me.get.tsの
 // コメント参照。createError()はNitroの/__nuxt_error内部再ディスパッチを誘発し、loopback
 // 再チェックに引っかかって403で上書きされることを実機で確認した)。
-import { defineEventHandler, getRequestHeader, readRawBody, setHeader, setResponseStatus } from "h3";
+//
+// クエリパラメータ`accountId`（chat.vueが会話の紐付く口座として渡す）をX-Gekko-Session-Account-Id
+// ヘッダーへ変換してfraud-agentへ転送する(ADR 0043)。AG-UIのRunAgentInputスキーマ(body)には
+// 混ぜず、独立したヘッダーにすることでスキーマ検証への影響を避ける。
+import { defineEventHandler, getQuery, getRequestHeader, readRawBody, setHeader, setResponseStatus } from "h3";
 import { readSession } from "../utils/session";
 
 const FRAUD_AGENT_URL = process.env.FRAUD_AGENT_URL ?? "http://fraud-agent";
@@ -18,12 +22,14 @@ export default defineEventHandler(async (event) => {
   }
 
   const body = await readRawBody(event);
+  const accountId = getQuery(event).accountId;
 
   const upstream = await fetch(`${FRAUD_AGENT_URL}/chat`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${session.accessToken}`,
       "Content-Type": getRequestHeader(event, "content-type") ?? "application/json",
+      ...(typeof accountId === "string" ? { "X-Gekko-Session-Account-Id": accountId } : {}),
     },
     body,
   });

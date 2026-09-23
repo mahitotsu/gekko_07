@@ -21,6 +21,14 @@
 // クラスタ外エンドポイントであり、CLAUDE_CODE_OAUTH_TOKEN（`claude setup-token`で取得した
 // OAuthトークン）をこのプロセス自身がSecret経由で保持する（ADR 0030。Envoyは新設の
 // blind tcp_proxyリスナーでバイト列を素通しするだけでAPIキーには一切関与しない）。
+//
+// 1回のチャットが1口座に閉じるという制約（frontend/chat.vue）は、プロンプト文字列への
+// 埋め込みだけでは指示追従に依存し確実ではない（ADR 0043）。ここ（fraud-agent）でツール
+// 呼び出しを検証・拒否する`canUseTool`コールバックを試したが、`@ag-ui/claude-agent-sdk`の
+// ClaudeAgentAdapter経由ではMCPサーバー提供ツールに対して呼ばれないことを実機で確認した
+// （insights.md参照）。そのため本アプリは、frontendが`X-Gekko-Session-Account-Id`ヘッダーで
+// 渡す口座IDをfraud-mcp-server宛てのMCP接続headersへそのまま転送するだけの中継役に徹し、
+// 実際の強制はfraud-mcp-server側（ツール実装そのもの）で行う。
 import * as http from "node:http";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -47,6 +55,17 @@ const ALLOWED_TOOLS = [
   `mcp__${MCP_SERVER_NAME}__get_account_history`,
   ...CONCLUSION_TOOLS,
 ];
+
+// 1回のチャットが1口座に閉じるという制約(frontend/chat.vue)を、fraud-mcp-server側で強制する
+// ための口座ID(ADR 0043)。fraud-agent自身はこの値を検証しない——ClaudeAgentAdapterの
+// `canUseTool`コールバックでMCPツール呼び出しを検証・拒否する実装を試したが、実機で
+// `permissionMode`(`dontAsk`・`default`いずれでも)がMCPサーバー提供ツールに対しては
+// `canUseTool`を一切呼び出さないことを確認した(@ag-ui/claude-agent-sdkの
+// ClaudeAgentAdapter経由。詳細はinsights.md「fraud-agentのcanUseToolはMCPツールに対して
+// 呼ばれない」参照)。そのため強制はfraud-mcp-server（実際にaccount-serviceを呼ぶツール
+// 実装そのもの）でのみ行い、fraud-agentは受け取ったヘッダーをMCP接続のheadersへ
+// 転送するだけの中継に徹する。
+const SESSION_ACCOUNT_ID_HEADER = "x-gekko-session-account-id";
 
 // Anthropicとのkeep-alive接続が応答ストリーミングの途中で失効する既知の事象
 // （k8s/fraud-agent/envoy-configmap.yamlのretry_policyはリクエスト開始前の失効にしか
@@ -172,6 +191,12 @@ const server = http.createServer(async (req, res) => {
     const rawBody = await readBody(req);
     const input = buildRunAgentInput(rawBody);
 
+    // chat.vue(frontend)がPOST /chatのクエリパラメータとして渡す、この会話が紐付く口座ID
+    // (ADR 0043)。fraud-agent自身はこれを検証せず、MCP接続のheadersへそのまま転送する
+    // だけの中継役に徹する(実際の強制はfraud-mcp-server側。上記定数のコメント参照)。
+    const sessionAccountIdHeader = req.headers[SESSION_ACCOUNT_ID_HEADER];
+    const sessionAccountId = Array.isArray(sessionAccountIdHeader) ? sessionAccountIdHeader[0] : sessionAccountIdHeader;
+
     // fraud-mcp-serverへのMCP接続はリクエストごとに新しいAdapterインスタンスを作ることで
     // 都度差し替える(headersはquery呼び出し単位で設定可能。実機のTypeScript型定義で確認済み)。
     // egressのtoken-exchangeサイドカーが既存パターン通りこれをsubject_tokenとして扱う。
@@ -181,7 +206,10 @@ const server = http.createServer(async (req, res) => {
         [MCP_SERVER_NAME]: {
           type: "http",
           url: FRAUD_MCP_SERVER_URL,
-          headers: { Authorization: authorization },
+          headers: {
+            Authorization: authorization,
+            ...(sessionAccountId ? { [SESSION_ACCOUNT_ID_HEADER]: sessionAccountId } : {}),
+          },
         },
       };
       return new ClaudeAgentAdapter({
