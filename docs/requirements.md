@@ -81,6 +81,8 @@ AIエージェントに実行系の操作まで許してしまうと、エージ
 
 **BR10（AIの精査結論の記録・確認義務）**：AIエージェントは口座の精査を行った場合、その結論（解除を推奨する、または解除の根拠がないと判断する）を必ず記録しなければならない。結論が「解除の根拠なし」であった場合も、BR9と同様に依頼したアナリスト本人による確認を経て初めて精査結果が確定する。未確認の結論のみをもって口座の状態（凍結の継続・解除）が変わってはならない。また、この確認は凍結解除の承認（BR9）とは異なる種類の判断であり、両者を画面・記録上で混同してはならない。
 
+**BR11（監査結果の閲覧はsenior限定）**：account-serviceの自己申告とKeycloak/Envoyの第三者記録の突合結果（BR8を検証するための仕組み）を閲覧できるのは、senior権限のアナリストのみである。junior権限のアナリストは閲覧できてはならない。この制限は口座単位の地域・ティア（BR1〜BR3）とは独立な軸であり、閲覧できる場合は担当地域に関わらず全件が対象になる。
+
 ### 誰が何をできる／できないか（早見表）
 
 | 操作 | できる主体 | できない主体 |
@@ -93,6 +95,7 @@ AIエージェントに実行系の操作まで許してしまうと、エージ
 | 凍結解除提案の承認・却下 | 当該提案の作成を依頼した本人アナリストのみ（BR9） | 別のアナリスト（同じ担当範囲内であっても。BR9）。AIエージェント（BR5・BR6） |
 | AIの精査結論（「根拠なし」を含む）の確認 | 当該精査を依頼した本人アナリストのみ（BR10） | 別のアナリスト（BR10）。AIエージェント（自らの結論を自ら確定できない） |
 | 凍結解除の実行 | 権限のあるアナリスト本人による明示的な確定操作のみ（BR6） | AIエージェント（いかなる場合も。BR5） |
+| 監査結果（自己申告と第三者記録の突合）の閲覧 | senior アナリスト本人のみ（BR11） | junior アナリスト（BR11）。AIエージェント（閲覧の主体ではない） |
 
 ### architecture.mdとの対応
 
@@ -107,3 +110,4 @@ AIエージェントに実行系の操作まで許してしまうと、エージ
 | BR8 | [architecture.md](architecture.md) §9（`sessionId`/`sub`/`jti`による相関、[ADR 0025](adr/0025-audit-log-aggregation.md)） |
 | BR9 | [architecture.md](architecture.md) 表2（承認・却下エンドポイントも`account:unfreeze`スコープ配下。[ADR 0036](adr/0036-unfreeze-proposal-approval-step.md)） |
 | BR10 | [architecture.md](architecture.md) §10 UC1（精査結論の分岐）。認可スコープ自体はBR9と同じ`account:propose`/`account:unfreeze`の範囲内で変更なし（[ADR 0039](adr/0039-unfreeze-recommendation-axis.md)） |
+| BR11 | [architecture.md](architecture.md) §5パス④・§9「突合結果の閲覧はsenior analyst限定」・表3（audit-serviceのanalyst-attribute-service照会許可）（[ADR 0042](adr/0042-audit-service-senior-gate.md)） |

@@ -15,8 +15,9 @@ frontendはAuthorization Code + PKCEブラウザフローでログインする�
   - 「AIによる精査を依頼」ボタン：チャット画面へ遷移し、AIエージェントによる凍結事由の精査を自動的に開始する
   - チャット画面の「承認」「却下」「凍結解除を確定」ボタン：いずれもToken Exchange（audience=account-service, scope=account:unfreeze）を行い、そのトークンでaccount-serviceにアクセスする。承認済みの提案がある場合のみ「凍結解除を確定」ボタンが有効になる（[ADR 0036](adr/0036-unfreeze-proposal-approval-step.md)）。決定論的操作の起点
   - チャットUI：AIエージェント（fraud-agent）とのやり取り。開始時にログイントークンを`subject_token`に別のToken Exchange（audience=fraud-agent, scope=account:read）を行い、そのトークンでfraud-agentのチャット開始APIを呼ぶ（他の全ホップと同じ、実サービスへの透過的呼び出し。[ADR 0014](adr/0014-fraud-agent-token-exchange.md)）
+  - 監査画面（`/audit`）：ログイントークンを`subject_token`にToken Exchange（audience=audit-service, scope=audit:read）を行い、そのトークンでaudit-serviceの`GET /reconcile`を呼ぶ。senior analyst限定（BR11）だが、判定はaudit-service側で行うため画面のリンク自体は全ログインユーザーに表示する（junior analystは403を受けて画面上にその旨を表示する。[ADR 0042](adr/0042-audit-service-senior-gate.md)）
 - **保有データ**：ログインセッション（アナリストのログイントークン）。サーバー側データストアは持たず、暗号化・署名付きCookieでステートレスに保持する（[ADR 0008](adr/0008-per-service-datastore-strategy.md)）
-- **連携相手**：Keycloak（認証、用途ごとのToken Exchangeの実行）、account-service（交換後のトークンで）、fraud-agent（Token Exchangeで得たトークンによる実呼び出し）
+- **連携相手**：Keycloak（認証、用途ごとのToken Exchangeの実行）、account-service（交換後のトークンで）、fraud-agent（Token Exchangeで得たトークンによる実呼び出し）、audit-service（監査画面、Token Exchangeで得たトークンによる実呼び出し。[ADR 0042](adr/0042-audit-service-senior-gate.md)）
 - **技術スタック**：TypeScript / Nuxt.js（選定理由は[ADR 0007](adr/0007-per-service-language-selection.md)）
 
 ## fraud-agent（AIエージェント。[ADR 0030](adr/0030-fraud-agent-implementation.md)）
@@ -59,15 +60,15 @@ frontendはAuthorization Code + PKCEブラウザフローでログインする�
 ## analyst-attribute-service
 
 - **存在意義**：アナリストの業務属性（担当地域・権限レベル）を一元管理する属性局。委任チェーンの終端
-- **提供機能**：アナリスト情報照会（`analyst:read`、account-serviceからのみ許可）
+- **提供機能**：アナリスト情報照会（`analyst:read`、account-service・audit-serviceのみ許可。[ADR 0042](adr/0042-audit-service-senior-gate.md)）
 - **保有データ**：アナリスト（担当地域の配列、権限レベル`junior`/`senior`）。PostgreSQL（account-service/fraud-detection-engineと同一インスタンス内の別データベース。[ADR 0008](adr/0008-per-service-datastore-strategy.md)）
-- **連携相手**：account-serviceから委任で呼ばれる。他のどこからも呼ばれない
+- **連携相手**：account-service（表5のABAC判定）・audit-service（senior限定閲覧ゲート判定。[ADR 0042](adr/0042-audit-service-senior-gate.md)）から委任で呼ばれる。他のどこからも呼ばれない
 - **技術スタック**：Go（標準ライブラリの`net/http`。選定理由は[ADR 0007](adr/0007-per-service-language-selection.md)）
 
-## audit-service（[ADR 0040](adr/0040-audit-service-reconciliation.md)/[0041](adr/0041-audit-service-implementation.md)）
+## audit-service（[ADR 0040](adr/0040-audit-service-reconciliation.md)/[0041](adr/0041-audit-service-implementation.md)/[0042](adr/0042-audit-service-senior-gate.md)）
 
-- **存在意義**：AI支援・人間の判断を行うコンポーネント（fraud-agent/fraud-mcp-server/account-service/frontend）とは別の独立したコンポーネントとして、account-service自身の自己申告とKeycloak/Envoyの第三者記録を突合し、BR8（事後追跡可能性）の裏付けを検証する
-- **提供機能**：`GET /reconcile?since=`のみ。呼び出しの都度、(a) account-serviceの`/audit/unfreeze-proposals`・`/audit/unfreeze-executions`（`account:audit`スコープ、機械間認証）から自己申告（承認・実行の`sub`/時刻）を、(b) Lokiの第三者記録（KeycloakイベントログのTOKEN_EXCHANGE、`account:unfreeze`）を取得し、`sub`+時刻近接（既定60秒）の決定的なキー一致のみで突合する（LLM不使用）。対応する第三者記録が見つからない自己申告を`unverified`として返す
+- **存在意義**：AI支援・人間の判断を行うコンポーネント（fraud-agent/fraud-mcp-server/account-service/frontend）とは別の独立したコンポーネントとして、account-service自身の自己申告とKeycloak/Envoyの第三者記録を突合し、BR8（事後追跡可能性）の裏付けを検証する。閲覧はsenior analyst限定（BR11）
+- **提供機能**：`GET /reconcile?since=`のみ（`audit:read`スコープ、frontendのみ許可）。呼び出しの都度、まず`x-auth-sub`を使いanalyst-attribute-serviceへToken Exchangeで照会し`level=senior`であることを確認する（表5のABAC判定とは別軸の二値ゲート、BR11）。通過した場合、(a) account-serviceの`/audit/unfreeze-proposals`・`/audit/unfreeze-executions`（`account:audit`スコープ、機械間認証）から自己申告（承認・実行の`sub`/時刻）を、(b) Lokiの第三者記録（KeycloakイベントログのTOKEN_EXCHANGE、`account:unfreeze`）を取得し、`sub`+時刻近接（既定60秒）の決定的なキー一致のみで突合する（LLM不使用）。対応する第三者記録が見つからない自己申告を`unverified`として返す
 - **保有データ**：なし（ステートレス。呼び出しの都度取得するのみ、永続化しない）
-- **連携相手**：account-service（機械間認証で読み取り専用API呼び出し）、Loki（otel-lgtm、Keycloak/Envoyログの第三者記録取得元。OAuth/mTLSのメッシュには参加せず、NetworkPolicyのみで到達を制御する）。ingressにjwt_authn/rbacを持たず、`kubectl port-forward`での到達のみを前提にする（誰が結果を閲覧できるかは未決定。architecture.md §11参照）
+- **連携相手**：frontend（senior analystからの委任、Token Exchange）、account-service（機械間認証で読み取り専用API呼び出し）、analyst-attribute-service（senior限定ゲート判定、Token Exchange）、Loki（otel-lgtm、Keycloak/Envoyログの第三者記録取得元。OAuth/mTLSのメッシュには参加せず、NetworkPolicyのみで到達を制御する）
 - **技術スタック**：Go（標準ライブラリのみ、外部依存パッケージなし。「検証者は決定的で再現可能である」という設計意図と、analyst-attribute-serviceと同じ「単一の役割にフレームワークは要らない」という理由。選定理由は[ADR 0041](adr/0041-audit-service-implementation.md)）

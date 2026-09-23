@@ -4,8 +4,10 @@
 # 付与。ADR 0009 §2③)→router、の順で通す。account-service/envoy-configmap.yamlのingress部分を
 # 雛形に、呼び出し元をaccount-service一つに限定し、rbacポリシーを単一scopeへ簡略化した。
 #
-# 委任チェーンの終端(表3:account-serviceからのみ照会可能)のため、account-serviceのような
-# egressリスナーは持たない。
+# 委任チェーンの終端(表3:account-service・audit-serviceのみが照会可能。ADR 0040/0041/0042で
+# audit-serviceを2件目の呼び出し元として追加した。いずれもToken Exchange経由でsubを元の
+# アナリスト本人のまま維持し、main.goのx-auth-sub一致チェックで本人以外の属性照会を防ぐ)ため、
+# account-serviceのようなegressリスナーは持たない。
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -48,6 +50,11 @@ data:
                           - san_type: URI
                             matcher:
                               exact: "spiffe://gekko.internal/ns/gekko/sa/default/account-service"
+                          # ADR 0040/0041/0042: audit-serviceがsenior限定の閲覧ゲート判定のため
+                          # 照会する(表3の2件目の呼び出し元)。
+                          - san_type: URI
+                            matcher:
+                              exact: "spiffe://gekko.internal/ns/gekko/sa/default/audit-service"
                       validation_context_sds_secret_config:
                         name: "ROOTCA"
                         sds_config:

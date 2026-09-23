@@ -202,7 +202,7 @@ deploy:
 	@# を持たない(ビルド済みイメージで代替)。token-exchange-app-configmap.yamlはADR 0019のまま無変更。
 	kubectl apply -f k8s/fraud-mcp-server/token-exchange-app-configmap.yaml -f k8s/fraud-mcp-server/envoy-configmap.yaml -f k8s/fraud-mcp-server/deployment.yaml -f k8s/fraud-mcp-server/service.yaml
 	@# ADR 0040/0041:audit-serviceは自身のPostgresを持たない(ステートレス)ためdb-init Jobは無い。
-	kubectl apply -f k8s/audit-service/client-credentials-app-configmap.yaml -f k8s/audit-service/envoy-configmap.yaml -f k8s/audit-service/deployment.yaml -f k8s/audit-service/service.yaml
+	kubectl apply -f k8s/audit-service/egress-auth-app-configmap.yaml -f k8s/audit-service/envoy-configmap.yaml -f k8s/audit-service/deployment.yaml -f k8s/audit-service/service.yaml
 	@# CLAUDE_CODE_OAUTH_TOKEN未設定ならSecret未作成のままCrashLoopBackOFFするより早く停止する。
 	@if [ -z "$(CLAUDE_CODE_OAUTH_TOKEN)" ]; then \
 		echo "CLAUDE_CODE_OAUTH_TOKENが未設定です。'claude setup-token'で取得したトークンを" >&2; \
@@ -249,7 +249,7 @@ undeploy:
 	kubectl delete -f k8s/fraud-detection-engine/deployment.yaml -f k8s/fraud-detection-engine/envoy-configmap.yaml -f k8s/fraud-detection-engine/client-credentials-app-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/fraud-detection-engine/db-init-job.yaml -f k8s/fraud-detection-engine/db-init-envoy-configmap.yaml -f k8s/fraud-detection-engine/db-init-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/fraud-mcp-server/service.yaml -f k8s/fraud-mcp-server/deployment.yaml -f k8s/fraud-mcp-server/envoy-configmap.yaml -f k8s/fraud-mcp-server/token-exchange-app-configmap.yaml --ignore-not-found
-	kubectl delete -f k8s/audit-service/service.yaml -f k8s/audit-service/deployment.yaml -f k8s/audit-service/envoy-configmap.yaml -f k8s/audit-service/client-credentials-app-configmap.yaml --ignore-not-found
+	kubectl delete -f k8s/audit-service/service.yaml -f k8s/audit-service/deployment.yaml -f k8s/audit-service/envoy-configmap.yaml -f k8s/audit-service/egress-auth-app-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/fraud-agent/service.yaml -f k8s/fraud-agent/deployment.yaml -f k8s/fraud-agent/envoy-configmap.yaml -f k8s/fraud-agent/token-exchange-app-configmap.yaml --ignore-not-found
 	kubectl delete -f k8s/frontend/service.yaml -f k8s/frontend/deployment.yaml -f k8s/frontend/envoy-configmap.yaml -f k8s/frontend/token-exchange-app-configmap.yaml --ignore-not-found
 	kubectl delete secret fraud-agent-claude -n $(NAMESPACE) --ignore-not-found

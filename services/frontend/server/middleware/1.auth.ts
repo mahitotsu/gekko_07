@@ -1,5 +1,5 @@
 // ページ読み込み(GET)のセッションゲート。/login・/callback・/logoutと静的アセット、
-// および/accounts/**・/me（自前で401を返すAPIルート）以外の全GETリクエストに
+// および/accounts/**・/me・/reconcile（自前で401を返すAPIルート）以外の全GETリクエストに
 // ログイン済みセッションを要求し、無ければ/loginへ302する。
 // POST等の状態変更リクエストは各ルート自身がreadSession()で判定する（API的な401を返すため）。
 //
@@ -21,7 +21,8 @@ export default defineEventHandler((event) => {
     path.startsWith("/_nuxt/") ||
     path === "/favicon.ico" ||
     path.startsWith("/accounts/") ||
-    path === "/me"
+    path === "/me" ||
+    path === "/reconcile"
   ) {
     return;
   }

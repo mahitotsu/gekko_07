@@ -1,6 +1,6 @@
 # ADR 0041: audit-serviceを本実装し、account-serviceの自己申告とKeycloakの第三者記録の突合を実機で成立させる
 
-- **Status**: Accepted
+- **Status**: Partially superseded by [0042](0042-audit-service-senior-gate.md)（ingressのmTLS+jwt_authn+rbac追加、senior限定閲覧ゲート、`client-credentials`サイドカーの`egress-auth`への改称・統合）
 - **Date**: 2026-09-24
 
 ## Context
@@ -17,7 +17,7 @@ analyst-attribute-serviceと同じ理由（単一の役割に対してフレー�
 - 突合ロジック（`hasMatch`）は「自己申告の`sub`と第三者記録の`sub`が一致し、かつ時刻差が許容範囲（既定60秒、`TOLERANCE_SECONDS`で変更可）以内」という決定的なキー一致判定のみ。LLMは一切使わない
 - 突合対象は`decided_at`（提案の承認/却下）・`executed_at`（凍結解除実行）の2つのみ、いずれも`account:unfreeze`スコープを要求する操作（表2）。`account:propose`（提案の新規作成、可逆・低リスク）は対象外——不可逆・高リスクな操作の実在性を裏付けることが本来の目的のため
 - **片方向のみの突合**：自己申告→第三者記録の対応（「対応する第三者記録が見つからない自己申告」の検知）のみを実装し、逆方向（「対応する自己申告が無い第三者記録」の検知）は実装しなかった。account:unfreezeスコープのToken Exchange自体は、account-service側が403/409等で拒否した試行（例：承認されていない提案の実行試行）でも発生するため、逆方向を素朴に実装すると通常運用の拒否ケースを大量に「不整合」として検出してしまい、ノイズになる。片方向のみでも「自己申告側の改ざん・欠落」は検知できるため、ADR 0040の核心の主張（一方だけの改ざんは不整合として検知できる）は損なわれない
-- ingressにjwt_authn/rbacを持たせていない。「誰が突合結果を閲覧できるか」はADR 0040で未決定のまま残した将来課題であり（architecture.md §11参照）、今回は`kubectl port-forward`での到達のみを前提にする（`k8s/observability/`のGrafanaと同じ位置づけ）。ADR 0009 §2の多層防御のうち①②（loopback限定bind・接続元loopbackチェック）は引き継いだが、③（合言葉ヘッダー）は「rbac通過後にのみ付与」という前提自体が成立しない（検知すべきバイパス対象がそもそも無い）ため見送った。認証・認可を追加する際に③も追加する
+- ingressにjwt_authn/rbacを持たせていない。「誰が突合結果を閲覧できるか」はADR 0040で未決定のまま残した将来課題であり（architecture.md §11参照）、今回は`kubectl port-forward`での到達のみを前提にする（`k8s/observability/`のGrafanaと同じ位置づけ）。ADR 0009 §2の多層防御のうち①②（loopback限定bind・接続元loopbackチェック）は引き継いだが、③（合言葉ヘッダー）は「rbac通過後にのみ付与」という前提自体が成立しない（検知すべきバイパス対象がそもそも無い）ため見送った。認証・認可を追加する際に③も追加する〔[ADR 0042](0042-audit-service-senior-gate.md)で訂正：senior限定閲覧ゲートのためmTLS+jwt_authn+rbac（`audit:read`）+③を追加し、`kubectl port-forward`前提から変更〕
 
 ### account-serviceに監査専用の読み取り専用API（`/audit/*`）を追加する
 
@@ -31,7 +31,7 @@ fraud-detection-engineと同じ構成（confidential、`serviceAccountsEnabled: 
 
 ### SPIRE: audit-serviceのSPIFFE ID登録
 
-fraud-detection-engineと同じ2entry構成（`k8s:container-name:envoy`と`k8s:container-name:client-credentials`）。client_credentialsサイドカーの実装（`k8s/audit-service/client-credentials-app-configmap.yaml`）自体もfraud-detection-engineのものをそのまま流用し、`CLIENT_ID`/`FIXED_SCOPE`のみを差し替えた。
+fraud-detection-engineと同じ2entry構成（`k8s:container-name:envoy`と`k8s:container-name:client-credentials`）。client_credentialsサイドカーの実装（`k8s/audit-service/client-credentials-app-configmap.yaml`）自体もfraud-detection-engineのものをそのまま流用し、`CLIENT_ID`/`FIXED_SCOPE`のみを差し替えた。〔[ADR 0042](0042-audit-service-senior-gate.md)で訂正：analyst-attribute-service向けToken Exchangeも扱うようになったため、コンテナ名・SPIRE entry selectorを`egress-auth`に改称し、実装ファイルも`k8s/audit-service/egress-auth-app-configmap.yaml`へ統合した〕
 
 ### NetworkPolicy
 

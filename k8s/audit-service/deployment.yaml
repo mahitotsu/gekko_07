@@ -1,10 +1,9 @@
-# audit-serviceの本実装Deployment(Go標準ライブラリ。ADR 0007/0009/0010/0020/0040/0041)。
+# audit-serviceの本実装Deployment(Go標準ライブラリ。ADR 0007/0009/0010/0019/0020/0040/0041/0042)。
 # account-service・fraud-detection-engineと異なり自身のPostgresデータベースを持たない
 # (ADR 0040:ステートレス)ため、wait-for-postgres initContainer・db-init/seed Jobは無い。
 #
-# ingressにjwt_authn/rbacが無い(k8s/audit-service/envoy-configmap.yaml参照)ため、
-# handshake-init initContainer・合言葉のemptyDirも持たない(rbac通過後にのみ付与する
-# ADR 0009 §2③の前提が成立しないため。architecture.md §11参照)。
+# ADR 0042でingressにjwt_authn/rbac(audit:read限定)を追加したため、handshake-init
+# initContainer・合言葉のemptyDirも他サービスと同じ形で持つ(ADR 0009 §2③)。
 #
 # appコンテナのイメージはservices/audit-service/のGoプロジェクトをMakefileの
 # build-audit-serviceターゲットでビルドし、`k3d image import`でクラスタへ持ち込む
@@ -28,20 +27,37 @@ spec:
     spec:
       hostAliases:
         - ip: "127.0.0.1"
-          hostnames: ["account-service", "keycloak"]
+          hostnames: ["account-service", "analyst-attribute-service", "keycloak"]
       initContainers:
+        # ADR 0009 §2③:Pod内合言葉。
+        - name: handshake-init
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - "head -c32 /dev/urandom | od -An -tx1 | tr -d ' \\n' > /handshake/token"
+          volumeMounts:
+            - name: handshake
+              mountPath: /handshake
         # ネイティブsidecar(restartPolicy: Always)。appコンテナより先にSVIDのSDS配信を
         # 受けて起動・待受させる(他サービスと同じパターン)。
         - name: envoy
           restartPolicy: Always
           image: envoyproxy/envoy:v1.31.5
-          command: ["envoy", "-c", "/etc/envoy/envoy.yaml"]
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              export HANDSHAKE_TOKEN="$(cat /handshake/token)"
+              exec envoy -c /etc/envoy/envoy.yaml
           ports:
             - name: http
               containerPort: 8080
           volumeMounts:
             - name: envoy-config
               mountPath: /etc/envoy
+              readOnly: true
+            - name: handshake
+              mountPath: /handshake
               readOnly: true
             - name: spire-agent-socket
               mountPath: /run/spire/sockets
@@ -62,12 +78,20 @@ spec:
               value: "127.0.0.1" # ADR 0009 主対策①と同じ考え方:Pod外から直接到達不能にする
             - name: APP_PORT
               value: "9000"
+            - name: HANDSHAKE_TOKEN_FILE
+              value: "/handshake/token"
             - name: ACCOUNT_SERVICE_URL
               value: "http://account-service"
+            - name: ANALYST_ATTRIBUTE_SERVICE_URL
+              value: "http://analyst-attribute-service"
             - name: LOKI_URL
               value: "http://otel-lgtm.observability.svc.cluster.local:3100"
             - name: TOLERANCE_SECONDS
               value: "60"
+          volumeMounts:
+            - name: handshake
+              mountPath: /handshake
+              readOnly: true
           resources:
             requests:
               cpu: "20m"
@@ -75,18 +99,26 @@ spec:
             limits:
               cpu: "200m"
               memory: "128Mi"
-        # ADR 0020と同じパターン。account-serviceの/audit/*向けclient_credentialsトークン
-        # (scope=account:audit)取得実行主体。envoyコンテナと同じくWorkload API UDSソケットへ
-        # アクセスする(JWT-SVID取得のため)。SPIRE registration entryもenvoyコンテナと並んで
-        # このコンテナ名をselectorに持つ(k8s/spire/entries-configmap.yaml参照)。
-        - name: client-credentials
+        # ADR 0019/0020と同じパターンを1コンテナに統合(ADR 0042):account-service向け
+        # client_credentials(scope=account:audit)と、analyst-attribute-service向けToken Exchange
+        # (senior限定閲覧ゲート判定、scope=analyst:read)の両方をHostヘッダーで出し分ける
+        # (k8s/audit-service/egress-auth-app-configmap.yaml参照)。envoyコンテナと同じくWorkload
+        # API UDSソケットへアクセスする(JWT-SVID取得のため)。SPIRE registration entryもenvoy
+        # コンテナと並んでこのコンテナ名をselectorに持つ(k8s/spire/entries-configmap.yaml参照)。
+        - name: egress-auth
           image: python:3.12-alpine
           command: ["python3", "/scripts/app.py"]
           env:
             - name: CLIENT_ID
               value: "audit-service"
-            - name: FIXED_SCOPE
+            - name: ACCOUNT_SERVICE_HOST
+              value: "account-service"
+            - name: ACCOUNT_SERVICE_SCOPE
               value: "account:audit"
+            - name: ANALYST_ATTRIBUTE_SERVICE_HOST
+              value: "analyst-attribute-service"
+            - name: ANALYST_ATTRIBUTE_SERVICE_SCOPE
+              value: "analyst:read"
             - name: JWT_SVID_AUDIENCE
               value: "http://localhost:3000/realms/gekko"
             - name: LISTEN_HOST
@@ -96,7 +128,7 @@ spec:
             - name: KEYCLOAK_TOKEN_URL
               value: "http://keycloak/realms/gekko/protocol/openid-connect/token"
           volumeMounts:
-            - name: client-credentials-app-script
+            - name: egress-auth-app-script
               mountPath: /scripts
               readOnly: true
             - name: spire-agent-socket
@@ -116,9 +148,11 @@ spec:
         - name: envoy-config
           configMap:
             name: audit-service-envoy
-        - name: client-credentials-app-script
+        - name: egress-auth-app-script
           configMap:
-            name: audit-service-client-credentials-app
+            name: audit-service-egress-auth-app
+        - name: handshake
+          emptyDir: {}
         - name: spire-agent-socket
           hostPath:
             path: /run/spire/sockets

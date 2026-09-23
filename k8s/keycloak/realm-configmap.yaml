@@ -197,6 +197,28 @@ data:
               }
             }
           ]
+        },
+        {
+          "name": "audit:read",
+          "description": "監査（自己申告と第三者記録の突合結果）の閲覧（対象audience: audit-service。frontendのみに付与。senior限定はaudit-service側でanalyst-attribute-serviceに照会して判定。ADR 0042）",
+          "protocol": "openid-connect",
+          "attributes": {
+            "include.in.token.scope": "true",
+            "display.on.consent.screen": "false"
+          },
+          "protocolMappers": [
+            {
+              "name": "audience-audit-service",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-audience-mapper",
+              "consentRequired": false,
+              "config": {
+                "included.client.audience": "audit-service",
+                "id.token.claim": "false",
+                "access.token.claim": "true"
+              }
+            }
+          ]
         }
       ],
       "clients": [
@@ -223,7 +245,7 @@ data:
             "jwt.credential.sub": "spiffe://gekko.internal/ns/gekko/sa/default/frontend"
           },
           "defaultClientScopes": [],
-          "optionalClientScopes": ["account:read", "account:unfreeze"],
+          "optionalClientScopes": ["account:read", "account:unfreeze", "audit:read"],
           "protocolMappers": [
             {
               "name": "audience-self",
@@ -334,7 +356,7 @@ data:
         {
           "clientId": "audit-service",
           "name": "audit-service",
-          "description": "凍結解除の自己申告記録とKeycloak/Envoyの第三者記録を突合する監査サービス。account-serviceへ機械間認証（client_credentials）でアクセスする（ADR 0040/0041）",
+          "description": "凍結解除の自己申告記録とKeycloak/Envoyの第三者記録を突合する監査サービス。account-serviceへは機械間認証（client_credentials）、frontendから委任されたsenior analystの閲覧リクエストはanalyst-attribute-serviceへToken Exchangeで照会する（ADR 0040/0041/0042）",
           "enabled": true,
           "protocol": "openid-connect",
           "publicClient": false,
@@ -346,11 +368,12 @@ data:
           "fullScopeAllowed": false,
           "clientAuthenticatorType": "federated-jwt",
           "attributes": {
+            "standard.token.exchange.enabled": "true",
             "jwt.credential.issuer": "spire-gekko",
             "jwt.credential.sub": "spiffe://gekko.internal/ns/gekko/sa/default/audit-service"
           },
           "defaultClientScopes": [],
-          "optionalClientScopes": ["account:audit"]
+          "optionalClientScopes": ["account:audit", "analyst:read"]
         },
         {
           "clientId": "account-service",

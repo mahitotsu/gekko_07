@@ -1,7 +1,8 @@
-# ADR 0018。ingressは無し(kubectl port-forwardのみを前提にする。k8s/observability/の
-# Grafanaと同じ理由でNetworkPolicyのingressルールは不要。ADR 0040/0041)。egressは
-# account-service(自己申告の読み取り専用API)・keycloak(client_credentials)・
-# observability namespaceのotel-lgtm(Loki query API、第三者記録の取得元)のみ許可する。
+# ADR 0018。ingressはfrontendのみ許可する(ADR 0042でsenior限定閲覧ゲートをmTLS+jwt_authn+rbac
+# で実装したため。ADR 0040/0041時点の「port-forwardのみ」からの変更)。egressは
+# account-service(自己申告の読み取り専用API)・analyst-attribute-service(senior限定ゲート判定、
+# ADR 0042)・keycloak(client_credentials/Token Exchange)・observability namespaceのotel-lgtm
+# (Loki query API、第三者記録の取得元)を許可する。
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -12,12 +13,28 @@ spec:
     matchLabels:
       app: audit-service
   policyTypes:
+    - Ingress
     - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: frontend
+      ports:
+        - protocol: TCP
+          port: 8080
   egress:
     - to:
         - podSelector:
             matchLabels:
               app: account-service
+      ports:
+        - protocol: TCP
+          port: 8080
+    - to:
+        - podSelector:
+            matchLabels:
+              app: analyst-attribute-service
       ports:
         - protocol: TCP
           port: 8080

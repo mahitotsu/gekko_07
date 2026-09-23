@@ -1,21 +1,18 @@
-# audit-service Envoy設定(ADR 0009/0010/0020パターン。ADR 0040/0041)。
+# audit-service Envoy設定(ADR 0009/0010/0019/0020パターン。ADR 0040/0041/0042)。
 #
-# ingress(8080→127.0.0.1:9000):jwt_authn/rbacを持たない、routerのみの最小構成。
-# 「誰が突合結果を閲覧できるか」はADR 0040で未決定のまま将来課題として残しており(architecture.md
-# §11)、今回はkubectl port-forwardでの到達のみを前提にする(k8s/observability/のGrafanaと
-# 同じ位置づけ)。認証・認可を追加する際は、他サービスのingressと同じjwt_authn→rbac→lua
-# (合言葉ヘッダー)の順で追加する。
+# ingress(8080→127.0.0.1:9000):frontendのみをmTLS SAN許可リストで受け付け、jwt_authn
+# (audience=audit-service)→rbac(audit:readスコープのみ要求)→lua(合言葉ヘッダー付与。
+# ADR 0009 §2③)→router、の順で通す。「誰が突合結果を閲覧できるか」をsenior analystに限定する
+# 判定自体は、rbacより後のアプリ側(x-auth-subを使いanalyst-attribute-serviceへ照会)で行う
+# (表5と同じ「scopeチェックはEnvoy、業務データ依存のABAC判定はアプリ」の役割分担。ADR 0006)。
 #
-# egress(127.0.0.1:80):hostAliases(deployment.yaml参照)で"account-service"・"keycloak"を
-# 127.0.0.1へ横取りし、ext_authzがclient_credentials(k8s/fraud-detection-engine/envoy-
-# configmap.yamlと同じパターン)でトークンを取得してから実アップストリームへ転送する。
-# audit-serviceはaccount-serviceに対して常にaccount:auditのみを持つため、フロントエンド/
-# fraud-mcp-server向けのようなパスパターンごとのルート分岐は不要(パターン②と同じ)。
+# egress(127.0.0.1:80):hostAliases(deployment.yaml参照)で"account-service"・
+# "analyst-attribute-service"・"keycloak"を127.0.0.1へ横取りする。ext_authzの接続先は
+# リスナー単位で1つに固定されるため、単一のegress-authサイドカー(127.0.0.1:9002)がHostヘッダーで
+# grant_typeを出し分ける(account-service向け=client_credentials、analyst-attribute-service向け=
+# Token Exchange。k8s/audit-service/egress-auth-app-configmap.yaml参照)。
 #
-# LokiへのアクセスはEnvoyを経由しない(loki.gekko.svc...ではなくobservability namespace内の
-# otel-lgtmを実サービス名で直接呼ぶ。Keycloakクライアント登録も無くOAuth/mTLSのメッシュに
-# 参加していないため、Token Exchangeもmtlsも介さないプレーンHTTP。宛先はNetworkPolicyでのみ
-# 制御する。architecture.md §9・ADR 0040/0041参照)。
+# LokiへのアクセスはEnvoyを経由しない(architecture.md §9・ADR 0040/0041参照)。
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -35,12 +32,44 @@ data:
           address:
             socket_address: { address: 0.0.0.0, port_value: 8080 }
           filter_chains:
-            - filters:
+            - transport_socket:
+                name: envoy.transport_sockets.tls
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+                  require_client_certificate: true
+                  common_tls_context:
+                    alpn_protocols: ["h2"]
+                    tls_certificate_sds_secret_configs:
+                      - name: "default"
+                        sds_config:
+                          resource_api_version: V3
+                          api_config_source:
+                            api_type: GRPC
+                            transport_api_version: V3
+                            grpc_services:
+                              - envoy_grpc:
+                                  cluster_name: spire_agent
+                    combined_validation_context:
+                      default_validation_context:
+                        match_typed_subject_alt_names:
+                          - san_type: URI
+                            matcher:
+                              exact: "spiffe://gekko.internal/ns/gekko/sa/default/frontend"
+                      validation_context_sds_secret_config:
+                        name: "ROOTCA"
+                        sds_config:
+                          resource_api_version: V3
+                          api_config_source:
+                            api_type: GRPC
+                            transport_api_version: V3
+                            grpc_services:
+                              - envoy_grpc:
+                                  cluster_name: spire_agent
+              filters:
                 - name: envoy.filters.network.http_connection_manager
                   typed_config:
                     "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
                     stat_prefix: ingress_http
-                    # 監査ログ集約(ADR 0025)。jwt_authnが無いためsub/scope/jtiは常に空文字列。
                     access_log:
                       - name: envoy.access_loggers.stdout
                         typed_config:
@@ -64,6 +93,55 @@ data:
                             - match: { prefix: "/" }
                               route: { cluster: app_upstream }
                     http_filters:
+                      - name: envoy.filters.http.jwt_authn
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication
+                          providers:
+                            keycloak:
+                              issuer: "http://localhost:3000/realms/gekko"
+                              audiences: ["audit-service"]
+                              remote_jwks:
+                                http_uri:
+                                  uri: "https://keycloak.gekko.svc.cluster.local:8443/realms/gekko/protocol/openid-connect/certs"
+                                  cluster: keycloak_jwks
+                                  timeout: 5s
+                                cache_duration: 300s
+                              forward: true
+                              claim_to_headers:
+                                - header_name: "x-auth-sub"
+                                  claim_name: "sub"
+                                - header_name: "x-auth-scope"
+                                  claim_name: "scope"
+                                - header_name: "x-auth-jti"
+                                  claim_name: "jti"
+                          rules:
+                            - match: { prefix: "/" }
+                              requires: { provider_name: "keycloak" }
+                      - name: envoy.filters.http.rbac
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBAC
+                          rules:
+                            action: ALLOW
+                            policies:
+                              read:
+                                permissions:
+                                  - any: true
+                                principals:
+                                  - header: { name: "x-auth-scope", string_match: { contains: "audit:read" } }
+                      - name: envoy.filters.http.lua
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+                          default_source_code:
+                            inline_string: |
+                              -- rbacの後に配置しているため、ここに到達するのはrbacを通過した
+                              -- リクエストのみ(ADR 0009 §2③:素通りしたリクエストに付与しては
+                              -- 意味がない)。
+                              function envoy_on_request(request_handle)
+                                local token = os.getenv("HANDSHAKE_TOKEN")
+                                if token then
+                                  request_handle:headers():replace("x-gekko-handshake", token)
+                                end
+                              end
                       - name: envoy.filters.http.router
                         typed_config:
                           "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
@@ -98,9 +176,14 @@ data:
                           routes:
                             - match: { prefix: "/" }
                               route: { cluster: account_service_upstream }
-                        # client-credentialsサイドカー自身がKeycloakのトークンエンドポイントを
-                        # 叩く際の宛先。このルートだけext_authzを無効化しないと自己参照的に
-                        # ext_authzへ回されてしまう(ADR 0019/0020と同じ)。
+                        - name: analyst_attribute_service
+                          domains: ["analyst-attribute-service"]
+                          routes:
+                            - match: { prefix: "/" }
+                              route: { cluster: analyst_attribute_service_upstream }
+                        # egress-authサイドカー自身がKeycloakのトークンエンドポイントを叩く際の
+                        # 宛先。このルートだけext_authzを無効化しないと自己参照的にext_authzへ
+                        # 回されてしまう(ADR 0019/0020と同じ)。
                         - name: keycloak
                           domains: ["keycloak"]
                           routes:
@@ -117,7 +200,7 @@ data:
                           http_service:
                             server_uri:
                               uri: "http://127.0.0.1:9002"
-                              cluster: client_credentials_cluster
+                              cluster: egress_auth_cluster
                               timeout: 5s
                             authorization_request:
                               allowed_headers:
@@ -142,6 +225,63 @@ data:
                   - endpoint:
                       address:
                         socket_address: { address: 127.0.0.1, port_value: 9000 }
+        - name: keycloak_jwks
+          type: STRICT_DNS
+          lb_policy: ROUND_ROBIN
+          typed_extension_protocol_options:
+            envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+              "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+              explicit_http_config:
+                http2_protocol_options: {}
+          transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+              common_tls_context:
+                alpn_protocols: ["h2"]
+                tls_certificate_sds_secret_configs:
+                  - name: "default"
+                    sds_config:
+                      resource_api_version: V3
+                      api_config_source:
+                        api_type: GRPC
+                        transport_api_version: V3
+                        grpc_services:
+                          - envoy_grpc:
+                              cluster_name: spire_agent
+                combined_validation_context:
+                  default_validation_context:
+                    match_typed_subject_alt_names:
+                      - san_type: URI
+                        matcher:
+                          exact: "spiffe://gekko.internal/ns/gekko/sa/default/keycloak"
+                  validation_context_sds_secret_config:
+                    name: "ROOTCA"
+                    sds_config:
+                      resource_api_version: V3
+                      api_config_source:
+                        api_type: GRPC
+                        transport_api_version: V3
+                        grpc_services:
+                          - envoy_grpc:
+                              cluster_name: spire_agent
+          load_assignment:
+            cluster_name: keycloak_jwks
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address: { address: keycloak.gekko.svc.cluster.local, port_value: 8443 }
+        - name: spire_agent
+          connect_timeout: 0.25s
+          http2_protocol_options: {}
+          load_assignment:
+            cluster_name: spire_agent
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        pipe: { path: /run/spire/sockets/agent.sock }
         - name: account_service_upstream
           type: STRICT_DNS
           lb_policy: ROUND_ROBIN
@@ -189,21 +329,58 @@ data:
                   - endpoint:
                       address:
                         socket_address: { address: account-service.gekko.svc.cluster.local, port_value: 8080 }
-        - name: spire_agent
-          connect_timeout: 0.25s
-          http2_protocol_options: {}
+        - name: analyst_attribute_service_upstream
+          type: STRICT_DNS
+          lb_policy: ROUND_ROBIN
+          typed_extension_protocol_options:
+            envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+              "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+              explicit_http_config:
+                http2_protocol_options: {}
+          transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+              common_tls_context:
+                alpn_protocols: ["h2"]
+                tls_certificate_sds_secret_configs:
+                  - name: "default"
+                    sds_config:
+                      resource_api_version: V3
+                      api_config_source:
+                        api_type: GRPC
+                        transport_api_version: V3
+                        grpc_services:
+                          - envoy_grpc:
+                              cluster_name: spire_agent
+                combined_validation_context:
+                  default_validation_context:
+                    match_typed_subject_alt_names:
+                      - san_type: URI
+                        matcher:
+                          exact: "spiffe://gekko.internal/ns/gekko/sa/default/analyst-attribute-service"
+                  validation_context_sds_secret_config:
+                    name: "ROOTCA"
+                    sds_config:
+                      resource_api_version: V3
+                      api_config_source:
+                        api_type: GRPC
+                        transport_api_version: V3
+                        grpc_services:
+                          - envoy_grpc:
+                              cluster_name: spire_agent
           load_assignment:
-            cluster_name: spire_agent
+            cluster_name: analyst_attribute_service_upstream
             endpoints:
               - lb_endpoints:
                   - endpoint:
                       address:
-                        pipe: { path: /run/spire/sockets/agent.sock }
-        - name: client_credentials_cluster
+                        socket_address: { address: analyst-attribute-service.gekko.svc.cluster.local, port_value: 8080 }
+        - name: egress_auth_cluster
           type: STATIC
           lb_policy: ROUND_ROBIN
           load_assignment:
-            cluster_name: client_credentials_cluster
+            cluster_name: egress_auth_cluster
             endpoints:
               - lb_endpoints:
                   - endpoint:

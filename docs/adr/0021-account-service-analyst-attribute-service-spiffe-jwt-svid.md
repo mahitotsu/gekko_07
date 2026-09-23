@@ -1,6 +1,6 @@
 # ADR 0021: account-service→analyst-attribute-service(表3)をSPIFFE JWT-SVIDクライアント認証で実装する
 
-- **Status**: Accepted
+- **Status**: Partially superseded by [0042](0042-audit-service-senior-gate.md)（表3の呼び出し元をaccount-service単独からaccount-service・audit-serviceの2件へ拡張。「委任チェーンの終端」自体、AIエージェント経由経路が到達できないという制約は変わらず有効）
 - **Date**: 2026-09-17
 
 ## Context
@@ -13,7 +13,7 @@ ADR 0019(Token Exchange)・[ADR 0020](0020-fraud-detection-engine-identity-gap-a
 
 ### analyst-attribute-serviceを新規実装する(ingress側)
 
-`k8s/analyst-attribute-service/`に、account-service自身のingress Envoy設定(jwt_authn/rbac/合言葉、[ADR 0009](0009-envoy-ingress-responsibility-and-bypass-prevention.md))と同型のPod(initContainer＋app＋Envoy)を新設した。委任チェーンの終端(表3:account-serviceからのみ照会される)のため、account-serviceと異なりegressリスナー・hostAliasesは持たない。Keycloakには`clientAuthenticatorType`を指定しない標準クライアント(`analyst-attribute-service`)を作成した——このクライアントはKeycloakへ自分から認証済みリクエストを送ることが無く(audienceとして名指しされるだけ)、client_secretや`federated-jwt`属性はそもそも不要。
+`k8s/analyst-attribute-service/`に、account-service自身のingress Envoy設定(jwt_authn/rbac/合言葉、[ADR 0009](0009-envoy-ingress-responsibility-and-bypass-prevention.md))と同型のPod(initContainer＋app＋Envoy)を新設した。委任チェーンの終端(表3:account-serviceからのみ照会される〔[ADR 0042](0042-audit-service-senior-gate.md)で訂正：senior限定閲覧ゲート判定のためaudit-serviceも2件目の呼び出し元として追加〕)のため、account-serviceと異なりegressリスナー・hostAliasesは持たない。Keycloakには`clientAuthenticatorType`を指定しない標準クライアント(`analyst-attribute-service`)を作成した——このクライアントはKeycloakへ自分から認証済みリクエストを送ることが無く(audienceとして名指しされるだけ)、client_secretや`federated-jwt`属性はそもそも不要。
 
 ### account-serviceに新規Token Exchange実行主体を追加する(egress側)
 

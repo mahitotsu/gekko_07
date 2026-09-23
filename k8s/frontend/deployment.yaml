@@ -5,8 +5,8 @@
 # 構成は無変更(token-exchange側のロジックはADR 0031でROPC→Authorization Code+PKCEへ変更済み。
 # k8s/frontend/token-exchange-app-configmap.yaml参照)。
 #
-# hostAliasesで"account-service"・"fraud-agent"・"keycloak"を127.0.0.1へマッピングする
-# (ADR 0024のegressパターン、無変更)。
+# hostAliasesで"account-service"・"fraud-agent"・"audit-service"(ADR 0042で追加)・
+# "keycloak"を127.0.0.1へマッピングする(ADR 0024のegressパターン)。
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -26,7 +26,7 @@ spec:
     spec:
       hostAliases:
         - ip: "127.0.0.1"
-          hostnames: ["account-service", "fraud-agent", "keycloak"]
+          hostnames: ["account-service", "fraud-agent", "audit-service", "keycloak"]
       initContainers:
         # ADR 0009 §2③:Pod内合言葉。initContainerの完了がメインコンテナ起動前に保証されるため、
         # 「先に生成、後で両方が読む」がレースコンディションなく書ける。

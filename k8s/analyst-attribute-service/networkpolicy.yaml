@@ -1,7 +1,7 @@
-# ADR 0018。委任チェーンの終端(表3)のため、呼び出し元はaccount-serviceのみ許可する。
-# egressはKeycloakのJWKS取得(mTLS)と、自身のPostgresデータベース(ADR 0008・0026)のみ。
-# ADR 0028で自身のEnvoyサイドカー経由のmTLS接続に切り替えたため、宛先ポートはpostgresの
-# mTLS終端Envoy(6432)。
+# ADR 0018。委任チェーンの終端(表3)のため、呼び出し元はaccount-service・audit-service
+# (ADR 0040/0041/0042で追加)のみ許可する。egressはKeycloakのJWKS取得(mTLS)と、自身の
+# Postgresデータベース(ADR 0008・0026)のみ。ADR 0028で自身のEnvoyサイドカー経由のmTLS接続に
+# 切り替えたため、宛先ポートはpostgresのmTLS終端Envoy(6432)。
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -19,6 +19,9 @@ spec:
         - podSelector:
             matchLabels:
               app: account-service
+        - podSelector:
+            matchLabels:
+              app: audit-service
       ports:
         - protocol: TCP
           port: 8080

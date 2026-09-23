@@ -165,6 +165,12 @@ data:
                             # frontendルートと同じ理由)。
                             - match: { prefix: "/" }
                               route: { cluster: fraud_agent_upstream, timeout: 0s, idle_timeout: 300s }
+                        # ADR 0042: 監査結果の閲覧(senior限定、判定はaudit-service側)。
+                        - name: audit_service
+                          domains: ["audit-service"]
+                          routes:
+                            - match: { prefix: "/" }
+                              route: { cluster: audit_service_upstream }
                         # token-exchangeサイドカー自身がKeycloakのトークンエンドポイントを叩く際の
                         # 宛先(ログインのROPCも含む)。http_filtersはリスナー全体に適用されるため、
                         # このルートだけext_authzを無効化しないと、サイドカー自身のKeycloak宛て
@@ -321,6 +327,55 @@ data:
                   - endpoint:
                       address:
                         socket_address: { address: fraud-agent.gekko.svc.cluster.local, port_value: 8080 }
+        # egressリスナーのアップストリーム(audit-service向け、ADR 0042でSAN許可リストに
+        # frontendが先回りして登録済み)。
+        - name: audit_service_upstream
+          type: STRICT_DNS
+          lb_policy: ROUND_ROBIN
+          typed_extension_protocol_options:
+            envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+              "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+              explicit_http_config:
+                http2_protocol_options: {}
+          transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+              common_tls_context:
+                alpn_protocols: ["h2"]
+                tls_certificate_sds_secret_configs:
+                  - name: "default"
+                    sds_config:
+                      resource_api_version: V3
+                      api_config_source:
+                        api_type: GRPC
+                        transport_api_version: V3
+                        grpc_services:
+                          - envoy_grpc:
+                              cluster_name: spire_agent
+                combined_validation_context:
+                  default_validation_context:
+                    match_typed_subject_alt_names:
+                      - san_type: URI
+                        matcher:
+                          exact: "spiffe://gekko.internal/ns/gekko/sa/default/audit-service"
+                  validation_context_sds_secret_config:
+                    name: "ROOTCA"
+                    sds_config:
+                      resource_api_version: V3
+                      api_config_source:
+                        api_type: GRPC
+                        transport_api_version: V3
+                        grpc_services:
+                          - envoy_grpc:
+                              cluster_name: spire_agent
+          load_assignment:
+            cluster_name: audit_service_upstream
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address: { address: audit-service.gekko.svc.cluster.local, port_value: 8080 }
         # token-exchangeサイドカー(同一Pod、loopback)。app_upstreamと同じ信頼境界のため
         # plaintextでよい(mTLS不要。ADR 0019と同じ考え方)。
         - name: token_exchange_cluster

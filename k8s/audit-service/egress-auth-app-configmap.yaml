@@ -1,11 +1,20 @@
-# audit-service自身のPod内でclient_credentialsトークン取得を実行するサイドカー
-# (ADR 0020のfraud-detection-engineと同じパターンをそのまま流用。ADR 0040/0041)。
-# CLIENT_ID・FIXED_SCOPEのみがfraud-detection-engineと異なる
-# (k8s/fraud-detection-engine/client-credentials-app-configmap.yaml参照)。
+# audit-service自身のPod内でegress認証を実行するサイドカー(ADR 0040/0041/0042)。
+#
+# audit-serviceは2種類の異なるegressホップを持つ唯一のサービスである:
+#   - account-service向け: client_credentials(機械間認証、委任なし。scope=account:audit)
+#   - analyst-attribute-service向け: Token Exchange(frontendから委任されたsenior analyst本人の
+#     トークンをsubject_tokenに転送。scope=analyst:read。senior限定閲覧ゲートの判定に使う)
+#
+# EnvoyのExtAuthzPerRouteはdisabled/context_extensionsのみを上書き可能で、ext_authzの接続先
+# (http_service.server_uri)自体はリスナー単位で1つに固定される(ルートごとに別サーバーへ
+# 向けることはできない)。そのため、宛先ごとに別サイドカーへ分けるのではなく、単一のサイドカーが
+# ext_authzのCheckRequestに自動転送されるHostヘッダーを見て、grant_typeを内部で出し分ける
+# (fraud-detection-engine(ADR 0020、client_credentials単体)・account-service(表3、
+# Token Exchange単体)の2パターンを1コンテナに統合した形)。
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: audit-service-client-credentials-app
+  name: audit-service-egress-auth-app
   namespace: gekko
 data:
   app.py: |
@@ -26,7 +35,10 @@ data:
         "http://keycloak/realms/gekko/protocol/openid-connect/token",
     )
     CLIENT_ID = os.environ.get("CLIENT_ID", "audit-service")
-    FIXED_SCOPE = os.environ.get("FIXED_SCOPE", "account:audit")
+    ACCOUNT_SERVICE_HOST = os.environ.get("ACCOUNT_SERVICE_HOST", "account-service")
+    ACCOUNT_SERVICE_SCOPE = os.environ.get("ACCOUNT_SERVICE_SCOPE", "account:audit")
+    ANALYST_ATTRIBUTE_SERVICE_HOST = os.environ.get("ANALYST_ATTRIBUTE_SERVICE_HOST", "analyst-attribute-service")
+    ANALYST_ATTRIBUTE_SERVICE_SCOPE = os.environ.get("ANALYST_ATTRIBUTE_SERVICE_SCOPE", "analyst:read")
     # JWT-SVIDのaudクレームに求める値。KeycloakのSPIFFE federated-jwt認証はaud/iss検証ではなく
     # sub(SPIFFE ID)とKeycloakクライアント属性jwt.credential.subの一致だけを見る(実機確認済み。
     # k8s/fraud-mcp-server/token-exchange-app-configmap.yaml参照)。
@@ -71,7 +83,6 @@ data:
 
 
     def get_client_credentials_token(scope):
-        # 取得したKeycloakアクセストークン自体のキャッシュ(JWT-SVIDのキャッシュとは別レイヤー)。
         now = time.monotonic()
         if _cc_token_cache["token"] and now < _cc_token_cache["expires_at"]:
             return _cc_token_cache["token"]
@@ -94,6 +105,28 @@ data:
         return _cc_token_cache["token"]
 
 
+    def exchange_token(subject_token, audience, scope):
+        # account-serviceのtoken-exchange-app-configmap.yamlと同型。トークン自体はキャッシュしない
+        # (subject_tokenが呼び出しごとに異なる、委任元本人のトークンのため)。
+        data = urllib.parse.urlencode(
+            {
+                "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+                "client_id": CLIENT_ID,
+                "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-spiffe",
+                "client_assertion": fetch_jwt_svid(),
+                "subject_token": subject_token,
+                "subject_token_type": "urn:ietf:params:oauth:token-type:access_token",
+                "audience": audience,
+                "scope": scope,
+            }
+        ).encode()
+        req = urllib.request.Request(
+            TOKEN_URL, data=data, headers={"Content-Type": "application/x-www-form-urlencoded"}
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read())["access_token"]
+
+
     class Handler(http.server.BaseHTTPRequestHandler):
         def deny(self, code, msg):
             print(f"DENY {code}: {msg}", file=sys.stderr, flush=True)
@@ -101,9 +134,6 @@ data:
             self.end_headers()
 
         def do_check(self):
-            # 呼び出し元(audit-service自身)は委任チェーン外のためsubject_tokenを持たず、
-            # Authorizationヘッダーはそもそも送られてこない(fraud-detection-engineと同じ
-            # 機械間認証パターン。ADR 0020)。
             host = self.headers.get("Host")
             method = self.headers.get("Method") or self.command
             path = self.headers.get("Path") or self.path
@@ -111,18 +141,35 @@ data:
             if not host:
                 self.deny(400, "missing host")
                 return
+
             try:
-                token = get_client_credentials_token(FIXED_SCOPE)
+                if host == ACCOUNT_SERVICE_HOST:
+                    # 機械間認証。呼び出し元(audit-service自身)は委任チェーン外のため
+                    # subject_tokenを持たない(fraud-detection-engineと同じパターン。ADR 0020)。
+                    new_token = get_client_credentials_token(ACCOUNT_SERVICE_SCOPE)
+                elif host == ANALYST_ATTRIBUTE_SERVICE_HOST:
+                    # senior限定閲覧ゲートの判定。frontendから委任されたsenior analyst本人の
+                    # トークンをsubject_tokenに転送する(account-service→analyst-attribute-service
+                    # と同じパターン。表3)。
+                    auth = self.headers.get("Authorization")
+                    if not auth or not auth.startswith("Bearer "):
+                        self.deny(400, "missing authorization for delegated hop")
+                        return
+                    subject_token = auth[len("Bearer ") :]
+                    new_token = exchange_token(subject_token, host, ANALYST_ATTRIBUTE_SERVICE_SCOPE)
+                else:
+                    self.deny(400, f"unexpected host {host!r}")
+                    return
             except urllib.error.HTTPError as e:
-                self.deny(403, f"client_credentials rejected: {e.code} {e.read()!r}")
+                self.deny(403, f"auth rejected: {e.code} {e.read()!r}")
                 return
             except Exception as e:  # noqa: BLE001 - 最小限のサイドカーなので広く捕捉してfail closeする
-                self.deny(403, f"client_credentials failed: {e!r}")
+                self.deny(403, f"auth failed: {e!r}")
                 return
 
-            print(f"ALLOW(client_credentials) {method} {path} aud={host} scope={FIXED_SCOPE}", flush=True)
+            print(f"ALLOW {method} {path} aud={host}", flush=True)
             self.send_response(200)
-            self.send_header("Authorization", f"Bearer {token}")
+            self.send_header("Authorization", f"Bearer {new_token}")
             self.end_headers()
 
         do_GET = do_check
@@ -140,5 +187,5 @@ data:
 
     if __name__ == "__main__":
         srv = Server((LISTEN_HOST, LISTEN_PORT), Handler)
-        print(f"client-credentials sidecar listening on {LISTEN_HOST}:{LISTEN_PORT}", flush=True)
+        print(f"egress-auth sidecar listening on {LISTEN_HOST}:{LISTEN_PORT}", flush=True)
         srv.serve_forever()

@@ -1,4 +1,4 @@
-// audit-serviceの本実装(ADR 0007:Go標準ライブラリ。ADR 0040/0041)。
+// audit-serviceの本実装(ADR 0007:Go標準ライブラリ。ADR 0040/0041/0042)。
 //
 // account-service自身の自己申告(unfreeze_proposals.decided_*/unfreeze_executions.executed_*、
 // /auditの読み取り専用API)と、Keycloakのイベントログ(第三者記録、account-serviceの外側で
@@ -8,11 +8,11 @@
 //
 // ステートレス(ADR 0040):自身の永続ストアは持たず、呼び出しの都度2系統を取得して突合するのみ。
 //
-// ADR 0009 §2の多層防御のうち①②(loopback限定bind・接続元loopbackチェック)のみ引き継ぐ。
-// ③(合言葉ヘッダー)は、このサービスのEnvoy ingressにjwt_authn/rbacを一切持たせていない
-// (ADR 0040/0041:誰が結果を閲覧できるかは未決定の将来課題。今回はkubectl port-forwardでの
-// 到達のみを前提にする、Grafanaと同じ位置づけ)ため、"rbac通過後にのみ付与"という③の前提自体が
-// 成立しない(検知すべきバイパス対象が無い)。jwt_authn/rbacを追加する際に③も追加する。
+// ADR 0042:突合結果を閲覧できるのはsenior analystのみ(表5とは別の軸のゲート。口座ごとの
+// 地域/ティア制限は適用しない単純な二値判定)。frontendから委任されたトークン(scope=audit:read)
+// のsub(x-auth-sub)を使い、analyst-attribute-serviceへ照会してlevelを確認する。ADR 0009 §2の
+// 多層防御①②③(loopback限定bind・接続元loopbackチェック・合言葉ヘッダー)を他サービスと同じ形で
+// 引き継ぐ(jwt_authn/rbacが実在するようになったため、③の前提=rbac通過後にのみ付与、が成立する)。
 package main
 
 import (
@@ -26,6 +26,7 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -33,6 +34,7 @@ const defaultWindow = 24 * time.Hour
 
 func main() {
 	accountServiceURL := getenv("ACCOUNT_SERVICE_URL", "http://account-service")
+	analystAttributeServiceURL := getenv("ANALYST_ATTRIBUTE_SERVICE_URL", "http://analyst-attribute-service")
 	lokiURL := getenv("LOKI_URL", "http://otel-lgtm.observability.svc.cluster.local:3100")
 	tolerance := durationSecondsEnv("TOLERANCE_SECONDS", 60)
 
@@ -42,14 +44,20 @@ func main() {
 		lokiURL:           lokiURL,
 		tolerance:         tolerance,
 	}
+	gate := &seniorGate{
+		httpClient:                 &http.Client{Timeout: 5 * time.Second},
+		analystAttributeServiceURL: analystAttributeServiceURL,
+	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /reconcile", rec.handleReconcile)
+	mux.HandleFunc("GET /reconcile", gate.requireSenior(rec.handleReconcile))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := withLoopbackCheck(mux)
+	handshakeFile := getenv("HANDSHAKE_TOKEN_FILE", "/handshake/token")
+	handshakeHeader := getenv("HANDSHAKE_HEADER_NAME", "x-gekko-handshake")
+	handler := withHandshakeCheck(handshakeFile, handshakeHeader, withLoopbackCheck(mux))
 
 	bindHost := getenv("APP_BIND_HOST", "127.0.0.1")
 	bindPort := getenv("APP_PORT", "9000")
@@ -60,9 +68,63 @@ func main() {
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-	log.Printf("audit-service listening on %s (account-service=%s loki=%s tolerance=%s)",
-		addr, accountServiceURL, lokiURL, tolerance)
+	log.Printf("audit-service listening on %s (account-service=%s analyst-attribute-service=%s loki=%s tolerance=%s)",
+		addr, accountServiceURL, analystAttributeServiceURL, lokiURL, tolerance)
 	log.Fatal(srv.ListenAndServe())
+}
+
+// --- senior限定閲覧ゲート(ADR 0042) ---
+
+type analystAttributes struct {
+	Level string `json:"level"`
+}
+
+type seniorGate struct {
+	httpClient                 *http.Client
+	analystAttributeServiceURL string
+}
+
+// requireSenior: x-auth-sub(jwt_authnがingressで注入済み)とAuthorizationヘッダーを使い、
+// analyst-attribute-serviceへ照会してlevel=seniorであることを確認する。表5のABAC判定とは
+// 独立な、単純な二値ゲート(地域/ティアによる絞り込みは行わない)。
+func (g *seniorGate) requireSenior(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		sub := r.Header.Get("x-auth-sub")
+		authorization := r.Header.Get("Authorization")
+		if sub == "" || authorization == "" {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+
+		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet,
+			g.analystAttributeServiceURL+"/analysts/"+sub, nil)
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		req.Header.Set("x-auth-sub", sub)
+		req.Header.Set("Authorization", authorization)
+
+		resp, err := g.httpClient.Do(req)
+		if err != nil {
+			log.Printf("analyst-attribute-service lookup failed: %v", err)
+			http.Error(w, "bad gateway", http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		var attrs analystAttributes
+		if err := json.NewDecoder(resp.Body).Decode(&attrs); err != nil || attrs.Level != "senior" {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+
+		next(w, r)
+	}
 }
 
 // --- 自己申告(account-service)のDTO。フィールド名はUnfreezeProposal/UnfreezeExecution
@@ -337,6 +399,20 @@ func withLoopbackCheck(next http.Handler) http.Handler {
 func isLoopback(host string) bool {
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// ADR 0009 §2③と同じ考え方:rbac通過後にのみEnvoyのLuaフィルタが合言葉ヘッダーを付与する。
+// 欠落・不一致はどちらも同じfail closeとして扱い、検証をバイパスするフラグは持たない(CWE-489)。
+func withHandshakeCheck(handshakeFile, headerName string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		expected, err := os.ReadFile(handshakeFile)
+		got := r.Header.Get(headerName)
+		if err != nil || got == "" || strings.TrimSpace(string(expected)) != got {
+			http.Error(w, "handshake verification failed", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

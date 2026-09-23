@@ -61,6 +61,8 @@ data:
         ("account-service", re.compile(r"^/accounts/[^/]+/(unfreeze|unfreeze-proposals/[^/]+/(approve|reject))$"), "POST", "account:unfreeze"),
         ("account-service", re.compile(r"^/accounts/[^/]+(/.*)?$"), "GET", "account:read"),
         ("fraud-agent", re.compile(r"^/chat$"), "POST", "account:read"),
+        # ADR 0042: 監査結果の閲覧(senior限定。判定自体はaudit-service側で行う)。
+        ("audit-service", re.compile(r"^/reconcile$"), "GET", "audit:read"),
     ]
 
 

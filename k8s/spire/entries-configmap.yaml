@@ -125,12 +125,12 @@ data:
       -selector k8s:pod-label:app:audit-service \
       -selector k8s:container-name:envoy
 
-    # ADR 0040/0041: client_credentialsトークン取得実行主体(client-credentialsサイドカー)も
-    # 同じSPIFFE IDで動く必要がある(JWT-SVID取得のため。fraud-detection-engine(ADR 0020)と
-    # 同じ理由)。
-    echo "==> audit-service entry (client-credentials container only)"
+    # ADR 0040/0041/0042: egress認証(client_credentials/Token Exchangeを1コンテナに統合した
+    # egress-authサイドカー)実行主体も同じSPIFFE IDで動く必要がある(JWT-SVID取得のため。
+    # fraud-detection-engine(ADR 0020)と同じ理由)。
+    echo "==> audit-service entry (egress-auth container only)"
     create_if_missing_by_selectors "spiffe://${TRUST_DOMAIN}/ns/gekko/sa/default/audit-service" \
-      k8s:ns:gekko k8s:sa:default k8s:pod-label:app:audit-service k8s:container-name:client-credentials
+      k8s:ns:gekko k8s:sa:default k8s:pod-label:app:audit-service k8s:container-name:egress-auth
 
     echo "==> keycloak entry (envoy container only)"
     create_if_missing "spiffe://${TRUST_DOMAIN}/ns/gekko/sa/default/keycloak" \
