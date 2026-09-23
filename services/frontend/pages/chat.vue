@@ -46,7 +46,6 @@ interface ProposalHint {
   toolCallId: string | null;
   accountId: string;
   proposalId: string;
-  reasoning: string | null;
   status: "pending" | "approved" | "rejected";
   // AIの精査結論("unfreeze"=解除推奨/"keep_frozen"=根拠なし)。statusとは独立した軸(ADR 0039)。
   recommendation: "unfreeze" | "keep_frozen";
@@ -126,14 +125,13 @@ function handleAgUiEvent(event: any) {
         try {
           const parsed = JSON.parse(event.content);
           if (parsed.proposalId && parsed.accountId) {
-            // reasoningはこの応答に含まれない(account-serviceのProposalViewはid/accountId/statusの
-            // み)。AIの根拠説明は直前のテキストメッセージとして既にmessagesに表示されているため、
-            // ここでは複製しない。
+            // AIの根拠説明は直前のテキストメッセージとして既にmessagesに表示されているため、
+            // ここでは複製しない(ADR 0039の提案時も同様に、復元時のみmessagesへ合成する。
+            // 下記onMounted参照)。
             proposals.value.push({
               toolCallId: event.toolCallId,
               accountId: parsed.accountId,
               proposalId: parsed.proposalId,
-              reasoning: null,
               status: parsed.status === "approved" || parsed.status === "rejected" ? parsed.status : "pending",
               recommendation: parsed.recommendation === "keep_frozen" ? "keep_frozen" : recommendation,
               executed: false,
@@ -301,11 +299,22 @@ onMounted(async () => {
       !isClosedOutNoUnfreeze &&
       (account.proposalStatus === "pending" || account.proposalStatus === "approved")
     ) {
+      // 実チャット中はAIの根拠説明がTEXT_MESSAGE_*イベント経由でmessagesに積まれていく(上記
+      // handleAgUiEvent参照)。復元時はそのイベント列が存在しないため、保存済みreasoningを
+      // 同じ形の合成assistantメッセージとしてmessagesに追加し、実チャットと同じ吹き出し
+      // (.message.assistant)で表示する(プレーンテキストの専用行を別途持たせない)。
+      if (account.proposalReasoning) {
+        messages.value.push({
+          id: `restored-${account.proposalId}`,
+          role: "assistant",
+          text: account.proposalReasoning,
+          done: true,
+        });
+      }
       proposals.value.push({
         toolCallId: null,
         accountId: account.id,
         proposalId: account.proposalId,
-        reasoning: account.proposalReasoning,
         status: account.proposalStatus,
         recommendation: account.proposalRecommendation ?? "unfreeze",
         executed: false,
@@ -344,7 +353,6 @@ onMounted(async () => {
     <div v-for="p in proposals" :key="p.toolCallId ?? p.proposalId" class="proposal">
       <span>
         口座 {{ p.accountId }} の{{ p.recommendation === "keep_frozen" ? "精査結果(提案ID" : "凍結解除案(提案ID" }}: {{ p.proposalId }})
-        <span v-if="p.reasoning">: <span class="assistant-text" v-html="renderMarkdown(p.reasoning)" /></span>
       </span>
       <template v-if="p.recommendation === 'keep_frozen'">
         <!-- AIが「根拠なし」と結論したケース(ADR 0039)。凍結解除の承認/却下ではないため、
