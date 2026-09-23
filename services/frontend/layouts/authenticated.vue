@@ -15,7 +15,6 @@ const { data: me } = await useFetch<{ username: string }>("/me", { server: false
     <header class="topbar">
       <nav>
         <NuxtLink to="/dashboard">ダッシュボード</NuxtLink>
-        <NuxtLink to="/chat">AIアシスタント</NuxtLink>
       </nav>
       <div class="session">
         <span v-if="me">{{ me.username }} としてログイン中</span>

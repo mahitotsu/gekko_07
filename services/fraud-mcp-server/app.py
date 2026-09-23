@@ -73,9 +73,23 @@ async def get_account_history(account_id: str) -> Any:
 
 @mcp.tool()
 async def propose_unfreeze(account_id: str, reasoning: str = "") -> Any:
-    """指定口座の凍結解除案を記録する(account:propose)。"""
+    """精査の結論として指定口座の凍結解除を推奨する場合に呼ぶ(account:propose)。"""
     return await _call_account_service(
-        "POST", f"/accounts/{account_id}/unfreeze-proposals", json_body={"reasoning": reasoning}
+        "POST",
+        f"/accounts/{account_id}/unfreeze-proposals",
+        json_body={"reasoning": reasoning, "recommendation": "unfreeze"},
+    )
+
+
+@mcp.tool()
+async def conclude_no_unfreeze(account_id: str, reasoning: str = "") -> Any:
+    """精査の結論として指定口座の凍結解除に根拠がないと判断した場合に呼ぶ(account:propose、ADR 0039)。
+    凍結を維持するという結論自体も、propose_unfreezeと同様に依頼したアナリスト本人の確認を経て確定する。
+    """
+    return await _call_account_service(
+        "POST",
+        f"/accounts/{account_id}/unfreeze-proposals",
+        json_body={"reasoning": reasoning, "recommendation": "keep_frozen"},
     )
 
 

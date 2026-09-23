@@ -1,6 +1,6 @@
 # ADR 0030: fraud-agentを本実装し、Anthropic API向けに初めてのクラスタ外egressを設ける
 
-- **Status**: Accepted
+- **Status**: Partially superseded by [0037](0037-fraud-agent-anthropic-stream-retry.md)（アダプタ実行失敗時に無条件で`RUN_ERROR`を返す部分を、ターン単位の1回自動リトライに置き換え）・[0038](0038-fraud-agent-anthropic-route-timeout.md)（`anthropic_gateway`ルートに抜けていた`timeout: 0s`/`idle_timeout: 300s`を追加）。Anthropicへのegress構成（別名・TLS終端・`retry_policy`）自体は有効なまま
 - **Date**: 2026-09-19
 
 ## Context
@@ -25,7 +25,7 @@ fraud-mcp-server（Python/FastMCP、ADR 0029）と同型の構成（単一ファ
 - 公式アダプタ`ClaudeAgentAdapter`（`@ag-ui/claude-agent-sdk`）が内部で`query()`のライフサイクル・メッセージ→AG-UIイベント変換を管理する。**リクエストごとに新しい`ClaudeAgentAdapter`インスタンスを作る**（アダプタの設定はコンストラクタ時点で固定されるため、分析対象アナリストが変わるたびに異なる委任トークンを`mcpServers`へ渡す必要がある本リポジトリの要件には、インスタンスを使い回すAPIが用意されていない。1リクエスト1インスタンスは無駄だが状態を持たないため安全）。
 - 受信した`Authorization`ヘッダーをそのまま`mcpServers.fraud_mcp_server.headers.Authorization`（`type: "http"`, `url: "http://fraud-mcp-server/mcp"`）へ渡す。`McpHttpServerConfig`はアダプタ生成のたびに設定できることを実機で確認した。egressのtoken-exchangeサイドカー（ADR 0023）がこれをsubject_tokenとして扱う。アプリ本体はToken Exchangeを一切意識しない（fraud-mcp-serverの`_delegated_authorization`と同じ設計）。
 - アダプタの設定は`tools: []`（組み込みツールを全て無効化）・`allowedTools`にfraud-mcp-serverが公開する3ツール名（`mcp__fraud_mcp_server__get_frozen_accounts`等）のみを明示・`permissionMode: "dontAsk"`（許可リスト外のツール呼び出しは確認無しで拒否）とし、SDKレベルでも「読み取り・提案のみ」に構造的に絞った（architecture.md表2のスコープ設計と同じ意図の多層防御。SDK側の制約が破られてもToken Exchangeのスコープ側で`account:unfreeze`は取得できない）。
-- アダプタ内部のエラーはAG-UIの`RUN_ERROR`イベントとしてストリームに乗って返ってくる（詳細を漏らさない一律のメッセージ。account-service/fraud-mcp-serverと同じfail-close方針）ため、アプリ側で追加の変換は不要。Observable自体が予期せずエラーになった場合（アダプタのバグ等）のみ、保険として自前で`RUN_ERROR`を書いてから接続を閉じる。
+- アダプタ内部のエラーはAG-UIの`RUN_ERROR`イベントとしてストリームに乗って返ってくる（詳細を漏らさない一律のメッセージ。account-service/fraud-mcp-serverと同じfail-close方針）ため、アプリ側で追加の変換は不要。Observable自体が予期せずエラーになった場合（アダプタのバグ等）のみ、保険として自前で`RUN_ERROR`を書いてから接続を閉じる。〔[ADR 0037](0037-fraud-agent-anthropic-stream-retry.md)で追加：Anthropic応答ストリーミング中の切断についてはRUN_ERRORの前にターン単位で1回だけ自動リトライするようになった〕
 - `CLAUDE_CODE_OAUTH_TOKEN`（`claude setup-token`で取得したOAuthトークン、`sk-ant-oat01-...`、有効期限1年）はSDKが`process.env`から自動的に読む。アプリコードはこの環境変数を明示的に扱わない。
 
 ### `services/fraud-agent/Dockerfile`
@@ -61,7 +61,7 @@ Claude Agent SDK本体が呼ぶAnthropic API（`api.anthropic.com`）は、Keycl
 `/chat`はLLM呼び出しを含むため実行時間が本質的に不定長であり、リクエスト開始から完了までの総時間に上限を課す固定`timeout`とは相性が悪い。実機検証で以下を確認した。
 
 - 当初、既定の15秒（Envoyのルートタイムアウト既定値）から120秒へ緩めたが、それでも実機で`upstream connect error or disconnect/reset before headers`（Envoy側が先に接続を切る）が発生する事例があった。固定タイムアウトは「今回はたまたま収まる値」を推測するゲームにしかならず、本質的な解決にならない。
-- 対応：`/chat`が通る全ホップ（edge-proxy→frontend、frontend→fraud-agent、fraud-agent自身のingress）のEnvoyルートを`timeout: 0s`（総時間の上限を無効化）＋`idle_timeout: 300s`（無活動時間の上限。SSEイベントが実際に流れている限りリセットされる）に変更した。AG-UIイベントが継続的に流れる限りタイムアウトせず、本当にハングした場合のみ5分でカットされる。
+- 対応：`/chat`が通る全ホップ（edge-proxy→frontend、frontend→fraud-agent、fraud-agent自身のingress）のEnvoyルートを`timeout: 0s`（総時間の上限を無効化）＋`idle_timeout: 300s`（無活動時間の上限。SSEイベントが実際に流れている限りリセットされる）に変更した。AG-UIイベントが継続的に流れる限りタイムアウトせず、本当にハングした場合のみ5分でカットされる。〔[ADR 0038](0038-fraud-agent-anthropic-route-timeout.md)で訂正：この一覧にfraud-agent→Anthropic（egress、`anthropic_gateway`ルート）自身が抜けており、既定の15秒route timeoutのままだった〕
 
 frontend-stub（`k8s/frontend/app-configmap.yaml`）も、fraud-agentからの応答を`urllib.request.urlopen().read()`で全部読み切ってから返す従来の`forward()`ではなく、`resp.readline()`で1行ずつ即座に中継する`stream_forward()`を`/chat`専用に新設した。バッファ方式のままだと、fraud-agentの処理が終わるまでedge-proxy⇔frontend間の接続が完全に無活動になり、上記のidle_timeout設計の恩恵を受けられない（frontendがEnvoyから見て「詰まっている」ように見えてしまう）ため。
 

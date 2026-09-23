@@ -2,15 +2,16 @@
 
 本ディレクトリは、設計判断1件ごとの根拠・選択経緯を記録する。[architecture.md](../architecture.md) は現在有効な設計断面のみを記載し、個々の判断の根拠はここに委譲する。
 
-決定が覆った場合は、旧ADRのStatusを`Superseded by NNNN`に更新し、新しいADRを追加する。36件のうち24件は今も覆っていないAccepted——後続ADRによる修正は「シナリオ選定（凍結解除の確定操作の精緻化）」「Token Exchangeの実行主体・宛先指定」「身元検証（mTLS/SPIFFE/SPIRE）」「frontendの本実装内での段階的置き換え」の4テーマに偏っており、乱発しているわけではない。以下はテーマ別の索引。同じテーマのADRを続けて読むと、1つの関心事がどう変遷したかを追いやすい。
+決定が覆った場合は、旧ADRのStatusを`Superseded by NNNN`に更新し、新しいADRを追加する。39件のうち25件は今も覆っていないAccepted——後続ADRによる修正は「シナリオ選定（凍結解除の確定操作の精緻化）」「Token Exchangeの実行主体・宛先指定」「身元検証（mTLS/SPIFFE/SPIRE）」「frontendの本実装内での段階的置き換え」「fraud-agentの実装詳細（Anthropic呼び出し失敗時の挙動）」の5テーマに偏っており、乱発しているわけではない。以下はテーマ別の索引。同じテーマのADRを続けて読むと、1つの関心事がどう変遷したかを追いやすい。
 
 ## シナリオ選定
 
 | # | タイトル | Status |
 |---|---|---|
 | [0001](0001-scenario-fraud-detection-with-agent-assist.md) | シナリオにAIエージェント支援付き金融不正検知・口座凍結を採用 | Superseded by 0011 |
-| [0011](0011-scenario-ai-assisted-unfreeze.md) | シナリオを「AI支援による口座凍結解除」に変更（凍結は自動検知エンジンが実行） | Partially superseded by 0036 |
-| [0036](0036-unfreeze-proposal-approval-step.md) | 凍結解除提案に承認/却下の状態遷移を導入し、確定操作を精緻化 | Accepted |
+| [0011](0011-scenario-ai-assisted-unfreeze.md) | シナリオを「AI支援による口座凍結解除」に変更（凍結は自動検知エンジンが実行） | Partially superseded by 0036・0039 |
+| [0036](0036-unfreeze-proposal-approval-step.md) | 凍結解除提案に承認/却下の状態遷移を導入し、確定操作を精緻化 | Partially superseded by 0039 |
+| [0039](0039-unfreeze-recommendation-axis.md) | 凍結解除提案に「AIの結論」軸を追加し、根拠なしという結論も記録・確認の対象にする | Accepted |
 
 ## Token Exchangeの実装方式（サイドカー集約・トークン設計原則）
 
@@ -76,8 +77,10 @@
 | [0026](0026-account-service-analyst-attribute-service-implementation.md) | account-service・analyst-attribute-serviceを本実装し、ビルド・配布パイプラインを新設する | Partially superseded by 0027 |
 | [0027](0027-fraud-detection-engine-implementation.md) | fraud-detection-engineを本実装し、デモ用凍結データの発生源をaccount-serviceのシードから切り替える | Accepted |
 | [0029](0029-fraud-mcp-server-implementation.md) | fraud-mcp-serverを本実装し、account-serviceの読み取り・提案系機能をMCPツールとして公開する | Accepted |
-| [0030](0030-fraud-agent-implementation.md) | fraud-agentを本実装し、Anthropic API向けに初めてのクラスタ外egressを設ける | Accepted |
+| [0030](0030-fraud-agent-implementation.md) | fraud-agentを本実装し、Anthropic API向けに初めてのクラスタ外egressを設ける | Partially superseded by 0037・0038 |
 | [0031](0031-frontend-implementation.md) | frontendを本実装し、簡易ログイン(ROPC)を本物のAuthorization Code + PKCEへ置き換える | Partially superseded by 0032 |
 | [0032](0032-frontend-oidc-callback-form-post.md) | frontendのOIDCコールバックをresponse_mode=form_postへ変更し、認可コード・stateのURL露出を無くす | Partially superseded by 0033 |
 | [0033](0033-frontend-logout-post.md) | frontendのログアウト(end_session_endpoint)へのid_token_hint送信をPOSTに変更する | Accepted |
 | [0034](0034-frontend-display-username-instead-of-sub.md) | ログイン表示をKeycloakのsub(UUID)からpreferred_username(ログインに使った文字列)に変更する | Accepted |
+| [0037](0037-fraud-agent-anthropic-stream-retry.md) | fraud-agentがAnthropic応答ストリーミング中の切断を検知し、ターン単位で1回自動リトライする | Accepted |
+| [0038](0038-fraud-agent-anthropic-route-timeout.md) | fraud-agent→Anthropic egressルートにtimeout: 0s / idle_timeout: 300sを設定する | Accepted |

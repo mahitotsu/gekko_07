@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import MarkdownIt from "markdown-it";
+
 // UC1手順2〜11のfrontend側入口。POST /chat(fraud-agentへプロキシ、ADR 0030のAG-UI SSE
 // イベントストリーム)を最小限のクライアント側パーサで読み、アシスタントのテキストを逐次
 // 表示する。propose_unfreezeのTOOL_CALL_RESULTを検出したら、対象口座・提案IDでその場から
@@ -9,13 +11,36 @@
 // AG-UIプロトコルの型・SSEフレーミングは公式SDK(@ag-ui/*)がサーバー側(services/fraud-agent)
 // で担っており、ここではその出力(`data: {...}\n\n`)をイベント種別だけ見て最小限に解釈する
 // 手書きパーサにとどめる(依存を増やさない・画面表示に必要な範囲に絞るため)。
+//
+// ツール呼び出し中・応答が確定するまでの間、画面が止まって見える(ハングと区別できない)問題への
+// 対応として、TOOL_CALL_START/RESULTとTEXT_MESSAGE_END/RUN_ERRORも使い、進捗を可視化する。
 definePageMeta({ layout: "authenticated" });
+
+const md = new MarkdownIt();
 
 interface ChatMessage {
   id: string;
-  role: "user" | "assistant";
+  // "tool"は口座情報の照会等、fraud-mcp-serverへのツール呼び出しの進捗を示す行(会話の
+  // ロールではないが、時系列上の見た目はメッセージと同じ吹き出しにする)。
+  role: "user" | "assistant" | "tool";
   text: string;
+  // assistant: TEXT_MESSAGE_END未到達(まだストリーミング中)ならfalse。tool: TOOL_CALL_RESULT
+  // 未到達(まだ実行中)ならfalse。userは常にtrue。
+  done: boolean;
 }
+
+const TOOL_LABELS: Record<string, string> = {
+  mcp__fraud_mcp_server__get_frozen_accounts: "凍結中口座を確認中…",
+  mcp__fraud_mcp_server__get_account_history: "取引履歴を照会中…",
+  mcp__fraud_mcp_server__propose_unfreeze: "解除案を検討中…",
+  mcp__fraud_mcp_server__conclude_no_unfreeze: "解除の根拠を検討中…",
+};
+
+// 精査結論を記録する2つのツール(ADR 0039)。どちらのTOOL_CALL_RESULTもproposalsへ集約する。
+const CONCLUSION_TOOL_RECOMMENDATION: Record<string, "unfreeze" | "keep_frozen"> = {
+  mcp__fraud_mcp_server__propose_unfreeze: "unfreeze",
+  mcp__fraud_mcp_server__conclude_no_unfreeze: "keep_frozen",
+};
 
 interface ProposalHint {
   toolCallId: string | null;
@@ -23,6 +48,8 @@ interface ProposalHint {
   proposalId: string;
   reasoning: string | null;
   status: "pending" | "approved" | "rejected";
+  // AIの精査結論("unfreeze"=解除推奨/"keep_frozen"=根拠なし)。statusとは独立した軸(ADR 0039)。
+  recommendation: "unfreeze" | "keep_frozen";
   executed: boolean;
   error: string | null;
 }
@@ -32,6 +59,7 @@ interface FrozenAccount {
   proposalId: string | null;
   proposalStatus: "pending" | "approved" | "rejected" | null;
   proposalReasoning: string | null;
+  proposalRecommendation: "unfreeze" | "keep_frozen" | null;
 }
 
 const route = useRoute();
@@ -48,10 +76,14 @@ const toolCallNames = new Map<string, string>();
 function ensureAssistantMessage(messageId: string): ChatMessage {
   let msg = messages.value.find((m) => m.id === messageId);
   if (!msg) {
-    msg = { id: messageId, role: "assistant", text: "" };
+    msg = { id: messageId, role: "assistant", text: "", done: false };
     messages.value.push(msg);
   }
   return msg;
+}
+
+function renderMarkdown(text: string): string {
+  return md.render(text);
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -65,14 +97,32 @@ function handleAgUiEvent(event: any) {
       msg.text += event.delta ?? "";
       break;
     }
+    case "TEXT_MESSAGE_END": {
+      const msg = messages.value.find((m) => m.id === event.messageId);
+      if (msg) {
+        msg.done = true;
+      }
+      break;
+    }
     case "TOOL_CALL_START":
       if (event.toolCallId && event.toolCallName) {
         toolCallNames.set(event.toolCallId, event.toolCallName);
+        messages.value.push({
+          id: event.toolCallId,
+          role: "tool",
+          text: TOOL_LABELS[event.toolCallName] ?? `${event.toolCallName}を実行中…`,
+          done: false,
+        });
       }
       break;
     case "TOOL_CALL_RESULT": {
+      const toolMsg = messages.value.find((m) => m.role === "tool" && m.id === event.toolCallId);
+      if (toolMsg) {
+        toolMsg.done = true;
+      }
       const name = toolCallNames.get(event.toolCallId);
-      if (name === "mcp__fraud_mcp_server__propose_unfreeze" && typeof event.content === "string") {
+      const recommendation = name ? CONCLUSION_TOOL_RECOMMENDATION[name] : undefined;
+      if (recommendation && typeof event.content === "string") {
         try {
           const parsed = JSON.parse(event.content);
           if (parsed.proposalId && parsed.accountId) {
@@ -85,6 +135,7 @@ function handleAgUiEvent(event: any) {
               proposalId: parsed.proposalId,
               reasoning: null,
               status: parsed.status === "approved" || parsed.status === "rejected" ? parsed.status : "pending",
+              recommendation: parsed.recommendation === "keep_frozen" ? "keep_frozen" : recommendation,
               executed: false,
               error: null,
             });
@@ -115,13 +166,18 @@ function handleFrame(frame: string) {
   }
 }
 
+// 異常終了時の「再試行」ボタン用に直近のユーザー発話(accountId起点の自動送信文面も含む)を
+// 保持する。
+const lastUserText = ref<string | null>(null);
+
 async function send(overrideText?: string) {
   const text = (overrideText ?? input.value).trim();
   if (!text || sending.value) {
     return;
   }
+  lastUserText.value = text;
   const userMessageId = crypto.randomUUID();
-  messages.value.push({ id: userMessageId, role: "user", text });
+  messages.value.push({ id: userMessageId, role: "user", text, done: true });
   input.value = "";
   sending.value = true;
   runError.value = null;
@@ -170,6 +226,12 @@ async function send(overrideText?: string) {
   }
 }
 
+function retry() {
+  if (lastUserText.value) {
+    void send(lastUserText.value);
+  }
+}
+
 async function decideProposal(proposal: ProposalHint, decision: "approve" | "reject") {
   proposal.error = null;
   try {
@@ -215,8 +277,11 @@ async function confirmUnfreeze(proposal: ProposalHint) {
 // dashboard.vueから`?accountId=`付きで遷移してきた場合の入口。既にpending/approvedの提案が
 // あれば(チャットへ戻ってきたケース)それを復元表示し、無ければ(未着手/rejected)精査を自動
 // で開始する(UC1手順2〜7相当。ボタン押下起点の構造化フロー)。
+// accountId無しでの直接アクセスは認めない(汎用の自由入力チャット入口を持たせず、凍結中
+// 口座の精査依頼からのみ起動できるようにするため)。
 onMounted(async () => {
   if (!accountId) {
+    await navigateTo("/dashboard");
     return;
   }
   try {
@@ -226,13 +291,23 @@ onMounted(async () => {
     }
     const accounts: FrozenAccount[] = await res.json();
     const account = accounts.find((a) => a.id === accountId);
-    if (account?.proposalId && (account.proposalStatus === "pending" || account.proposalStatus === "approved")) {
+    // 「解除の根拠なし」の結論が受理済み(approved)の場合は精査が完結しているため、ダッシュ
+    // ボードの「再度精査を依頼」から来た前提で新しい精査を自動開始する(下にフォールスルー)。
+    // それ以外のpending/approved(=解除推奨)は従来通り復元表示する。
+    const isClosedOutNoUnfreeze =
+      account?.proposalStatus === "approved" && account.proposalRecommendation === "keep_frozen";
+    if (
+      account?.proposalId &&
+      !isClosedOutNoUnfreeze &&
+      (account.proposalStatus === "pending" || account.proposalStatus === "approved")
+    ) {
       proposals.value.push({
         toolCallId: null,
         accountId: account.id,
         proposalId: account.proposalId,
         reasoning: account.proposalReasoning,
         status: account.proposalStatus,
+        recommendation: account.proposalRecommendation ?? "unfreeze",
         executed: false,
         error: null,
       });
@@ -251,26 +326,55 @@ onMounted(async () => {
   <section class="chat">
     <h1>AIアシスタント</h1>
     <div class="messages">
-      <p v-for="m in messages" :key="m.id" :class="['message', m.role]">
-        <strong>{{ m.role === "user" ? "あなた" : "AI" }}:</strong> {{ m.text }}
+      <p v-for="m in messages" :key="m.id" :class="['message', m.role, { pending: !m.done }]">
+        <template v-if="m.role === 'tool'">{{ m.done ? "✓" : "⏳" }} {{ m.text }}</template>
+        <template v-else-if="m.role === 'assistant'">
+          <strong>AI:</strong>
+          <span class="assistant-text" v-html="renderMarkdown(m.text)" />
+        </template>
+        <template v-else><strong>あなた:</strong> {{ m.text }}</template>
       </p>
     </div>
-    <p v-if="runError" class="error">{{ runError }}</p>
+    <p v-if="sending" class="running-indicator">🔄 エージェント実行中…</p>
+    <p v-if="runError" class="error">
+      {{ runError }}
+      <button v-if="lastUserText" type="button" @click="retry">再試行</button>
+    </p>
 
     <div v-for="p in proposals" :key="p.toolCallId ?? p.proposalId" class="proposal">
-      <span>口座 {{ p.accountId }} の凍結解除案(提案ID: {{ p.proposalId }})<template v-if="p.reasoning">: {{ p.reasoning }}</template></span>
-      <template v-if="p.executed">
-        <span>確定済み</span>
-      </template>
-      <template v-else-if="p.status === 'approved'">
-        <button @click="confirmUnfreeze(p)">凍結解除を確定</button>
-      </template>
-      <template v-else-if="p.status === 'rejected'">
-        <span>却下済み(ダッシュボードから再度精査を依頼できます)</span>
+      <span>
+        口座 {{ p.accountId }} の{{ p.recommendation === "keep_frozen" ? "精査結果(提案ID" : "凍結解除案(提案ID" }}: {{ p.proposalId }})
+        <span v-if="p.reasoning">: <span class="assistant-text" v-html="renderMarkdown(p.reasoning)" /></span>
+      </span>
+      <template v-if="p.recommendation === 'keep_frozen'">
+        <!-- AIが「根拠なし」と結論したケース(ADR 0039)。凍結解除の承認/却下ではないため、
+             文言を完全に分け、実行(凍結解除)ボタンは一切出さない。 -->
+        <template v-if="p.status === 'approved'">
+          <span>精査完了(凍結維持)</span>
+        </template>
+        <template v-else-if="p.status === 'rejected'">
+          <span>見直しを依頼済み(ダッシュボードから再度精査を依頼できます)</span>
+        </template>
+        <template v-else>
+          <span class="hint">AIは解除の根拠なしと判断しました</span>
+          <button @click="decideProposal(p, 'approve')">了解(凍結を維持)</button>
+          <button @click="decideProposal(p, 'reject')">納得できない(見直しを依頼)</button>
+        </template>
       </template>
       <template v-else>
-        <button @click="decideProposal(p, 'approve')">承認</button>
-        <button @click="decideProposal(p, 'reject')">却下</button>
+        <template v-if="p.executed">
+          <span>確定済み</span>
+        </template>
+        <template v-else-if="p.status === 'approved'">
+          <button @click="confirmUnfreeze(p)">凍結解除を確定</button>
+        </template>
+        <template v-else-if="p.status === 'rejected'">
+          <span>却下済み(ダッシュボードから再度精査を依頼できます)</span>
+        </template>
+        <template v-else>
+          <button @click="decideProposal(p, 'approve')">承認</button>
+          <button @click="decideProposal(p, 'reject')">却下</button>
+        </template>
       </template>
       <span v-if="p.error" class="error">{{ p.error }}</span>
     </div>
@@ -293,6 +397,38 @@ onMounted(async () => {
 .message.assistant {
   color: #0b5394;
 }
+.message.assistant.pending {
+  background: #eef6fc;
+  border-radius: 0.25rem;
+  padding: 0.25rem 0.5rem;
+}
+.message.assistant .assistant-text :deep(p:first-child) {
+  margin-top: 0;
+}
+.message.assistant .assistant-text :deep(p:last-child) {
+  margin-bottom: 0;
+}
+.message.assistant.pending .assistant-text::after {
+  content: "▌";
+  animation: blink 1s step-start infinite;
+}
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+.message.tool {
+  color: #777;
+  font-style: italic;
+  font-size: 0.9rem;
+}
+.message.tool.pending {
+  opacity: 0.85;
+}
+.running-indicator {
+  color: #777;
+  font-size: 0.9rem;
+}
 .proposal {
   display: flex;
   gap: 0.75rem;
@@ -301,6 +437,9 @@ onMounted(async () => {
 }
 .error {
   color: #b00020;
+}
+.hint {
+  color: #555;
 }
 textarea {
   width: 100%;

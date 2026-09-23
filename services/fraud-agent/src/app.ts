@@ -27,7 +27,8 @@ import { readFileSync } from "node:fs";
 import { ClaudeAgentAdapter } from "@ag-ui/claude-agent-sdk";
 import { EventEncoder } from "@ag-ui/encoder";
 import { RunAgentInputSchema } from "@ag-ui/core/schemas";
-import type { RunAgentInput } from "@ag-ui/core";
+import { EventType } from "@ag-ui/core";
+import type { RunAgentInput, ToolCallStartEvent, ToolCallResultEvent } from "@ag-ui/core";
 import type { McpHttpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 
 const BIND_HOST = process.env.APP_BIND_HOST ?? "127.0.0.1";
@@ -37,11 +38,25 @@ const HANDSHAKE_FILE = process.env.HANDSHAKE_TOKEN_FILE ?? "/handshake/token";
 const FRAUD_MCP_SERVER_URL = process.env.FRAUD_MCP_SERVER_URL ?? "http://fraud-mcp-server/mcp";
 
 const MCP_SERVER_NAME = "fraud_mcp_server";
+const PROPOSE_UNFREEZE_TOOL = `mcp__${MCP_SERVER_NAME}__propose_unfreeze`;
+const CONCLUDE_NO_UNFREEZE_TOOL = `mcp__${MCP_SERVER_NAME}__conclude_no_unfreeze`;
+// 精査の結論を記録する2つのツール(ADR 0039)。いずれか一方が必ず1回呼ばれる想定。
+const CONCLUSION_TOOLS = [PROPOSE_UNFREEZE_TOOL, CONCLUDE_NO_UNFREEZE_TOOL];
 const ALLOWED_TOOLS = [
   `mcp__${MCP_SERVER_NAME}__get_frozen_accounts`,
   `mcp__${MCP_SERVER_NAME}__get_account_history`,
-  `mcp__${MCP_SERVER_NAME}__propose_unfreeze`,
+  ...CONCLUSION_TOOLS,
 ];
+
+// Anthropicとのkeep-alive接続が応答ストリーミングの途中で失効する既知の事象
+// （k8s/fraud-agent/envoy-configmap.yamlのretry_policyはリクエスト開始前の失効にしか
+// 対応しない。ADR 0037）への対応として、同一RunAgentInputで1回だけ最初からやり直す。
+// account:proposeの副作用（propose_unfreeze）が既に成立した後の失敗はリトライしない
+// （二重の解除案作成を避けるため）。
+function isRetryableRunError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /socket connection was closed unexpectedly|ECONNRESET|socket hang up/i.test(message);
+}
 
 // UC1（docs/use-cases.md）既定のプロンプト。frontend本実装前のverify-hop.shはRunAgentInputを
 // 組み立てずボディ無しで/chatを叩く運用のため、その場合のフォールバックとして使う。
@@ -52,7 +67,10 @@ const DEFAULT_PROMPT =
 const SYSTEM_PROMPT =
   "あなたは金融機関の不正検知アナリストを補助するAIエージェントです。" +
   "fraud-mcp-serverが公開するツールのみを使って凍結口座の状況を確認・分析してください。" +
-  "解除を提案する場合は必ず根拠を明示してください。" +
+  "分析の結論として、解除すべきだと判断した場合はpropose_unfreezeツールを、" +
+  "解除の根拠がないと判断した場合はconclude_no_unfreezeツールを、" +
+  "それぞれ理由とともに必ずどちらか一方を呼び出してください。" +
+  "結論を文章で述べるだけでツールを呼ばずに終えてはいけません。" +
   "あなた自身は凍結解除を実行する権限を持たず、実行することもできません" +
   "（人間のアナリストが確認の上で決定します）。";
 
@@ -157,23 +175,25 @@ const server = http.createServer(async (req, res) => {
     // fraud-mcp-serverへのMCP接続はリクエストごとに新しいAdapterインスタンスを作ることで
     // 都度差し替える(headersはquery呼び出し単位で設定可能。実機のTypeScript型定義で確認済み)。
     // egressのtoken-exchangeサイドカーが既存パターン通りこれをsubject_tokenとして扱う。
-    const mcpServers: Record<string, McpHttpServerConfig> = {
-      [MCP_SERVER_NAME]: {
-        type: "http",
-        url: FRAUD_MCP_SERVER_URL,
-        headers: { Authorization: authorization },
-      },
-    };
-
-    const adapter = new ClaudeAgentAdapter({
-      agentId: "fraud-agent",
-      systemPrompt: SYSTEM_PROMPT,
-      mcpServers,
-      tools: [], // 組み込みツール(Bash/Read/Write等)を全て無効化する
-      allowedTools: ALLOWED_TOOLS, // fraud-mcp-serverの3ツールのみ確認無しで許可する
-      permissionMode: "dontAsk", // 許可リスト外は確認無しで拒否(fail close)
-      maxTurns: 10,
-    });
+    // リトライ時も同じ理由で新しいインスタンスを作り直す。
+    function buildAdapter(): ClaudeAgentAdapter {
+      const mcpServers: Record<string, McpHttpServerConfig> = {
+        [MCP_SERVER_NAME]: {
+          type: "http",
+          url: FRAUD_MCP_SERVER_URL,
+          headers: { Authorization: authorization },
+        },
+      };
+      return new ClaudeAgentAdapter({
+        agentId: "fraud-agent",
+        systemPrompt: SYSTEM_PROMPT,
+        mcpServers,
+        tools: [], // 組み込みツール(Bash/Read/Write等)を全て無効化する
+        allowedTools: ALLOWED_TOOLS, // fraud-mcp-serverの3ツールのみ確認無しで許可する
+        permissionMode: "dontAsk", // 許可リスト外は確認無しで拒否(fail close)
+        maxTurns: 10,
+      });
+    }
 
     const acceptHeader = req.headers["accept"];
     const encoder = new EventEncoder({
@@ -188,28 +208,58 @@ const server = http.createServer(async (req, res) => {
       "X-Accel-Buffering": "no",
     });
 
-    const subscription = adapter.run(input).subscribe({
-      next: (event) => {
-        res.write(encoder.encodeSSE(event));
-      },
-      error: (err: unknown) => {
-        // account-service/fraud-mcp-serverと同じfail-close方針だが、AG-UIはエラーも
-        // イベントストリームの一部として表現する(RUN_ERROR)。詳細を漏らさない一律のメッセージ。
-        console.error("adapter.run failed:", err);
-        try {
-          res.write(`data: ${JSON.stringify({ type: "RUN_ERROR", message: "fraud-agent processing failed" })}\n\n`);
-        } catch {
-          // 接続が既に切れている場合は何もできない
-        }
-        res.end();
-      },
-      complete: () => {
-        res.end();
-      },
-    });
+    // TOOL_CALL_START→RESULTの対応関係を自前で追い、結論ツール(propose_unfreeze/
+    // conclude_no_unfreezeのいずれか)が一度でも成立した後はリトライしない
+    // (account-serviceへの書き込みを二重に走らせないため)。
+    const toolCallNames = new Map<string, string>();
+    let conclusionCommitted = false;
+    let currentSubscription!: { unsubscribe: () => void };
+
+    function runAttempt(attempt: 1 | 2): void {
+      currentSubscription = buildAdapter()
+        .run(input)
+        .subscribe({
+          next: (event) => {
+            if (event.type === EventType.TOOL_CALL_START) {
+              const startEvent = event as ToolCallStartEvent;
+              toolCallNames.set(startEvent.toolCallId, startEvent.toolCallName);
+            }
+            if (event.type === EventType.TOOL_CALL_RESULT) {
+              const resultEvent = event as ToolCallResultEvent;
+              const name = toolCallNames.get(resultEvent.toolCallId);
+              if (name && (CONCLUSION_TOOLS as string[]).includes(name)) {
+                conclusionCommitted = true;
+              }
+            }
+            res.write(encoder.encodeSSE(event));
+          },
+          error: (err: unknown) => {
+            console.error(`adapter.run failed (attempt ${attempt}):`, err);
+            if (attempt === 1 && !conclusionCommitted && isRetryableRunError(err)) {
+              // 同一RunAgentInputで最初から1回だけやり直す。読み取り専用ツール
+              // (get_frozen_accounts/get_account_history)は再実行されるが冪等なので問題ない。
+              runAttempt(2);
+              return;
+            }
+            // account-service/fraud-mcp-serverと同じfail-close方針だが、AG-UIはエラーも
+            // イベントストリームの一部として表現する(RUN_ERROR)。詳細を漏らさない一律のメッセージ。
+            try {
+              res.write(`data: ${JSON.stringify({ type: "RUN_ERROR", message: "fraud-agent processing failed" })}\n\n`);
+            } catch {
+              // 接続が既に切れている場合は何もできない
+            }
+            res.end();
+          },
+          complete: () => {
+            res.end();
+          },
+        });
+    }
+
+    runAttempt(1);
 
     req.on("close", () => {
-      subscription.unsubscribe();
+      currentSubscription.unsubscribe();
     });
     return;
   }

@@ -89,34 +89,42 @@ public class AccountRepository {
                         .addValue("score", score));
     }
 
-    public UnfreezeProposal saveProposal(String accountId, String reasoning, String proposedBySub) {
+    public UnfreezeProposal saveProposal(String accountId, String reasoning, String proposedBySub, String recommendation) {
         String id = UUID.randomUUID().toString();
         jdbc.update(
-                "INSERT INTO unfreeze_proposals (id, account_id, reasoning, proposed_by_sub) "
-                        + "VALUES (:id, :accountId, :reasoning, :proposedBySub)",
+                "INSERT INTO unfreeze_proposals (id, account_id, reasoning, proposed_by_sub, recommendation) "
+                        + "VALUES (:id, :accountId, :reasoning, :proposedBySub, :recommendation)",
                 new MapSqlParameterSource()
                         .addValue("id", id)
                         .addValue("accountId", accountId)
                         .addValue("reasoning", reasoning)
-                        .addValue("proposedBySub", proposedBySub));
+                        .addValue("proposedBySub", proposedBySub)
+                        .addValue("recommendation", recommendation));
         return findProposal(id).orElseThrow();
+    }
+
+    private static final String PROPOSAL_COLUMNS =
+            "id, account_id, reasoning, proposed_by_sub, created_at, status, decided_by_sub, decided_at, recommendation";
+
+    private static UnfreezeProposal mapProposal(java.sql.ResultSet rs, int rowNum) throws java.sql.SQLException {
+        return new UnfreezeProposal(
+                rs.getString("id"),
+                rs.getString("account_id"),
+                rs.getString("reasoning"),
+                rs.getString("proposed_by_sub"),
+                rs.getObject("created_at", OffsetDateTime.class),
+                rs.getString("status"),
+                rs.getString("decided_by_sub"),
+                rs.getObject("decided_at", OffsetDateTime.class),
+                rs.getString("recommendation"));
     }
 
     public Optional<UnfreezeProposal> findProposal(String proposalId) {
         try {
             UnfreezeProposal proposal = jdbc.queryForObject(
-                    "SELECT id, account_id, reasoning, proposed_by_sub, created_at, status, decided_by_sub, decided_at "
-                            + "FROM unfreeze_proposals WHERE id = :id",
+                    "SELECT " + PROPOSAL_COLUMNS + " FROM unfreeze_proposals WHERE id = :id",
                     new MapSqlParameterSource("id", proposalId),
-                    (rs, rowNum) -> new UnfreezeProposal(
-                            rs.getString("id"),
-                            rs.getString("account_id"),
-                            rs.getString("reasoning"),
-                            rs.getString("proposed_by_sub"),
-                            rs.getObject("created_at", OffsetDateTime.class),
-                            rs.getString("status"),
-                            rs.getString("decided_by_sub"),
-                            rs.getObject("decided_at", OffsetDateTime.class)));
+                    AccountRepository::mapProposal);
             return Optional.ofNullable(proposal);
         } catch (EmptyResultDataAccessException e) {
             return Optional.empty();
@@ -126,18 +134,10 @@ public class AccountRepository {
     public Optional<UnfreezeProposal> findLatestProposal(String accountId) {
         try {
             UnfreezeProposal proposal = jdbc.queryForObject(
-                    "SELECT id, account_id, reasoning, proposed_by_sub, created_at, status, decided_by_sub, decided_at "
-                            + "FROM unfreeze_proposals WHERE account_id = :accountId ORDER BY created_at DESC LIMIT 1",
+                    "SELECT " + PROPOSAL_COLUMNS + " FROM unfreeze_proposals "
+                            + "WHERE account_id = :accountId ORDER BY created_at DESC LIMIT 1",
                     new MapSqlParameterSource("accountId", accountId),
-                    (rs, rowNum) -> new UnfreezeProposal(
-                            rs.getString("id"),
-                            rs.getString("account_id"),
-                            rs.getString("reasoning"),
-                            rs.getString("proposed_by_sub"),
-                            rs.getObject("created_at", OffsetDateTime.class),
-                            rs.getString("status"),
-                            rs.getString("decided_by_sub"),
-                            rs.getObject("decided_at", OffsetDateTime.class)));
+                    AccountRepository::mapProposal);
             return Optional.ofNullable(proposal);
         } catch (EmptyResultDataAccessException e) {
             return Optional.empty();

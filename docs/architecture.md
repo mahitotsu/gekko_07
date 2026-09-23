@@ -303,6 +303,8 @@ fraud-detection-engineはユーザー委任チェーンに参加しない機械�
 
 却下の場合：手順8で「却下」ボタンを押すと、account-serviceは提案のstatusをrejectedに更新するのみで、手順9以降は発生しない。ダッシュボードは「AIによる精査を依頼」ボタンを再表示し、手順2からやり直せる。
 
+AIが「解除の根拠なし」と結論した場合（[ADR 0039](adr/0039-unfreeze-recommendation-axis.md)）：手順7でfraud-agentはpropose_unfreezeの代わりにconclude_no_unfreezeツールを呼び、提案をrecommendation=keep_frozenで記録する（scope=account:propose、status=pendingは共通）。手順8のボタンは「承認/却下」ではなく「了解(凍結を維持)/納得できない(見直しを依頼)」になる（BR10。凍結解除の承認・却下と混同されないよう文言を分ける）。「了解」を押すとstatusがapprovedになり精査完了(凍結維持)で終了、手順9・10（凍結解除の実行）は発生しない。「納得できない」を押すとstatusがrejectedになり、却下の場合と同じくダッシュボードから精査をやり直せる。account-serviceの凍結解除実行API（手順9・10）は、紐付く提案のrecommendationがunfreeze以外の場合は多層防御として拒否する。
+
 #### UC2: 正常系（AIがhigh-value口座の凍結解除を提案し、seniorアナリストが確定する）
 
 登場人物：suzuki-senior（senior, 担当地域=東京・大阪）
@@ -385,6 +387,7 @@ fraud-mcp-server・fraud-detection-engine・account-service・analyst-attribute-
 - **セッション暗号鍵の複数レプリカ対応**：[ADR 0031](adr/0031-frontend-implementation.md)でCookie暗号化鍵をPod起動時にプロセス内生成する方式にしたため、`replicas`を2以上にすると別レプリカが処理したリクエストの`gekko_session`を復号できない（無効セッション扱いになり`/login`へ302される）。複数レプリカ化する場合はKubernetes Secret等での鍵共有を検討する
 - **より長いが上限付き（絶対タイムアウト）のセッション**：[ADR 0031](adr/0031-frontend-implementation.md)はリフレッシュトークンを一切使わず、セッションをKeycloakのAccess Token Lifespan（既定5分）で必ず失効させる設計にした。5分ごとの再ログインが実用上不便になった場合、リフレッシュトークンを使いつつ絶対タイムアウト（ログイン時刻からの上限）を別途設ける設計を再検討する
 - **Cookieの`secure`属性**：[ADR 0031](adr/0031-frontend-implementation.md)はローカルk3d port-forwardがhttpのため`gekko_session`・`gekko_pkce`両Cookieとも`secure: false`固定にしている。本番相当のHTTPS環境で動かす場合は`secure: true`に切り替える
+- **AIの「根拠なし」結論に人間が納得できない場合の直接実行導線**：[ADR 0039](adr/0039-unfreeze-recommendation-axis.md)で「納得できない」を押した場合、現状は精査のやり直しに戻すのみで、BR8が許容する「提案に基づかない直接実行」経路（`proposalId`省略の凍結解除API）をUIから呼び出す導線は無い。人間がAIの「根拠なし」判断に明確に反対し独自に解除したいケースが実運用で必要になった場合、ダッシュボードに直接実行ボタンを追加するか検討する
 
 ### 監査
 

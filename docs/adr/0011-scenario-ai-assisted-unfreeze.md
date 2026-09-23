@@ -1,6 +1,6 @@
 # ADR 0011: シナリオを「AI支援による口座凍結解除」に変更（凍結は自動検知エンジンが実行）
 
-- **Status**: Partially superseded by [0036](0036-unfreeze-proposal-approval-step.md)（凍結解除の確定操作を単一ボタンから提案の承認/却下を伴う2段階の手続きに精緻化。AIに実行権限を持たせないという結論自体は有効なまま残る）
+- **Status**: Partially superseded by [0036](0036-unfreeze-proposal-approval-step.md)（凍結解除の確定操作を単一ボタンから提案の承認/却下を伴う2段階の手続きに精緻化。AIに実行権限を持たせないという結論自体は有効なまま残る）・[0039](0039-unfreeze-recommendation-axis.md)（「AIエージェントは凍結解除を提案する」という記述に、根拠なしという結論も正式な精査結果として扱う旨を追加）
 - **Date**: 2026-09-15
 - **Supersedes**: [ADR 0001](0001-scenario-fraud-detection-with-agent-assist.md)
 
@@ -14,7 +14,7 @@
 
 ## Decision
 
-シナリオを次のように変更する：**口座の凍結は`fraud-detection-engine`（不正検知エンジン）が取引パターンを監視し自動的に実行する。AIエージェント（`fraud-agent`）は、凍結済み口座の凍結理由・取引履歴を分析し、誤検知の疑いがあれば凍結解除を提案する。凍結解除の実行はアナリストがUIで行う決定論的操作でのみ確定する。**〔[ADR 0036](0036-unfreeze-proposal-approval-step.md)で追加：確定操作を提案の承認/却下を伴う2段階の手続きに精緻化〕
+シナリオを次のように変更する：**口座の凍結は`fraud-detection-engine`（不正検知エンジン）が取引パターンを監視し自動的に実行する。AIエージェント（`fraud-agent`）は、凍結済み口座の凍結理由・取引履歴を分析し、誤検知の疑いがあれば凍結解除を提案する。凍結解除の実行はアナリストがUIで行う決定論的操作でのみ確定する。**〔[ADR 0036](0036-unfreeze-proposal-approval-step.md)で追加：確定操作を提案の承認/却下を伴う2段階の手続きに精緻化〕〔[ADR 0039](0039-unfreeze-recommendation-axis.md)で追加：AIが「解除の根拠なし」と結論した場合もその結論を記録し、同様の確認手続きの対象にする〕
 
 - `payment-service`を廃止し、`fraud-detection-engine`に置き換える。旧payment-serviceが担っていた「account-serviceがMCPサーバー経由（AI）と通常のマイクロサービスの両方から利用される」という対比構造、および「機械間認証（client_credentials）はユーザー委任チェーンに参加せず業務属性チェックも通らない」という設計上の見せ場は、fraud-detection-engineがそのまま引き継ぐ（`account:freeze`スコープで機械間認証によりaccount-serviceへ凍結を依頼する）
 - `account-service`の実行系スコープを次のように再配置する：

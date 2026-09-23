@@ -2,6 +2,10 @@ package com.gekko.accountservice.domain;
 
 import java.time.OffsetDateTime;
 
+// recommendation: AIの精査結論("unfreeze"=解除推奨、"keep_frozen"=根拠なし)。
+// status: その結論に対する人間の判断("pending"/"approved"/"rejected")。この2つは独立した軸
+// (ADR 0039)。
 public record UnfreezeProposal(String id, String accountId, String reasoning, String proposedBySub,
-        OffsetDateTime createdAt, String status, String decidedBySub, OffsetDateTime decidedAt) {
+        OffsetDateTime createdAt, String status, String decidedBySub, OffsetDateTime decidedAt,
+        String recommendation) {
 }

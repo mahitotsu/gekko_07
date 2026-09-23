@@ -235,10 +235,22 @@ data:
                             # retry_policyでreset系エラーを自動リトライすることで解消した
                             # (接続の使い回し自体は維持しつつ、失効した接続を掴んだ場合のみ
                             # 透過的に再試行する。空振りリクエストなので二重実行の心配は無い)。
+                            #
+                            # 実機で判明した罠その3(ADR 0038):このルートにtimeout/idle_timeoutの
+                            # 明示指定が無かったため、Envoyの既定route timeout(15s)が適用されていた。
+                            # 上のapp_upstreamルート(frontend→fraud-agent)と同じく、Anthropic呼び出し
+                            # 自体が実行時間不定長(モデルの応答生成時間に依存)なので、固定timeoutでは
+                            # なくidle_timeoutで制御する必要がある。既定の15sでは、まとまった量の
+                            # テキストを生成する応答が"504 upstream request timeout"として打ち切られ、
+                            # 直後のSDK内部のセッション再開試行も同じ理由で失敗し、最終的に
+                            # "socket connection was closed unexpectedly"としてクライアントに露出して
+                            # いた。
                             - match: { prefix: "/" }
                               route:
                                 cluster: anthropic_upstream
                                 host_rewrite_literal: api.anthropic.com
+                                timeout: 0s
+                                idle_timeout: 300s
                                 retry_policy:
                                   retry_on: "reset,connect-failure,refused-stream"
                                   num_retries: 2

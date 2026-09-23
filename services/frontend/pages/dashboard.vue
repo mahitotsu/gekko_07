@@ -11,6 +11,9 @@ interface FrozenAccount {
   proposalId: string | null;
   proposalStatus: "pending" | "approved" | "rejected" | null;
   proposalReasoning: string | null;
+  // AIの精査結論("unfreeze"=解除推奨/"keep_frozen"=根拠なし)。proposalStatus(人間の判断)とは
+  // 独立した軸(ADR 0039)。
+  proposalRecommendation: "unfreeze" | "keep_frozen" | null;
 }
 
 // server: false固定。SSR側のuseFetchはevent.$fetch経由のプロセス内呼び出しになり、
@@ -81,6 +84,10 @@ async function confirmUnfreeze(accountId: string, proposalId: string | null) {
               <span class="badge">精査中</span>
               <NuxtLink :to="`/chat?accountId=${account.id}`">チャットで確認</NuxtLink>
             </template>
+            <template v-else-if="account.proposalRecommendation === 'keep_frozen'">
+              <span class="badge badge-muted">精査済み(凍結維持)</span>
+              <NuxtLink :to="`/chat?accountId=${account.id}`">再度精査を依頼</NuxtLink>
+            </template>
             <button
               v-else
               :disabled="unfreezingId === account.id"
@@ -118,5 +125,8 @@ td {
   background: #f0ad4e;
   color: #fff;
   font-size: 0.85rem;
+}
+.badge-muted {
+  background: #6c757d;
 }
 </style>

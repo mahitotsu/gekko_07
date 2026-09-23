@@ -60,7 +60,8 @@ public class AccountController {
                             repository.findLatestFreezeRecord(account.id()).map(FreezeRecord::reason).orElse(null),
                             proposal.map(UnfreezeProposal::id).orElse(null),
                             proposal.map(UnfreezeProposal::status).orElse(null),
-                            proposal.map(UnfreezeProposal::reasoning).orElse(null));
+                            proposal.map(UnfreezeProposal::reasoning).orElse(null),
+                            proposal.map(UnfreezeProposal::recommendation).orElse(null));
                 })
                 .toList();
     }
@@ -100,8 +101,10 @@ public class AccountController {
         }
 
         String reasoning = (request != null && request.reasoning() != null) ? request.reasoning() : "";
-        UnfreezeProposal proposal = repository.saveProposal(id, reasoning, sub);
-        return new ProposalView(proposal.id(), proposal.accountId(), proposal.status());
+        String recommendation = (request != null && request.recommendation() != null)
+                ? request.recommendation() : "unfreeze";
+        UnfreezeProposal proposal = repository.saveProposal(id, reasoning, sub, recommendation);
+        return new ProposalView(proposal.id(), proposal.accountId(), proposal.status(), proposal.recommendation());
     }
 
     // 提案の承認・却下(ADR 0036)。account:unfreezeスコープ配下の人間専用操作とし、
@@ -148,7 +151,7 @@ public class AccountController {
         }
 
         UnfreezeProposal decided = repository.decideProposal(proposalId, newStatus, sub);
-        return new ProposalView(decided.id(), decided.accountId(), decided.status());
+        return new ProposalView(decided.id(), decided.accountId(), decided.status(), decided.recommendation());
     }
 
     // fraud-detection-engineのclient_credentials呼び出し(表4・BR7)。x-auth-subは存在しない
@@ -194,6 +197,12 @@ public class AccountController {
             }
             if (!proposal.proposedBySub().equals(sub)) {
                 throw new ResponseStatusException(HttpStatus.FORBIDDEN, "only the requesting analyst may execute this proposal");
+            }
+            // AIの精査結論が"keep_frozen"(根拠なし)の提案は、たとえ人間が承認(=了解)していても
+            // 凍結解除の実行対象にはできない(ADR 0039。多層防御:フロントエンドのボタン出し分け
+            // が壊れていても、ここで構造的に拒否する)。
+            if (!"unfreeze".equals(proposal.recommendation())) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT, "proposal does not recommend unfreezing");
             }
         }
 

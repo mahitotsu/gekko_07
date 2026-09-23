@@ -22,7 +22,7 @@ frontendはAuthorization Code + PKCEブラウザフローでログインする�
 ## fraud-agent（AIエージェント。[ADR 0030](adr/0030-fraud-agent-implementation.md)）
 
 - **存在意義**：凍結済み口座の凍結理由・取引履歴を分析し、誤検知の疑いがあれば凍結解除の提案を行う。**書き込み権限は「提案の記録」までで、凍結解除の実行権限は一切持たない**
-- **提供機能**：`POST /chat`でfrontendから呼ばれ、fraud-mcp-serverが公開するMCPツール（`get_frozen_accounts`・`get_account_history`・`propose_unfreeze`）のみを使って凍結中口座の凍結根拠・取引履歴を実際にAnthropic APIへ分析させ、誤検知の疑いがあれば根拠とともに解除を提案する。SDKレベルでもこの3ツール以外を許可しない構成（`allowedTools`・`permissionMode: "dontAsk"`）にしている。レスポンスはAG-UIプロトコル（公式`@ag-ui/claude-agent-sdk`アダプタ）準拠のSSEイベントストリーム
+- **提供機能**：`POST /chat`でfrontendから呼ばれ、fraud-mcp-serverが公開するMCPツール（`get_frozen_accounts`・`get_account_history`・`propose_unfreeze`・`conclude_no_unfreeze`）のみを使って凍結中口座の凍結根拠・取引履歴を実際にAnthropic APIへ分析させる。結論として誤検知の疑いがあれば根拠とともに解除を提案し（`propose_unfreeze`）、根拠がないと判断した場合もその結論を記録する（`conclude_no_unfreeze`、[ADR 0039](adr/0039-unfreeze-recommendation-axis.md)）。SDKレベルでもこの4ツール以外を許可しない構成（`allowedTools`・`permissionMode: "dontAsk"`）にしている。レスポンスはAG-UIプロトコル（公式`@ag-ui/claude-agent-sdk`アダプタ）準拠のSSEイベントストリーム
 - **保有データ**：なし（frontendから渡された委任トークンを保持するのみ。永続化しない）
 - **連携相手**：frontend（Token Exchangeで得たトークンによる実呼び出しを受ける）、fraud-mcp-server（MCPクライアントとして）、Anthropic API（Claude Agent SDK本体の呼び出し先。クラスタ外・Token Exchange対象外）。Keycloakとは自身のEnvoyサイドカー経由でToken Exchangeを行う（受け取った`aud=fraud-agent`のトークンを`subject_token`に`audience=fraud-mcp-server, scope=account:read`で交換。アプリ本体はトークンを一切意識しない。[ADR 0002](adr/0002-token-exchange-in-envoy-sidecar.md)・[ADR 0014](adr/0014-fraud-agent-token-exchange.md)）
 - **技術スタック**：TypeScript / Claude Agent SDK（選定理由は[ADR 0007](adr/0007-per-service-language-selection.md)）。Anthropic API呼び出しは`claude setup-token`で取得したOAuthトークン（`CLAUDE_CODE_OAUTH_TOKEN`）を使う
@@ -30,7 +30,7 @@ frontendはAuthorization Code + PKCEブラウザフローでログインする�
 ## fraud-mcp-server（[ADR 0029](adr/0029-fraud-mcp-server-implementation.md)）
 
 - **存在意義**：account-serviceの読み取り・提案系機能をMCPツールとして公開する。AIエージェントとaccount-serviceの間に立ち、MCPプロトコルとREST/gRPCの変換を担う
-- **提供機能**：MCPツール`get_frozen_accounts`（凍結中口座とその凍結根拠の照会）、`get_account_history`（取引履歴照会）、`propose_unfreeze`（凍結解除案の記録）
+- **提供機能**：MCPツール`get_frozen_accounts`（凍結中口座とその凍結根拠の照会）、`get_account_history`（取引履歴照会）、`propose_unfreeze`（凍結解除案の記録）、`conclude_no_unfreeze`（解除の根拠なしという結論の記録。[ADR 0039](adr/0039-unfreeze-recommendation-axis.md)）
 - **保有データ**：なし。account-serviceへの中継のみ
 - **連携相手**：fraud-agentからMCPで呼ばれる。account-serviceへは自身のEnvoy/token-exchangeサイドカー経由でToken Exchange（audience=account-service, scope=account:read/account:propose）を行った上で委任する（アプリ本体は受信した委任トークンをそのまま転送するだけで、Token Exchange自体は一切意識しない。[ADR 0002](adr/0002-token-exchange-in-envoy-sidecar.md)・[ADR 0019](adr/0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md)）
 - **技術スタック**：Python / FastMCP（選定理由は[ADR 0007](adr/0007-per-service-language-selection.md)）
@@ -52,7 +52,7 @@ frontendはAuthorization Code + PKCEブラウザフローでログインする�
   - 口座凍結の自動実行（`account:freeze`）。fraud-detection-engineからの機械間認証リクエストのみを受け付け、業務属性チェックは行わない
   - 口座凍結の解除の実行（`account:unfreeze`）。実行時にanalyst-attribute-serviceへ再照会し業務属性を再検証する（多層防御）
   - アナリスト経由のリクエストでは、呼び出し元の担当地域・権限レベルに応じて閲覧・凍結解除可能な口座を制限する（architecture.md 表5）
-- **保有データ**：口座（地域`region`、ティア`standard`/`high-value`）、取引履歴、口座凍結記録（fraud-detection-engineがいつ・何を根拠に凍結したか）、凍結解除提案（誰が・何を根拠に提案したか、承認/却下の状態と決定者・決定日時。[ADR 0036](adr/0036-unfreeze-proposal-approval-step.md)）、凍結解除実行記録（誰が・どの提案を確定したか）。PostgreSQL（[ADR 0008](adr/0008-per-service-datastore-strategy.md)）
+- **保有データ**：口座（地域`region`、ティア`standard`/`high-value`）、取引履歴、口座凍結記録（fraud-detection-engineがいつ・何を根拠に凍結したか）、凍結解除提案（誰が・何を根拠に、AIの結論（`unfreeze`=解除推奨/`keep_frozen`=根拠なし。[ADR 0039](adr/0039-unfreeze-recommendation-axis.md)）は何か、承認/却下の状態と決定者・決定日時。[ADR 0036](adr/0036-unfreeze-proposal-approval-step.md)）、凍結解除実行記録（誰が・どの提案を確定したか）。PostgreSQL（[ADR 0008](adr/0008-per-service-datastore-strategy.md)）
 - **連携相手**：fraud-mcp-server・fraud-detection-engine・frontendから呼ばれる。アナリスト経由のリクエストではanalyst-attribute-serviceへさらに委任する
 - **技術スタック**：Java / Spring Boot（選定理由は[ADR 0007](adr/0007-per-service-language-selection.md)）
 
