@@ -391,6 +391,7 @@ fraud-mcp-server・fraud-detection-engine・account-service・analyst-attribute-
 
 ### 監査
 
+- **自己申告と第三者記録の突合**：本章（§9）はaccount-service自身の自己申告（`unfreeze_proposals`/`unfreeze_executions`）とKeycloak/Envoyの第三者記録が同じ相関キーで「事後に再構成できる」ところまでで、両者を実際に突き合わせて不整合を検知する仕組みはまだ無い。改ざん不能ストレージの導入は標準的なインフラ整備で自明に実現できるため見送り、代わりに自己申告と第三者記録を突合する独立した監査サービス(audit-service)を新設する方針を決定した（ステートレス、決定的なキー突合のみでLLM不使用。[ADR 0040](adr/0040-audit-service-reconciliation.md)）。実装（k8s資材・API新設・検証スクリプト）は未着手
 - **otel-lgtmの同梱コンポーネント（Prometheus/Tempo/Pyroscope/OTel Collector）を無効化できるか**：ADR 0025で採用した`grafana/otel-lgtm`はGrafana+Lokiのみ使う想定だが、残り4コンポーネントも起動している。個別に無効化できるかは未調査（動くが未使用として許容している）
 - **`k8s/keycloak/test-fixtures-job.yaml`のパスワード設定の再現性問題**：realm再import直後にジョブを実行すると、作成直後のユーザーでログインが401になることがある（kcadmでset-passwordを打ち直すと直る）。原因未特定（[insights.md](insights.md)参照）
 

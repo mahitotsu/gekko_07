@@ -2,7 +2,7 @@
 
 本ディレクトリは、設計判断1件ごとの根拠・選択経緯を記録する。[architecture.md](../architecture.md) は現在有効な設計断面のみを記載し、個々の判断の根拠はここに委譲する。
 
-決定が覆った場合は、旧ADRのStatusを`Superseded by NNNN`に更新し、新しいADRを追加する。39件のうち25件は今も覆っていないAccepted——後続ADRによる修正は「シナリオ選定（凍結解除の確定操作の精緻化）」「Token Exchangeの実行主体・宛先指定」「身元検証（mTLS/SPIFFE/SPIRE）」「frontendの本実装内での段階的置き換え」「fraud-agentの実装詳細（Anthropic呼び出し失敗時の挙動）」の5テーマに偏っており、乱発しているわけではない。以下はテーマ別の索引。同じテーマのADRを続けて読むと、1つの関心事がどう変遷したかを追いやすい。
+決定が覆った場合は、旧ADRのStatusを`Superseded by NNNN`に更新し、新しいADRを追加する。40件のうち26件は今も覆っていないAccepted——後続ADRによる修正は「シナリオ選定（凍結解除の確定操作の精緻化）」「Token Exchangeの実行主体・宛先指定」「身元検証（mTLS/SPIFFE/SPIRE）」「frontendの本実装内での段階的置き換え」「fraud-agentの実装詳細（Anthropic呼び出し失敗時の挙動）」の5テーマに偏っており、乱発しているわけではない。以下はテーマ別の索引。同じテーマのADRを続けて読むと、1つの関心事がどう変遷したかを追いやすい。
 
 ## シナリオ選定
 
@@ -52,6 +52,7 @@
 | # | タイトル | Status |
 |---|---|---|
 | [0025](0025-audit-log-aggregation.md) | 監査ログ集約基盤（Alloy+otel-lgtm）を導入し、監査（BR8）の実現方式を再設計する | Accepted |
+| [0040](0040-audit-service-reconciliation.md) | account-serviceの自己申告とKeycloak/Envoyの第三者記録を突合する監査サービス(audit-service)を新設する方針を決定する | Accepted |
 
 ## ローカル実行基盤
 
