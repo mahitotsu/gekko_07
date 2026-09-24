@@ -280,6 +280,36 @@
 
 **対応**：account-serviceのTLS filter_chain（fraud-mcp-server専用）のjwt_authn providerに`from_headers: [{name: "Authorization", value_prefix: "DPoP "}]`を追加した。plaintext filter_chain（fraud-detection-engine用、DPoP非対象）は既定の`Bearer `のままにした（同じjwt_authn設定を全filter_chainで共有していないため、片方だけ変更できる。ADR 0012の実機検証で導入したfilter_chain分割の副産物）。
 
+## RFC 8705 証明書拘束アクセストークンの再検討（2026-09-24、使い捨てKeycloak 26.7.0での実機検証）
+
+k8s内部通信のmTLS横展開が全ホップで完了した([architecture.md](architecture.md) §11「mTLS / SPIFFE / SPIRE」)ことを受け、RFC 8705（証明書拘束アクセストークン）の再検討を実機で行った。使い捨てDockerコンテナ（`docker run quay.io/keycloak/keycloak:26.7.0`、gekko_07クラスタ本体には一切触れず）で検証し、Keycloak/コンテナは検証後に削除済み。
+
+**前提の整理**：ADR 0012/0013/0019が「RFC 8705は不成立」と結論したのは、いずれもmTLSを**クライアント認証方式そのもの**として使う場合（`clientAuthenticatorType: client-x509`、Subject DNしか見ない製品上の制約）についての話である。RFC 8705はこれとは独立した第2の機能（証明書拘束アクセストークン、`tls.client.certificate.bound.access.tokens`。クライアント認証方式は`client-secret`・`federated-jwt`等どれでもよく、TLS接続で提示された証明書のサムプリントをトークンの`cnf.x5t#S256`へ埋め込むだけ）を持つ。以下はこの第2の機能についての検証で、`client-x509`の制約とは別軸。
+
+### `tls.client.certificate.bound.access.tokens`は`client-x509`のSubject DN制約と無関係に動作する
+
+**症状**：ADR 0012/0013/0019が「Subject DNしか見ないためSPIRE SVIDと相性が悪い」と結論した`client-x509`の制約が、証明書拘束アクセストークン機能にも及ぶかどうかは未検証だった。
+
+**原因/実機確認**：クライアントに`clientAuthenticatorType: client-secret`（`federated-jwt`ではなく最も単純な方式で確認）＋属性`tls.client.certificate.bound.access.tokens: "true"`を設定し、SPIRE X.509-SVIDを模した証明書（Subject DN空、SPIFFE IDをURI SAN・critical拡張に格納。下記参照）でmTLS接続しclient_credentialsを要求したところ、発行されたアクセストークンに`"cnf":{"x5t#S256":"..."}`が正しく埋め込まれ、値は実際の証明書のSHA-256サムプリント（base64url、パディング無し）と完全一致した。`client-x509`のSubject DN制約はこの機能には影響しない。
+
+**対応**：ADR 0012が指摘したもう一つの構造的ブロッカー（Token Exchange発行時にKeycloakへ接続する主体と、提示時にaccount-serviceへ接続する主体が別プロセス・別証明書）は、[ADR 0019](adr/0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md)以降token-exchangeサイドカーが呼び出し元自身のPod内へ移り、Keycloakへの接続もaccount-serviceへの接続も同じEnvoy・同じX.509-SVIDで行われるようになったため、既存コード（[k8s/fraud-mcp-server/envoy-configmap.yaml](../k8s/fraud-mcp-server/envoy-configmap.yaml)）の確認だけで解消済みと判断できた。よってこの2点に関しては、RFC 8705を導入できない理由は無くなっている。
+
+### SPIRE X.509-SVIDを模した証明書（Subject DN空）で試す場合、SAN拡張をcriticalにしないとJavaのTLS実装が接続そのものを拒否する
+
+**症状**：Subject DNを空にした自己署名テスト証明書（`openssl req -subj "/"`、SAN拡張は既定の非critical）でmTLS接続すると、TLSハンドシェイクの途中（クライアントのCertificateメッセージ受信直後）で`javax.net.ssl.SSLHandshakeException: (bad_certificate) Failed to parse client certificates`が発生し、Keycloakのアプリケーションログには何も残らずコネクションだけが切断される（`-Djavax.net.debug=ssl:handshake:verbose`を有効にしてようやくスタックトレースが得られた）。
+
+**原因**：`Caused by: java.security.cert.CertificateParsingException: X.509 Certificate is incomplete: SubjectAlternativeName extension MUST be marked critical when subject field is empty`。RFC 5280 §4.2.1.6の規定（Subjectが空の場合SAN拡張はcritical必須）をJavaの標準X.509パーサが厳格に検証しており、非criticalなSAN拡張を持つ「不正な」証明書は解析すらされずTLS層で弾かれる。SPIFFE仕様に従う実際のSPIRE発行SVIDはこの規定に沿ってSAN拡張をcriticalにするため、本番相当の証明書では問題にならない（今回はテスト証明書の作成不備）。
+
+**対応**：`openssl x509 -req`の`-extfile`で`subjectAltName = critical, URI:spiffe://...`と明示すればJavaのTLS層を正常に通過し、上記のcnf付与も正しく確認できた。将来SPIRE発行の本物のSVIDで再検証する際はこの点で躓かないはずだが、念のためSPIRE Server/Agentが実際にcritical指定でSAN拡張を発行しているかは未確認のまま。
+
+### EnvoyがmTLSを終端してKeycloak本体へ転送する構成（gekko_07の実際のKeycloak構成）では、証明書拘束アクセストークンに必要な生の証明書がKeycloakに渡らない（未解決）
+
+**症状**：上記の検証はいずれも「Keycloak自身が直接mTLSを終端する」構成（`KC_HTTPS_CLIENT_AUTH`等）で行った。しかしgekko_07の実際の構成（[k8s/keycloak/envoy-configmap.yaml](../k8s/keycloak/envoy-configmap.yaml)、[ADR 0016](adr/0016-ext-authz-and-keycloak-mtls.md)/[0017](adr/0017-edge-proxy-full-keycloak-mtls.md)）では、mTLSはKeycloakのEnvoyサイドカーが終端し、Keycloak本体（JVM）へは平文で転送される（`forward_client_cert_details`は未設定）。この構成をKeycloakを直接TLS終端させず再現し（`KC_PROXY_HEADERS=xforwarded`＋`KC_SPI_X509CERT_LOOKUP_PROVIDER=haproxy`でリバースプロキシ越しの証明書取得を模した）、PEM形式の証明書を`SSL_CLIENT_CERT`ヘッダーで手動送信したところ、URLエンコード・改行→スペース変換のいずれの表現でも`org.keycloak.services.x509.HaProxySslClientCertificateLookup`が証明書を正しく認識できず（「malformed PEM data」または「does not contain a valid x.509 certificate」）、最終的に`"Client Certification missing for MTLS HoK Token Binding"`（400）になった。
+
+**原因**：Keycloakの`x509cert-lookup` SPIは`haproxy`・`apache`という2つの決まったリバースプロキシ形式のヘッダーしか組み込みでサポートせず、いずれもEnvoyの`forward_client_cert_details`が生成するXFCC形式（`Cert="<url-encoded PEM>"`等のkey=value列）とは異なる。今回`haproxy`プロバイダが実際に期待する正確なヘッダー表現（PEMの改行をどう表現するか等）を特定できなかった。
+
+**対応**：未解決のまま。この壁を埋めるには、①Envoy側でXFCCを`haproxy`互換形式へ変換するLuaフィルタ（[ADR 0002](adr/0002-token-exchange-in-envoy-sidecar.md)の「セキュリティクリティカルなロジックをLuaに置かない」原則に反する）、②Keycloak向けの独自`x509cert-lookup` SPIプラグイン（「Dockerfileを書かない」方針を初めて破る）のいずれかが必要になりそうだが、どちらも新規の可動部を増やすため、DPoP撤去（[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)）と同じ「投資に見合うか」の検討が必要。判断すべき問いはarchitecture.md §11に記録した。
+
 ## ext-authz-serviceの身元検証ギャップとKeycloakクライアント認証方式の調査
 
 **この調査結果は、後日[ADR 0019](adr/0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md)/[0020](adr/0020-fraud-detection-engine-identity-gap-and-client-credentials-federated-jwt.md)/[0021](adr/0021-account-service-analyst-attribute-service-spiffe-jwt-svid.md)でgekko_07本体に反映済み。**以下は反映前に使い捨て環境で行ったスパイクの記録で、調査の経緯・判明した事実（バイトコードレベルの原因特定を含む）を残す。
