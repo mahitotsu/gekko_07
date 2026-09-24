@@ -117,8 +117,9 @@ public class AccountController {
             @PathVariable String id,
             @PathVariable String proposalId,
             @RequestHeader("x-auth-sub") String sub,
+            @RequestHeader("x-auth-jti") String jti,
             @RequestHeader("Authorization") String authorization) {
-        return decide(id, proposalId, sub, authorization, "approved");
+        return decide(id, proposalId, sub, jti, authorization, "approved");
     }
 
     @PostMapping("/accounts/{id}/unfreeze-proposals/{proposalId}/reject")
@@ -126,11 +127,12 @@ public class AccountController {
             @PathVariable String id,
             @PathVariable String proposalId,
             @RequestHeader("x-auth-sub") String sub,
+            @RequestHeader("x-auth-jti") String jti,
             @RequestHeader("Authorization") String authorization) {
-        return decide(id, proposalId, sub, authorization, "rejected");
+        return decide(id, proposalId, sub, jti, authorization, "rejected");
     }
 
-    private ProposalView decide(String id, String proposalId, String sub, String authorization, String newStatus) {
+    private ProposalView decide(String id, String proposalId, String sub, String jti, String authorization, String newStatus) {
         Account account = repository.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
 
@@ -152,7 +154,7 @@ public class AccountController {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "proposal already decided");
         }
 
-        UnfreezeProposal decided = repository.decideProposal(proposalId, newStatus, sub);
+        UnfreezeProposal decided = repository.decideProposal(proposalId, newStatus, sub, jti);
         return new ProposalView(decided.id(), decided.accountId(), decided.status(), decided.recommendation());
     }
 
@@ -171,6 +173,7 @@ public class AccountController {
     public UnfreezeExecution unfreeze(
             @PathVariable String id,
             @RequestHeader("x-auth-sub") String sub,
+            @RequestHeader("x-auth-jti") String jti,
             @RequestHeader("Authorization") String authorization,
             @RequestBody(required = false) UnfreezeRequest request) {
         Account account = repository.findById(id)
@@ -208,7 +211,7 @@ public class AccountController {
             }
         }
 
-        return repository.unfreeze(id, proposalId, sub);
+        return repository.unfreeze(id, proposalId, sub, jti);
     }
 
     // audit-service向け(表2 account:auditスコープ。ADR 0040/0041)。自己申告記録の読み取り専用API。

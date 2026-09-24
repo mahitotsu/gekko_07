@@ -104,7 +104,7 @@ public class AccountRepository {
     }
 
     private static final String PROPOSAL_COLUMNS =
-            "id, account_id, reasoning, proposed_by_sub, created_at, status, decided_by_sub, decided_at, recommendation";
+            "id, account_id, reasoning, proposed_by_sub, created_at, status, decided_by_sub, decided_at, decided_jti, recommendation";
 
     private static UnfreezeProposal mapProposal(java.sql.ResultSet rs, int rowNum) throws java.sql.SQLException {
         return new UnfreezeProposal(
@@ -116,7 +116,21 @@ public class AccountRepository {
                 rs.getString("status"),
                 rs.getString("decided_by_sub"),
                 rs.getObject("decided_at", OffsetDateTime.class),
+                rs.getString("decided_jti"),
                 rs.getString("recommendation"));
+    }
+
+    private static final String EXECUTION_COLUMNS =
+            "id, account_id, proposal_id, executed_by_sub, executed_at, executed_jti";
+
+    private static UnfreezeExecution mapExecution(java.sql.ResultSet rs, int rowNum) throws java.sql.SQLException {
+        return new UnfreezeExecution(
+                rs.getLong("id"),
+                rs.getString("account_id"),
+                rs.getString("proposal_id"),
+                rs.getString("executed_by_sub"),
+                rs.getObject("executed_at", OffsetDateTime.class),
+                rs.getString("executed_jti"));
     }
 
     public Optional<UnfreezeProposal> findProposal(String proposalId) {
@@ -144,14 +158,15 @@ public class AccountRepository {
         }
     }
 
-    public UnfreezeProposal decideProposal(String proposalId, String status, String decidedBySub) {
+    public UnfreezeProposal decideProposal(String proposalId, String status, String decidedBySub, String decidedJti) {
         jdbc.update(
-                "UPDATE unfreeze_proposals SET status = :status, decided_by_sub = :decidedBySub, decided_at = now() "
-                        + "WHERE id = :id",
+                "UPDATE unfreeze_proposals SET status = :status, decided_by_sub = :decidedBySub, "
+                        + "decided_at = now(), decided_jti = :decidedJti WHERE id = :id",
                 new MapSqlParameterSource()
                         .addValue("id", proposalId)
                         .addValue("status", status)
-                        .addValue("decidedBySub", decidedBySub));
+                        .addValue("decidedBySub", decidedBySub)
+                        .addValue("decidedJti", decidedJti));
         return findProposal(proposalId).orElseThrow();
     }
 
@@ -168,36 +183,27 @@ public class AccountRepository {
 
     public List<UnfreezeExecution> findExecutions(OffsetDateTime since) {
         return jdbc.query(
-                "SELECT id, account_id, proposal_id, executed_by_sub, executed_at FROM unfreeze_executions "
+                "SELECT " + EXECUTION_COLUMNS + " FROM unfreeze_executions "
                         + "WHERE executed_at >= :since ORDER BY executed_at",
                 new MapSqlParameterSource("since", since),
-                (rs, rowNum) -> new UnfreezeExecution(
-                        rs.getLong("id"),
-                        rs.getString("account_id"),
-                        rs.getString("proposal_id"),
-                        rs.getString("executed_by_sub"),
-                        rs.getObject("executed_at", OffsetDateTime.class)));
+                AccountRepository::mapExecution);
     }
 
-    public UnfreezeExecution unfreeze(String accountId, String proposalId, String executedBySub) {
+    public UnfreezeExecution unfreeze(String accountId, String proposalId, String executedBySub, String executedJti) {
         jdbc.update("UPDATE accounts SET frozen = FALSE WHERE id = :id",
                 new MapSqlParameterSource("id", accountId));
         jdbc.update(
-                "INSERT INTO unfreeze_executions (account_id, proposal_id, executed_by_sub) "
-                        + "VALUES (:accountId, :proposalId, :executedBySub)",
+                "INSERT INTO unfreeze_executions (account_id, proposal_id, executed_by_sub, executed_jti) "
+                        + "VALUES (:accountId, :proposalId, :executedBySub, :executedJti)",
                 new MapSqlParameterSource()
                         .addValue("accountId", accountId)
                         .addValue("proposalId", proposalId)
-                        .addValue("executedBySub", executedBySub));
+                        .addValue("executedBySub", executedBySub)
+                        .addValue("executedJti", executedJti));
         return jdbc.queryForObject(
-                "SELECT id, account_id, proposal_id, executed_by_sub, executed_at FROM unfreeze_executions "
+                "SELECT " + EXECUTION_COLUMNS + " FROM unfreeze_executions "
                         + "WHERE account_id = :accountId ORDER BY executed_at DESC LIMIT 1",
                 new MapSqlParameterSource("accountId", accountId),
-                (rs, rowNum) -> new UnfreezeExecution(
-                        rs.getLong("id"),
-                        rs.getString("account_id"),
-                        rs.getString("proposal_id"),
-                        rs.getString("executed_by_sub"),
-                        rs.getObject("executed_at", OffsetDateTime.class)));
+                AccountRepository::mapExecution);
     }
 }

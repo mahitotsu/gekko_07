@@ -1,8 +1,8 @@
 #!/bin/bash
-# audit-serviceの実機検証(ADR 0040/0041/0042)。
+# audit-serviceの実機検証(ADR 0040/0041/0042/0044)。
 # 前提:make deploy && make deploy-verify-hop && make verify-hop が完了していること
-# (account-serviceに実際の凍結解除実行記録が、Keycloak/Envoyのログに対応するTOKEN_EXCHANGE
-# イベントが、それぞれ実在する状態を作る)。
+# (account-serviceに実際の凍結解除実行記録(jti付き)が、Keycloakのイベントログ・
+# account-service自身のEnvoyアクセスログに対応する記録が、それぞれ実在する状態を作る)。
 #
 # ADR 0042でaudit-serviceのingressにmTLS+jwt_authn+rbac(audit:read限定)を追加したため、
 # kubectl port-forwardへの素のcurl(ADR 0040/0041時点の検証方法)ではmTLSハンドシェイクで
@@ -95,8 +95,10 @@ if [ "$SENIOR_STATUS" != "200" ]; then
   exit 1
 fi
 
-EXEC_TOTAL=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['executions']['total'])" "$SENIOR_BODY")
-EXEC_VERIFIED=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['executions']['verified'])" "$SENIOR_BODY")
+# verify-hop.shのシナリオ(UC1の直接実行パス、proposalId省略)はproposalを経由しないため、
+# ADR 0044でproposalId無しの実行はrequestsではなくdirectExecutionsに分離される。
+EXEC_TOTAL=$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))['directExecutions']))" "$SENIOR_BODY")
+EXEC_VERIFIED=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(sum(1 for e in d['directExecutions'] if e['check']['verified']))" "$SENIOR_BODY")
 if [ "$EXEC_TOTAL" -lt 1 ]; then
   echo "自己申告(unfreeze_executions)が1件も取得できませんでした。make verify-hopを先に実行してください" >&2
   exit 1

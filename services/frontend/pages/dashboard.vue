@@ -1,6 +1,9 @@
 <script setup lang="ts">
 // UC1/UC2/UC4の「frontend直接」経路：凍結中口座一覧(account-serviceのGET /accounts/frozen、
 // 表5のABAC判定済みの結果セット)と、「凍結解除を確定」ボタン(POST /accounts/{id}/unfreeze)。
+// 「監査結果を見る」リンクは/audit?accountId=に遷移し、この口座に関する結果だけに絞り込んで
+// 表示する(ADR 0044)。リンク自体は全ログインユーザーに表示し、閲覧可否の判定はaudit-service側
+// (BR11、senior限定)に委ねる(ADR 0042と同じ考え方)。
 definePageMeta({ layout: "authenticated" });
 
 interface FrozenAccount {
@@ -65,6 +68,7 @@ async function confirmUnfreeze(accountId: string, proposalId: string | null) {
           <th>ティア</th>
           <th>凍結理由</th>
           <th></th>
+          <th></th>
         </tr>
       </thead>
       <tbody>
@@ -73,6 +77,9 @@ async function confirmUnfreeze(accountId: string, proposalId: string | null) {
           <td>{{ account.region }}</td>
           <td>{{ account.tier }}</td>
           <td>{{ account.freezeReason ?? "-" }}</td>
+          <td>
+            <NuxtLink :to="`/audit?accountId=${account.id}`" class="audit-link">監査結果を見る</NuxtLink>
+          </td>
           <td>
             <NuxtLink
               v-if="!account.proposalStatus || account.proposalStatus === 'rejected'"
@@ -116,6 +123,10 @@ td {
 }
 .error {
   color: #b00020;
+}
+.audit-link {
+  font-size: 0.85rem;
+  color: #555;
 }
 .badge {
   display: inline-block;

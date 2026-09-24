@@ -282,11 +282,13 @@ fraud-detection-engineはユーザー委任チェーンに参加しない機械�
 
 上記の相関キーは「事後に再構成できる」ところまでで、account-service自身の自己申告（`decided_at`/`executed_at`）とKeycloak/Envoyの第三者記録が実際に一致するかを検証する仕組みは、独立したサービス**audit-service**が担う（AI支援・人間の判断を行うコンポーネントとは別のコンポーネント。[ADR 0040](adr/0040-audit-service-reconciliation.md)・[0041](adr/0041-audit-service-implementation.md)）。
 
-- **ステートレス**：audit-service自身は永続ストアを持たない。`GET /reconcile?since=`が呼ばれるたびに、(a) account-serviceの`/audit/unfreeze-proposals`・`/audit/unfreeze-executions`（`account:audit`スコープ、機械間認証）から自己申告を、(b) Lokiの`/loki/api/v1/query_range`（Keycloakイベントログ、`TOKEN_EXCHANGE`かつ`account:unfreeze`）から第三者記録を、その場で取得する
-- **決定的なキー一致のみ、LLMは不使用**：`sub`が一致し、かつ時刻差が許容範囲（既定60秒）以内の第三者記録が存在するかどうかだけを判定する。検証者自身がAI（fraud-agent）と同種の非決定性・不透明さを持つと、「検証者は再現可能で説明可能である」という前提が崩れるため
+- **ステートレス**：audit-service自身は永続ストアを持たない。`GET /reconcile?since=`が呼ばれるたびに、(a) account-serviceの`/audit/unfreeze-proposals`・`/audit/unfreeze-executions`（`account:audit`スコープ、機械間認証）から自己申告（`decided_jti`/`executed_jti`を含む。[ADR 0044](adr/0044-audit-service-per-request-report.md)）を、(b) Lokiの`/loki/api/v1/query_range`から2種類の第三者記録——Keycloakイベントログ（`TOKEN_EXCHANGE`かつ`account:unfreeze`）とaccount-service自身のEnvoy ingressアクセスログ——を、その場で取得する
+- **決定的なキー一致のみ、LLMは不使用**（[ADR 0044](adr/0044-audit-service-per-request-report.md)）：自己申告に含まれるトークン識別子(jti)について、(1)Keycloakのイベントログに同じjtiでのトークン発行記録があるか、(2)account-service自身のEnvoyアクセスログに同じjtiで対応するAPIパスへの2xxリクエストが記録されているか、の2点が両方確認できて初めて一致とする。jtiはトークン発行ごとに一意なため、以前の`sub`+時刻近接という近似一致(近くにあった無関係な本物のイベントを誤って裏付けとして採用してしまう偽陽性の余地があった)を排除する完全一致判定になっている。検証者自身がAI（fraud-agent）と同種の非決定性・不透明さを持つと、「検証者は再現可能で説明可能である」という前提が崩れるため、判定はこの決定的なキー一致のみで行う
 - **突合対象は`account:unfreeze`スコープを要求する操作のみ**：承認/却下（`decided_at`）・凍結解除実行（`executed_at`）。可逆・低リスクな提案の新規作成（`account:propose`）は対象外
 - **片方向のみ**：自己申告に対応する第三者記録が無いことは検知するが、逆（第三者記録はあるが自己申告が無いこと）は検知しない（拒否された承認・実行試行がノイズになるため。[ADR 0041](adr/0041-audit-service-implementation.md) Decision参照）。この片方向だけでも、自己申告側の改ざん・欠落は検知できる
 - **突合結果の閲覧はsenior analyst限定**（[ADR 0042](adr/0042-audit-service-senior-gate.md)）：frontendに新設した「監査」画面（`/audit`）がsenior analystのログインセッションから`audience=audit-service, scope=audit:read`でToken Exchangeを行い、`GET /reconcile`を呼ぶ（§5パス④）。audit-service自身のingressはmTLS（frontendのみ許可）+jwt_authn（audience=audit-service）+rbac（`audit:read`保有）で保護され、その先で`x-auth-sub`を使いanalyst-attribute-serviceへ照会してlevelがseniorであることを確認する（表5のABAC判定とは別軸の二値ゲート。地域/ティアによる絞り込みは行わない）。junior analystが同じ画面・APIを呼ぶと403になる
+- **結果は凍結解除リクエスト（提案）単位でまとめる**（[ADR 0044](adr/0044-audit-service-per-request-report.md)）：カテゴリ別の件数集計だけでは「何と何が対応しているか」が伝わらなかったため、`GET /reconcile`のレスポンスは提案(`unfreeze_proposals`)ごとに承認/却下・実行それぞれの突合結果をまとめる形に変更した。提案に紐付かない直接実行（`proposalId`省略）は別枠で返し、「対応する提案が無いこと自体は異常ではない」ことを区別できるようにする。各操作の結果は「トークンが発行されたか」「account-serviceへ実際に届いたか」の2点を個別に返し、監査画面はこの構造をそのまま表示して画面冒頭に「何を・なぜ・どんな基準で」照合しているかを固定の説明文として明示する
+- **jtiを持たない旧形式の自己申告データはサポートしない**（[ADR 0044](adr/0044-audit-service-per-request-report.md)）：本変更の導入時点で、`unfreeze_proposals`/`unfreeze_executions`の既存データはjtiを持たないため削除した（デモ用データのため実データの保全は要件でない）。以降のデータは全てjti付きで蓄積される
 
 ## 10. 実行時シナリオ（ユースケース）
 
@@ -420,6 +422,7 @@ fraud-mcp-server・fraud-detection-engine・account-service・analyst-attribute-
 
 - **otel-lgtmの同梱コンポーネント（Prometheus/Tempo/Pyroscope/OTel Collector）を無効化できるか**：ADR 0025で採用した`grafana/otel-lgtm`はGrafana+Lokiのみ使う想定だが、残り4コンポーネントも起動している。個別に無効化できるかは未調査（動くが未使用として許容している）
 - **`k8s/keycloak/test-fixtures-job.yaml`のパスワード設定の再現性問題**：realm再import直後にジョブを実行すると、作成直後のユーザーでログインが401になることがある（kcadmでset-passwordを打ち直すと直る）。原因未特定（[insights.md](insights.md)参照）
+- **時系列の傾向・履歴レポート**：監査画面（[ADR 0044](adr/0044-audit-service-per-request-report.md)）は呼び出し時点のスナップショットのみを表示する（[ADR 0040](adr/0040-audit-service-reconciliation.md)のステートレス方針を維持）。過去の不一致件数の推移を追う要件が明確になった場合、突合結果の永続化（ADR 0040が見送ったステートフル構成）を再検討する必要がある
 
 ### データストア
 

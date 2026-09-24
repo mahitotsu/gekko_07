@@ -86,8 +86,6 @@ spec:
               value: "http://analyst-attribute-service"
             - name: LOKI_URL
               value: "http://otel-lgtm.observability.svc.cluster.local:3100"
-            - name: TOLERANCE_SECONDS
-              value: "60"
           volumeMounts:
             - name: handshake
               mountPath: /handshake

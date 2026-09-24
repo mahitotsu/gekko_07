@@ -2,7 +2,7 @@
 
 本ディレクトリは、設計判断1件ごとの根拠・選択経緯を記録する。[architecture.md](../architecture.md) は現在有効な設計断面のみを記載し、個々の判断の根拠はここに委譲する。
 
-決定が覆った場合は、旧ADRのStatusを`Superseded by NNNN`に更新し、新しいADRを追加する。43件のうち27件は今も覆っていないAccepted——後続ADRによる修正は「シナリオ選定（凍結解除の確定操作の精緻化）」「Token Exchangeの実行主体・宛先指定」「身元検証（mTLS/SPIFFE/SPIRE）」「frontendの本実装内での段階的置き換え」「fraud-agentの実装詳細（Anthropic呼び出し失敗時の挙動）」「analyst-attribute-serviceの呼び出し元拡張（監査結果の閲覧権限）」の6テーマに偏っており、乱発しているわけではない。以下はテーマ別の索引。同じテーマのADRを続けて読むと、1つの関心事がどう変遷したかを追いやすい。
+決定が覆った場合は、旧ADRのStatusを`Superseded by NNNN`に更新し、新しいADRを追加する。44件のうち28件は今も覆っていないAccepted——後続ADRによる修正は「シナリオ選定（凍結解除の確定操作の精緻化）」「Token Exchangeの実行主体・宛先指定」「身元検証（mTLS/SPIFFE/SPIRE）」「frontendの本実装内での段階的置き換え」「fraud-agentの実装詳細（Anthropic呼び出し失敗時の挙動）」「analyst-attribute-serviceの呼び出し元拡張（監査結果の閲覧権限）」の6テーマに偏っており、乱発しているわけではない。以下はテーマ別の索引。同じテーマのADRを続けて読むと、1つの関心事がどう変遷したかを追いやすい。
 
 ## シナリオ選定
 
@@ -88,3 +88,4 @@
 | [0041](0041-audit-service-implementation.md) | audit-serviceを本実装し、account-serviceの自己申告とKeycloakの第三者記録の突合を実機で成立させる | Partially superseded by 0042 |
 | [0043](0043-chat-account-scoping.md) | 1回のチャットが1口座に閉じるという制約を、プロンプトではなくfraud-mcp-serverのツール実装で強制する | Accepted |
 | [0042](0042-audit-service-senior-gate.md) | audit-serviceの突合結果閲覧をsenior analyst限定にし、frontendに監査画面を追加する | Accepted |
+| [0044](0044-audit-service-per-request-report.md) | audit-serviceの突合結果を凍結解除リクエスト単位のレポートとして再構成する | Accepted |

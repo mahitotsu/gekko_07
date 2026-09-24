@@ -1,6 +1,6 @@
 # ADR 0041: audit-serviceを本実装し、account-serviceの自己申告とKeycloakの第三者記録の突合を実機で成立させる
 
-- **Status**: Partially superseded by [0042](0042-audit-service-senior-gate.md)（ingressのmTLS+jwt_authn+rbac追加、senior限定閲覧ゲート、`client-credentials`サイドカーの`egress-auth`への改称・統合）
+- **Status**: Partially superseded by [0042](0042-audit-service-senior-gate.md)（ingressのmTLS+jwt_authn+rbac追加、senior限定閲覧ゲート、`client-credentials`サイドカーの`egress-auth`への改称・統合）・[0044](0044-audit-service-per-request-report.md)（突合ロジックを`sub`+時刻近接からjti+Envoyアクセスログの完全一致判定へ置き換え）
 - **Date**: 2026-09-24
 
 ## Context
@@ -14,7 +14,7 @@
 analyst-attribute-serviceと同じ理由（単一の役割に対してフレームワークを持ち込む理由がない、ビルドが速くイメージも小さい）に加え、「検証者自身が決定的で再現可能である」というADR 0040の前提を体現する構成として、外部依存パッケージを一切持たない構成にした（`go.mod`に`require`行が無い）。
 
 - `GET /reconcile?since=<RFC3339>`（省略時は直近24時間）が唯一の業務エンドポイント。呼び出しの都度、(a) account-serviceの`/audit/*`から自己申告を、(b) Lokiの`/loki/api/v1/query_range`から第三者記録（Keycloakイベントログ、`container="keycloak"` かつ `account:unfreeze`を含む行）を取得し、突合する。永続化は一切しない（ADR 0040のステートレス方針）
-- 突合ロジック（`hasMatch`）は「自己申告の`sub`と第三者記録の`sub`が一致し、かつ時刻差が許容範囲（既定60秒、`TOLERANCE_SECONDS`で変更可）以内」という決定的なキー一致判定のみ。LLMは一切使わない
+- 突合ロジック（`hasMatch`）は「自己申告の`sub`と第三者記録の`sub`が一致し、かつ時刻差が許容範囲（既定60秒、`TOLERANCE_SECONDS`で変更可）以内」という決定的なキー一致判定のみ。LLMは一切使わない〔[ADR 0044](0044-audit-service-per-request-report.md)で訂正：この`sub`+時刻近接による近似一致は、トークン識別子(jti)とaccount-service自身のEnvoyアクセスログによる完全一致判定に置き換えられた〕
 - 突合対象は`decided_at`（提案の承認/却下）・`executed_at`（凍結解除実行）の2つのみ、いずれも`account:unfreeze`スコープを要求する操作（表2）。`account:propose`（提案の新規作成、可逆・低リスク）は対象外——不可逆・高リスクな操作の実在性を裏付けることが本来の目的のため
 - **片方向のみの突合**：自己申告→第三者記録の対応（「対応する第三者記録が見つからない自己申告」の検知）のみを実装し、逆方向（「対応する自己申告が無い第三者記録」の検知）は実装しなかった。account:unfreezeスコープのToken Exchange自体は、account-service側が403/409等で拒否した試行（例：承認されていない提案の実行試行）でも発生するため、逆方向を素朴に実装すると通常運用の拒否ケースを大量に「不整合」として検出してしまい、ノイズになる。片方向のみでも「自己申告側の改ざん・欠落」は検知できるため、ADR 0040の核心の主張（一方だけの改ざんは不整合として検知できる）は損なわれない
 - ingressにjwt_authn/rbacを持たせていない。「誰が突合結果を閲覧できるか」はADR 0040で未決定のまま残した将来課題であり（architecture.md §11参照）、今回は`kubectl port-forward`での到達のみを前提にする（`k8s/observability/`のGrafanaと同じ位置づけ）。ADR 0009 §2の多層防御のうち①②（loopback限定bind・接続元loopbackチェック）は引き継いだが、③（合言葉ヘッダー）は「rbac通過後にのみ付与」という前提自体が成立しない（検知すべきバイパス対象がそもそも無い）ため見送った。認証・認可を追加する際に③も追加する〔[ADR 0042](0042-audit-service-senior-gate.md)で訂正：senior限定閲覧ゲートのためmTLS+jwt_authn+rbac（`audit:read`）+③を追加し、`kubectl port-forward`前提から変更〕
