@@ -574,6 +574,18 @@ federation {
 
 いずれも現在は採用していない。再検討する際の判断材料として残す（判断すべき問いは[architecture.md](architecture.md) §11「送信者拘束」）。
 
+### 5.0 なぜDPoP・RFC 8705はいずれも委任チェーンと構造的に相性が悪いのか（仕様レベルの根拠）
+
+5.1・5.2で実機確認した「既に拘束済みのsubject_tokenを別クライアントが再exchangeすると拒否される」という制約は、Keycloak固有の実装都合ではなく、関連する複数の仕様の定義を重ね合わせると論理的に導出できる、構造的な帰結だと判断できる。根拠は以下の3点。
+
+1. **送信者拘束の定義そのものが「鍵の保持者の同一性」を要求する**：[RFC 9449](https://www.rfc-editor.org/rfc/rfc9449.html)（DPoP）はIntroductionで"the legitimate presenter of the token is constrained to be the sender that holds and proves possession of the private part of the key pair"と定義する。[RFC 9700](https://www.rfc-editor.org/doc/rfc9700/)（OAuth 2.0 Security BCP）も同様に「sender-constrained access tokenは、その適用範囲を特定の送信者に限定し、その送信者はある秘密の認知を証明する義務を負う」という定義を採用している。つまり「正当な提示者」は、発行時に鍵の所有を証明した**同一の主体**であることが定義上の前提になる
+2. **RFC 8693のImpersonation方式は、提示者の同一性をあえて消す設計になっている**：[RFC 8693](https://www.rfc-editor.org/rfc/rfc8693.html)は`actor_token`を伴わない交換（Impersonation）について、発行されるトークンが「元のsubject_tokenの主体そのもの」として振る舞うと定義し、`act`クレーム（誰が実際に代理したか）は付与しない。つまりImpersonation方式は、トークンを見る限り「実際に今それを提示しているのが誰か」を意図的に記録・追跡しない設計である
+3. **この2つを重ねると論理的に破綻する**：DPoP/RFC 8705は「今この鍵を持っている者だけが正当な提示者」と定義する一方、Impersonation方式のToken Exchangeは「元の主体とは別の実体が、その区別を記録せずに正当な提示者として振る舞ってよい」ことを許す。両者を同時に満たす唯一の整合的な解釈は「拘束済みsubject_tokenを別の鍵の保持者が再exchangeすることを拒否する」以外にない。もしKeycloakがここで黙って新しい鍵へ拘束し直す（re-bind）挙動を許せば、盗まれた拘束済みトークンを攻撃者がImpersonation方式のToken Exchangeで「自分の鍵に付け替えて」正当化できてしまい、送信者拘束の目的（盗難トークンの再利用防止）そのものが破られる。つまりKeycloakの拒否は、恣意的な制限ではなく、Impersonation方式を採用した時点で安全側に倒すなら他に選択肢がない、必然的な帰結である
+
+RFC 8693自身はcnf/送信者拘束について一切規定しておらず（"the specific syntax, semantics, and security characteristics of the tokens themselves...are explicitly out of scope"）、RFC 9449もRFC 8693やdelegation/actor/token exchangeという語を一度も使っていない。つまりこの非互換性は、**どの仕様書にも明文化されていない、複数の仕様を組み合わせた際に初めて顕在化する仕様間ギャップ**である。実際、Keycloakの未解決issue [#51205](https://github.com/keycloak/keycloak/issues/51205)（2026-07-27、"DPoP拘束済みトークンとdelegation/actor機能を同時に使いたい"という機能要望）は、この組み合わせを求める実際のニーズ（AIエージェントの委任＋トークン漏洩対策）が存在しながら未解決のまま残っていることを示している。
+
+**Delegation方式（`actor_token`＋`act`クレーム）なら原理的に両立しうる**：Delegation方式では各ホップが「自分自身の鍵で自分自身のactor_tokenを提示する」ことが前提になっており、`act`クレームが「誰が代理したか」を明示的に記録する。つまり「鍵の保持者の同一性」を各ホップの中で完結させ、ホップ間の連鎖は`act`クレームのネストで表現するため、5.0-1の矛盾が生じない。ただしgekko_07は`sub`を委任チェーン全体で同一に保ち`jti`/`scope`の違いで追跡する監査設計（architecture.md §5・§9）のためにImpersonation方式を採用しており（[ADR 0019](adr/0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md)は、Delegationモデルをクライアント認証方式の検討の一つとして扱ったが「トークン意味論はimpersonation的な現状を変更しない」と明記し、この非互換性を評価対象にしないまま現状を維持している）、Delegation方式への転換は監査設計の作り直しを伴う別の規模の変更になる。
+
 ### 5.1 DPoP送信者拘束（fraud-mcp-server→account-serviceの1ホップ、ADR 0013。ADR 0015で撤去済み）
 
 **このセクションが指す実装（`k8s/dpop-verifier/`等）はADR 0015で撤去済み。** 以下は撤去前の実機検証で得た知見で、将来DPoPを再検討する際の参考として残す。
