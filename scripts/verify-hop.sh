@@ -258,7 +258,7 @@ except urllib.error.HTTPError:
 '
 }
 
-echo "==> 1a. frontendがfraud-agent宛てにToken Exchange(scope=fraud-agent:chat)する経路を直接検証"
+echo "==> 1a. frontendがfraud-agent宛てにToken Exchange(scope=fraud-agent:read)する経路を直接検証"
 FRAUD_AGENT_TOKEN=$(sidecar_exchange "$FRONTEND_POD" fraud-agent POST /chat "$YAMADA_RAW_TOKEN")
 if [ -z "$FRAUD_AGENT_TOKEN" ]; then
   echo "fraud-agent宛てトークンの取得に失敗しました" >&2

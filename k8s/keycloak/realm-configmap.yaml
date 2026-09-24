@@ -67,8 +67,8 @@ data:
           ]
         },
         {
-          "name": "fraud-agent:chat",
-          "description": "AIエージェントとのチャット開始（対象audience: fraud-agent。frontendのみに付与。ADR 0046でaccount:readから分離）",
+          "name": "fraud-agent:read",
+          "description": "AIエージェントとのチャット開始（対象audience: fraud-agent。frontendのみに付与。ADR 0046でaccount:readから分離、ADR 0047で`fraud-agent:chat`から改名）",
           "protocol": "openid-connect",
           "attributes": {
             "include.in.token.scope": "true",
@@ -267,7 +267,7 @@ data:
             "jwt.credential.sub": "spiffe://gekko.internal/ns/gekko/sa/default/frontend"
           },
           "defaultClientScopes": [],
-          "optionalClientScopes": ["account:read", "account:unfreeze", "audit:read", "fraud-agent:chat"],
+          "optionalClientScopes": ["account:read", "account:unfreeze", "audit:read", "fraud-agent:read"],
           "protocolMappers": [
             {
               "name": "audience-self",

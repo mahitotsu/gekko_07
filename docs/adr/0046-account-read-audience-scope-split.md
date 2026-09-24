@@ -1,6 +1,6 @@
 # ADR 0046: `account:read`のaudienceマッパー共有を解消し、fraud-agent・fraud-mcp-server向けを専用scopeへ分離する
 
-- **Status**: Accepted
+- **Status**: Partially superseded by [0047](0047-fraud-agent-scope-rename.md)（新設した`fraud-agent:chat`を`fraud-agent:read`へ改名。scope分離という決定自体・`fraud-mcp-server:read`は有効なまま）
 - **Amends**: [0010](0010-egress-listener-granularity.md)・[0014](0014-fraud-agent-token-exchange.md)・[0023](0023-fraud-agent-fraud-mcp-server-hop.md)・[0024](0024-frontend-edge-proxy-and-simplified-login.md)（frontend→fraud-agent・fraud-agent→fraud-mcp-serverの2ホップで使うscope名を`account:read`から専用scopeへ変更）
 - **Date**: 2026-09-24
 
@@ -21,18 +21,18 @@
 
 [k8s/keycloak/realm-configmap.yaml](../../k8s/keycloak/realm-configmap.yaml)の`account:read`client scopeから`fraud-agent`・`fraud-mcp-server`向けの`oidc-audience-mapper`を削除し、account-service向けの1つだけを残した。代わりに、audienceごとに1マッパーだけを持つ専用scopeを2つ新設した：
 
-- `fraud-agent:chat`（audience=fraud-agent）：frontendのみに付与
+- `fraud-agent:chat`（audience=fraud-agent）：frontendのみに付与〔[ADR 0047](0047-fraud-agent-scope-rename.md)で訂正：`fraud-agent:read`に改名〕
 - `fraud-mcp-server:read`（audience=fraud-mcp-server）：fraud-agentのみに付与
 
-frontendの`optionalClientScopes`に`fraud-agent:chat`を追加し、fraud-agentの`optionalClientScopes`は`account:read`から`fraud-mcp-server:read`に置き換えた。fraud-mcp-serverの`optionalClientScopes`（`account:read`・`account:propose`）は変更していない（account-service向けの`account:read`マッパーはそのまま残るため）。
+frontendの`optionalClientScopes`に`fraud-agent:chat`を追加し〔[ADR 0047](0047-fraud-agent-scope-rename.md)で訂正：`fraud-agent:read`に改名〕、fraud-agentの`optionalClientScopes`は`account:read`から`fraud-mcp-server:read`に置き換えた。fraud-mcp-serverの`optionalClientScopes`（`account:read`・`account:propose`）は変更していない（account-service向けの`account:read`マッパーはそのまま残るため）。
 
 これにより、[insights.md](../insights.md) 2.3節が明文化していた「Standard Token Exchange V2は、要求元クライアントに割り当てられたclient scopeが対象audienceを指す`oidc-audience-mapper`を持っていない限りそのaudienceを解決できない」という既存の実機知見どおり、frontendが`audience=fraud-mcp-server`を要求してもKeycloakが`{"error":"invalid_request","error_description":"Requested audience not available: fraud-mcp-server"}`で拒否するようになった（後述の実機検証で確認）。
 
 ### 各サービスのscope解決ロジック・Envoy ingress RBACを追随させる
 
-- [k8s/frontend/token-exchange-app-configmap.yaml](../../k8s/frontend/token-exchange-app-configmap.yaml)のSCOPE_RULES：`(fraud-agent, POST /chat)`の解決先scopeを`account:read`から`fraud-agent:chat`に変更した
+- [k8s/frontend/token-exchange-app-configmap.yaml](../../k8s/frontend/token-exchange-app-configmap.yaml)のSCOPE_RULES：`(fraud-agent, POST /chat)`の解決先scopeを`account:read`から`fraud-agent:chat`に変更した〔[ADR 0047](0047-fraud-agent-scope-rename.md)で訂正：`fraud-agent:read`に改名〕
 - [k8s/fraud-agent/deployment.yaml](../../k8s/fraud-agent/deployment.yaml)・[k8s/fraud-agent/token-exchange-app-configmap.yaml](../../k8s/fraud-agent/token-exchange-app-configmap.yaml)：`FIXED_SCOPE`を`account:read`から`fraud-mcp-server:read`に変更した
-- [k8s/fraud-agent/envoy-configmap.yaml](../../k8s/fraud-agent/envoy-configmap.yaml)：ingress rbacの`x-auth-scope`一致条件を`account:read`から`fraud-agent:chat`に変更した（frontend→fraud-agentホップの受信側検証）
+- [k8s/fraud-agent/envoy-configmap.yaml](../../k8s/fraud-agent/envoy-configmap.yaml)：ingress rbacの`x-auth-scope`一致条件を`account:read`から`fraud-agent:chat`に変更した（frontend→fraud-agentホップの受信側検証）〔[ADR 0047](0047-fraud-agent-scope-rename.md)で訂正：`fraud-agent:read`に改名〕
 - [k8s/fraud-mcp-server/envoy-configmap.yaml](../../k8s/fraud-mcp-server/envoy-configmap.yaml)：ingress rbacの`x-auth-scope`一致条件を`account:read`から`fraud-mcp-server:read`に変更した（fraud-agent→fraud-mcp-serverホップの受信側検証）
 
 fraud-mcp-server→account-serviceホップ（scope=`account:read`または`account:propose`）は無変更。
@@ -43,13 +43,13 @@ fraud-mcp-server→account-serviceホップ（scope=`account:read`または`acco
 
 ### 実機検証
 
-`make keycloak-reimport-realm`でrealm設定を反映し、frontend/fraud-agent/fraud-mcp-serverを再起動した上で、`scripts/verify-hop.sh`のステップ1a・1bで新しいscope名（`fraud-agent:chat`・`fraud-mcp-server:read`）による正常系のToken Exchangeが成功することを確認した。
+`make keycloak-reimport-realm`でrealm設定を反映し、frontend/fraud-agent/fraud-mcp-serverを再起動した上で、`scripts/verify-hop.sh`のステップ1a・1bで新しいscope名（`fraud-agent:chat`・`fraud-mcp-server:read`）による正常系のToken Exchangeが成功することを確認した。〔[ADR 0047](0047-fraud-agent-scope-rename.md)で訂正：`fraud-agent:chat`はさらに`fraud-agent:read`に改名〕
 
 加えて、本ADRが解消を主張する監査ギャップそのものを実機で反証する回帰テストをステップ1cとして追加した：frontend自身のtoken-exchangeサイドカーの`resolve_scope`（SCOPE_RULES）を経由せず、`exchange_token()`を直接呼び出してKeycloakへ`client_id=frontend, audience=fraud-mcp-server, scope=account:read`の生のToken Exchangeリクエストを送る（[ADR 0024](0024-frontend-edge-proxy-and-simplified-login.md)当時の抜け道と同じ形）。修正前はこれが成功してしまう既知の状態だったが、修正後はKeycloakが`{"error":"invalid_request","error_description":"Requested audience not available: fraud-mcp-server"}`で拒否することを確認した。これにより、表1のDENYがアプリ実装の自制ではなくKeycloakの設定そのもので強制されるようになったことを実機で示せた。
 
 ## Consequences
 
-- architecture.md §11の「`account:read`スコープのaudience監査ギャップ」は解消したため、該当項目を削除した。§3.2（Keycloak側の前提）・§3.3（表1のホップ一覧）・§4（クライアント・スコープ設計表）・表1の脚注・表2「どのトークンがどのスコープを保有するか」・§10のUC1シーケンス図と手順を、新しいscope名（`fraud-agent:chat`・`fraud-mcp-server:read`）に合わせて更新した
+- architecture.md §11の「`account:read`スコープのaudience監査ギャップ」は解消したため、該当項目を削除した。§3.2（Keycloak側の前提）・§3.3（表1のホップ一覧）・§4（クライアント・スコープ設計表）・表1の脚注・表2「どのトークンがどのスコープを保有するか」・§10のUC1シーケンス図と手順を、新しいscope名（`fraud-agent:chat`・`fraud-mcp-server:read`）に合わせて更新した〔[ADR 0047](0047-fraud-agent-scope-rename.md)で訂正：`fraud-agent:chat`はさらに`fraud-agent:read`に改名〕
 - [services.md](../services.md)のfrontend・fraud-agentの記述（scope=account:readとしていた箇所）も更新した
 - [insights.md](../insights.md) 2.3節「`account:read`のaudienceマッパー共有スコープは、requesting client側でaudienceを技術的に制限しない」の対応欄に、本ADRで解消した旨を追記した（症状・原因の記述自体は履歴として保持）
 - `scripts/verify-hop.sh`に、この監査ギャップが実際に塞がっていることを示す回帰テスト（ステップ1c）が恒久的に追加された。今後同じ理由で別のscopeを複数audienceに共有させたくなった場合、同種の負のテストを追加することが望ましい

@@ -60,7 +60,7 @@ data:
         # ADR 0036: 提案の承認/却下も確定操作(unfreeze)と同じ人間専用scopeの配下に置く。
         ("account-service", re.compile(r"^/accounts/[^/]+/(unfreeze|unfreeze-proposals/[^/]+/(approve|reject))$"), "POST", "account:unfreeze"),
         ("account-service", re.compile(r"^/accounts/[^/]+(/.*)?$"), "GET", "account:read"),
-        ("fraud-agent", re.compile(r"^/chat$"), "POST", "fraud-agent:chat"),
+        ("fraud-agent", re.compile(r"^/chat$"), "POST", "fraud-agent:read"),
         # ADR 0042: 監査結果の閲覧(senior限定。判定自体はaudit-service側で行う)。
         ("audit-service", re.compile(r"^/reconcile$"), "GET", "audit:read"),
     ]

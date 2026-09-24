@@ -85,7 +85,7 @@ Token Exchange/client_credentialsが動作するホップは次の9つ。全ホ�
 | # | 呼び出し元 → 宛先 | グラント | scope | ADR |
 |---|---|---|---|---|
 | 1 | frontend → account-service | Token Exchange | `account:read`（GET）／`account:unfreeze`（承認・却下・凍結解除のPOST） | [0024](adr/0024-frontend-edge-proxy-and-simplified-login.md)・[0036](adr/0036-unfreeze-proposal-approval-step.md) |
-| 2 | frontend → fraud-agent | Token Exchange | `fraud-agent:chat` | [0014](adr/0014-fraud-agent-token-exchange.md)・[0024](adr/0024-frontend-edge-proxy-and-simplified-login.md)・[0046](adr/0046-account-read-audience-scope-split.md) |
+| 2 | frontend → fraud-agent | Token Exchange | `fraud-agent:read` | [0014](adr/0014-fraud-agent-token-exchange.md)・[0024](adr/0024-frontend-edge-proxy-and-simplified-login.md)・[0046](adr/0046-account-read-audience-scope-split.md)・[0047](adr/0047-fraud-agent-scope-rename.md) |
 | 3 | frontend → audit-service | Token Exchange | `audit:read` | [0042](adr/0042-audit-service-senior-gate.md) |
 | 4 | fraud-agent → fraud-mcp-server | Token Exchange | `fraud-mcp-server:read` | [0014](adr/0014-fraud-agent-token-exchange.md)・[0023](adr/0023-fraud-agent-fraud-mcp-server-hop.md)・[0046](adr/0046-account-read-audience-scope-split.md) |
 | 5 | fraud-mcp-server → account-service | Token Exchange | `account:read`（GET）／`account:propose`（提案のPOST） | [0019](adr/0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md) |
@@ -171,7 +171,7 @@ Keycloakが検証するクライアントの身元（JWT-SVID）と、そのク�
 | スコープ | 対象audience | 付与するクライアント | 意味 |
 |---|---|---|---|
 | `account:read` | account-service | frontend, fraud-mcp-server | 取引・口座の読み取り |
-| `fraud-agent:chat` | fraud-agent | **frontend のみ** | AIエージェントとのチャット開始（委任チェーンの入口。[ADR 0014](adr/0014-fraud-agent-token-exchange.md)・[ADR 0046](adr/0046-account-read-audience-scope-split.md)） |
+| `fraud-agent:read` | fraud-agent | **frontend のみ** | AIエージェントとのチャット開始（委任チェーンの入口。[ADR 0014](adr/0014-fraud-agent-token-exchange.md)・[ADR 0046](adr/0046-account-read-audience-scope-split.md)・[ADR 0047](adr/0047-fraud-agent-scope-rename.md)） |
 | `fraud-mcp-server:read` | fraud-mcp-server | **fraud-agent のみ** | MCPツール呼び出し（[ADR 0014](adr/0014-fraud-agent-token-exchange.md)・[ADR 0046](adr/0046-account-read-audience-scope-split.md)） |
 | `account:propose` | account-service | **fraud-mcp-server のみ** | 凍結解除案の記録（可逆・低リスク） |
 | `account:freeze` | account-service | **fraud-detection-engine のみ** | 口座凍結の自動実行（機械間認証。業務属性チェックなし） |
@@ -189,7 +189,7 @@ Keycloakが検証するクライアントの身元（JWT-SVID）と、そのク�
 **① 提案生成パス（AI起因、読み取り＋提案のみ）**
 ```
 analystトークン(aud=frontend)
-  → Token Exchange (frontend実行, audience=fraud-agent, scope=fraud-agent:chat)
+  → Token Exchange (frontend実行, audience=fraud-agent, scope=fraud-agent:read)
   → Token Exchange (fraud-agent実行, audience=fraud-mcp-server, scope=fraud-mcp-server:read)
   → Token Exchange (fraud-mcp-server実行, audience=account-service, scope=account:read または account:propose)
   → account-serviceがToken Exchange (audience=analyst-attribute-service, scope=analyst:read) でアクセス制御
@@ -263,7 +263,7 @@ analystトークン(aud=frontend)
 - ALLOWは6マス。frontendの行に3つALLOWがあるのは、frontendが1つのログイントークンから、目的の異なる単一audienceトークン（account-service向け・fraud-agent向け・audit-service向け）をそれぞれ個別のToken Exchangeで取得するため。1つのトークンが複数audienceを同時に持つわけではない
 - AIエージェント側の委任チェーンはfrontend→fraud-agent→fraud-mcp-server→account-serviceの4ホップ（[ADR 0014](adr/0014-fraud-agent-token-exchange.md)）。各ホップは常に自分宛て（`aud`が自分自身のクライアントidと一致する）トークンだけを`subject_token`として次のToken Exchangeに使う
 - AIエージェント側の経路からanalyst-attribute-serviceへ到達する手段は、account-serviceを経由するものだけである。ホップ飛ばし（例：fraud-agentが直接account-serviceやanalyst-attribute-serviceを呼ぶ）は構造上不可能（各クライアントへの`optionalClientScopes`の割当のみで実現）
-- frontend→fraud-agentの交換で発行されるトークンは`fraud-agent:chat`のみ、fraud-agent→fraud-mcp-serverの交換で発行されるトークンは`fraud-mcp-server:read`のみを持ち、いずれも`account:unfreeze`は含まれない。これがAIエージェントに凍結解除の実行権限を渡さないための核心の仕組み（表2参照）
+- frontend→fraud-agentの交換で発行されるトークンは`fraud-agent:read`のみ、fraud-agent→fraud-mcp-serverの交換で発行されるトークンは`fraud-mcp-server:read`のみを持ち、いずれも`account:unfreeze`は含まれない。これがAIエージェントに凍結解除の実行権限を渡さないための核心の仕組み（表2参照）
 
 **この表の読み方の前提（重要）**：
 
@@ -291,7 +291,7 @@ analystトークン(aud=frontend)
 | トークン | 発行経路 | 保有しうるスコープ |
 |---|---|---|
 | frontendが発行するトークン（account-service宛て） | frontendがログイントークンを`subject_token`にToken Exchange | `account:read`（ダッシュボード表示）または`account:unfreeze`（承認・却下・凍結解除） |
-| frontendが発行するトークン（fraud-agent宛て、提案生成パス用） | 同上、target audienceのみ異なる（[ADR 0014](adr/0014-fraud-agent-token-exchange.md)・[ADR 0046](adr/0046-account-read-audience-scope-split.md)） | `fraud-agent:chat`のみ |
+| frontendが発行するトークン（fraud-agent宛て、提案生成パス用） | 同上、target audienceのみ異なる（[ADR 0014](adr/0014-fraud-agent-token-exchange.md)・[ADR 0046](adr/0046-account-read-audience-scope-split.md)・[ADR 0047](adr/0047-fraud-agent-scope-rename.md)） | `fraud-agent:read`のみ |
 | frontendが発行するトークン（audit-service宛て、監査閲覧用） | 同上（[ADR 0042](adr/0042-audit-service-senior-gate.md)） | `audit:read`のみ |
 | fraud-agentが発行するトークン（fraud-mcp-server宛て） | fraud-agentが受け取った`aud=fraud-agent`のトークンを`subject_token`にToken Exchange（[ADR 0046](adr/0046-account-read-audience-scope-split.md)） | `fraud-mcp-server:read`のみ |
 | fraud-mcp-serverが発行するトークン（account-service宛て） | fraud-mcp-serverがToken Exchange | `account:read`または`account:propose` |
@@ -455,7 +455,7 @@ sequenceDiagram
   participant AS as account-service
   participant AAS as analyst-attribute-service
   A->>FE: ログイン、「AIによる精査を依頼」
-  FE->>FA: POST /chat（aud=fraud-agent, fraud-agent:chat）
+  FE->>FA: POST /chat（aud=fraud-agent, fraud-agent:read）
   FA->>MCP: MCPツール呼び出し（aud=fraud-mcp-server, fraud-mcp-server:read）
   MCP->>AS: GET /accounts/frozen（aud=account-service, account:read）
   AS->>AAS: 属性照会（analyst:read）
@@ -475,7 +475,7 @@ sequenceDiagram
 ```
 1. yamada-analystがfrontendからログイン
 2. frontendでAIエージェント（fraud-agent）とのチャットを開始
-   → frontend: 自身のログイントークン（aud=frontend）を`subject_token`にToken Exchangeを実行（audience=fraud-agent, scope=fraud-agent:chat）し、そのトークンでfraud-agentのチャット開始APIを呼ぶ。会話の対象口座IDを`POST /chat?accountId=`で渡し、fraud-mcp-serverはその口座以外へのツール呼び出しを拒否する（[ADR 0043](adr/0043-chat-account-scoping.md)）
+   → frontend: 自身のログイントークン（aud=frontend）を`subject_token`にToken Exchangeを実行（audience=fraud-agent, scope=fraud-agent:read）し、そのトークンでfraud-agentのチャット開始APIを呼ぶ。会話の対象口座IDを`POST /chat?accountId=`で渡し、fraud-mcp-serverはその口座以外へのツール呼び出しを拒否する（[ADR 0043](adr/0043-chat-account-scoping.md)）
 3. fraud-agent → fraud-mcp-server: 受け取ったトークン（aud=fraud-agent）を`subject_token`に自身のToken Exchangeを実行（audience=fraud-mcp-server, scope=fraud-mcp-server:read）した上で、MCPツール get_frozen_accounts を呼ぶ
 4. fraud-mcp-server: Token Exchange（audience=account-service, scope=account:read）
 5. account-service: Token Exchange（audience=analyst-attribute-service, scope=analyst:read）でyamada-analystの属性（東京, junior）を取得
@@ -527,9 +527,9 @@ UC1と同じ流れだが、手順6で東京・大阪のhigh-value口座も結果
 ```
 1. 仮にfraud-agent（またはfraud-mcp-server）が凍結解除APIを直接呼ぼうとしても、
    手持ちのトークンは委任チェーン（frontend→fraud-agent→fraud-mcp-server）上のどのホップも
-   `account:unfreeze`を含まない（fraud-agent宛ては`fraud-agent:chat`のみ、fraud-mcp-server宛ては
+   `account:unfreeze`を含まない（fraud-agent宛ては`fraud-agent:read`のみ、fraud-mcp-server宛ては
    `fraud-mcp-server:read`のみ、account-service宛ては`account:read`または`account:propose`のみ。
-   [ADR 0046](adr/0046-account-read-audience-scope-split.md)）
+   [ADR 0046](adr/0046-account-read-audience-scope-split.md)・[ADR 0047](adr/0047-fraud-agent-scope-rename.md)）
 2. account-serviceのスコープチェック（表2）でDENY
 ```
 
