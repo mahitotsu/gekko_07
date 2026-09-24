@@ -630,6 +630,20 @@ k8s内部通信のmTLS横展開が全ホップで完了した([architecture.md](
 
 この結果、EnvoyのXFCC（`x-forwarded-client-cert`の`Cert=`要素、URL-encoded PEM）から必要な変換は「URLデコード→BEGIN/END行除去→改行除去」という純粋な文字列整形のみであり、証明書のパースや再署名等の暗号処理は不要と分かった。上記「対応（2026-09-24時点）」が前提にしていた「LuaかカスタムSPIのどちらかが必須」という判断材料は成立しなくなっている。判断すべき問いの更新はarchitecture.md §11を参照。
 
+#### 検証側（cnfとの照合）は`%DOWNSTREAM_PEER_FINGERPRINT_256%`だけで、新規コンポーネント無しに完結する（2026-09-25、使い捨てEnvoy v1.31.5での実機確認）
+
+**確認内容**：このプロジェクトが実際に使っているバージョン（`envoyproxy/envoy:v1.31.5`）で、mTLS必須のdownstream listener（`require_client_certificate: true`）にクライアント証明書付きでリクエストを送り、`route.request_headers_to_add`に`%DOWNSTREAM_PEER_FINGERPRINT_256%`を指定したところ、アップストリームへ転送されたヘッダーに`x-downstream-fingerprint-256: e274b534c641d103dfa8487af1c496df903b32b3124c22729ecb1c1a97b505c0`が正しく注入されることを確認した（値は接続に使ったクライアント証明書のSHA-256フィンガープリントと完全一致、`openssl x509 -fingerprint -sha256`で事前計算した値と照合済み）。同時に`forward_client_cert_details: SANITIZE_SET`が生成する`x-forwarded-client-cert`ヘッダーの`Hash=`フィールドも同じ値を返すことを確認した。
+
+**対応**：これにより、account-service等の利用時点での`cnf.x5t#S256`照合（トークンの持ち主が今まさにこの接続の証明書を持っているかの検証）は、Envoy設定（`request_headers_to_add`）とアプリ側での2つのヘッダー文字列比較（`jwt_authn`の`claim_to_headers`で転送した`cnf`クレームと、この`x-downstream-fingerprint-256`ヘッダー）だけで完結する見込みが立った。新規のフィルタ・サイドカー・Luaはいずれも不要。この比較を`handshake-init`の合言葉検証（§3.4）と同じ「アプリ側での多層防御チェック」として実装する想定。検証環境は使い捨てのDocker Compose相当の構成（`envoyproxy/envoy:v1.31.5`＋Python製echoサーバー、gekko_07クラスタ本体には一切触れず）で、検証後に破棄済み。
+
+#### 発行側の変換（Envoy XFCC → Keycloakが期待するBase64(DER)）はEnvoy設定のみでは完結せず、小さな変換コンポーネントが必要——ただし暗号処理は不要と実機で確定した（2026-09-25、Envoy v1.31.5→Keycloak 26.7.0のend-to-end検証）
+
+**確認内容**：まずKeycloak側のもう一つの組み込みプロバイダ`apache`（`ApacheProxySslClientCertificateLookup`）のソースも確認したが、こちらも`haproxy`同様にURLデコードを一切行わず、PEMのBEGIN/END行が存在する場合は実際の改行文字（`\n`・`\r\n`）をそのまま前提に除去する実装だった。HTTPヘッダーの値には生の改行を含められない制約（§5.2既出）と合わせると、Envoyがネイティブに生成するXFCC（URLエンコード済みPEM）は、どちらの組み込みプロバイダを選んでもそのままでは受け付けられないことが確定した。つまりEnvoy設定の`request_headers_to_add`が提供する`%...%`置換だけでは（URLデコードや部分文字列抽出の機能を持たないため）この変換を完結できず、**何らかの変換コンポーネントは避けられない**。
+
+そこで、実際にこのプロジェクトが使っているバージョンの組み合わせ（`envoyproxy/envoy:v1.31.5`→変換コンポーネント→`quay.io/keycloak/keycloak:26.7.0`、`x509cert-lookup-provider=haproxy`）でend-to-endの使い捨て環境を構築し、mTLSクライアント証明書付きのclient_credentialsリクエストを実際に流した。変換コンポーネントは約30行のPythonスクリプトで、処理内容は「XFCCの`Cert=`部分を取り出す→URLデコード→BEGIN/END行を除去→改行を除去→`SSL_CLIENT_CERT`ヘッダーとして転送する」という文字列整形のみ（証明書のパース・検証・再署名は一切行わない）。結果、200成功でアクセストークンが発行され、`cnf.x5t#S256`が実際に接続したクライアント証明書のSHA-256サムプリントと完全一致することを確認した。
+
+**対応**：発行側は「Lua変換 or カスタムSPI」という二択ではなく、**証明書の意味を一切解釈しない単純な文字列整形コンポーネント**で足りることが実機で確定した。既存の`token-exchange`/`client-credentials`/`egress-auth`と同じ「独立プロセス・ユニットテスト可能」なサイドカーとして実装するのが妥当（実際の判断・検証はKeycloak本体のSPI側で完結しており、この変換コンポーネントが誤動作しても壊れたDERとしてKeycloak側で拒否される＝fail-closed）。判断すべき問いの更新はarchitecture.md §11を参照。
+
 ## 6. 監査ログ集約（Alloy / otel-lgtm）
 
 [ADR 0025](adr/0025-audit-log-aggregation.md)。AlloyのAPIサーバー宛てegressが塞がれる問題は§1.1、Keycloakイベントログの出力設定は§2.5を参照。
