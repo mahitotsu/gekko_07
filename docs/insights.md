@@ -53,6 +53,7 @@
 | Envoyが`Too many open files`でクラッシュする | §3.7 |
 | 承認しようとすると403（同じユーザー名で再ログインしたのに） | §2.1（realm再importによる`sub`の変化） |
 | 検証スクリプトが何も出力せずに途中で終了する | §8 |
+| Keycloakへの証明書拘束アクセストークン要求が`Client Certification missing for MTLS HoK Token Binding`で失敗する | §5.2（`haproxy`プロバイダはPEMではなくBase64(DER)を期待する） |
 
 ## 1. Kubernetes / k3d / WSL2
 
@@ -617,7 +618,17 @@ k8s内部通信のmTLS横展開が全ホップで完了した([architecture.md](
 
 **原因**：Keycloakの`x509cert-lookup` SPIは`haproxy`・`apache`という2つの決まったリバースプロキシ形式のヘッダーしか組み込みでサポートせず、いずれもEnvoyの`forward_client_cert_details`が生成するXFCC形式（`Cert="<url-encoded PEM>"`等のkey=value列）とは異なる。今回`haproxy`プロバイダが実際に期待する正確なヘッダー表現（PEMの改行をどう表現するか等）を特定できなかった。
 
-**対応**：未解決のまま。この壁を埋めるには、①Envoy側でXFCCを`haproxy`互換形式へ変換するLuaフィルタ（[ADR 0002](adr/0002-token-exchange-in-envoy-sidecar.md)の「セキュリティクリティカルなロジックをLuaに置かない」原則に反する）、②Keycloak向けの独自`x509cert-lookup` SPIプラグイン（「Dockerfileを書かない」方針を初めて破る）のいずれかが必要になりそうだが、どちらも新規の可動部を増やすため、DPoP撤去（[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)）と同じ「投資に見合うか」の検討が必要。判断すべき問いはarchitecture.md §11に記録した。
+**対応（2026-09-24時点）**：未解決のまま。この壁を埋めるには、①Envoy側でXFCCを`haproxy`互換形式へ変換するLuaフィルタ（[ADR 0002](adr/0002-token-exchange-in-envoy-sidecar.md)の「セキュリティクリティカルなロジックをLuaに置かない」原則に反する）、②Keycloak向けの独自`x509cert-lookup` SPIプラグイン（「Dockerfileを書かない」方針を初めて破る）のいずれかが必要になりそうだが、どちらも新規の可動部を増やすため、DPoP撤去（[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)）と同じ「投資に見合うか」の検討が必要だと考えていた。**この結論は下記2026-09-25の再検証で覆っている。**
+
+#### `haproxy`プロバイダが認識できなかったのは構造的な壁ではなく、期待するヘッダー形式（PEMではなくBase64(DER)）を取り違えていただけだった（2026-09-25、使い捨てKeycloak 26.7.0での再検証）
+
+**症状**：上記の検証では、PEM形式の証明書（`-----BEGIN CERTIFICATE-----`付き）をURLエンコードする・改行をスペースに置換する、の2パターンで`SSL_CLIENT_CERT`ヘッダーに載せたが、いずれも`org.keycloak.services.x509.HaProxySslClientCertificateLookup`が「malformed PEM data」で拒否し、最終的に`Client Certification missing for MTLS HoK Token Binding`（400）になっていた。
+
+**原因**：Keycloak本体（`services/src/main/java/org/keycloak/services/x509/HaProxySslClientCertificateLookup.java`）のソースを確認したところ、このクラスは`Base64.getMimeDecoder().decode(headerValue)`でヘッダー値を**直接DERバイト列としてBase64デコード**しており、PEMのBEGIN/END装飾行やURLエンコードには一切対応していない。つまり期待されている値は「PEM」ではなく「証明書DERの生バイト列を単純にBase64エンコードしただけの1行の文字列」であり、以前の2パターンはどちらもこの前提から外れていた（PEMのBEGIN/END行がBase64として不正なトークンになり、デコード結果のDERが壊れる）。副次的に、HTTPヘッダーの値には生の改行を含められない（標準的なHTTPクライアントが送信前に拒否する）ため、そもそもPEMをそのままヘッダー値にすることはプロトコル上できない、という制約もある。
+
+**対応**：使い捨てKeycloak 26.7.0コンテナ（`x509cert-lookup-provider=haproxy`、gekko_07クラスタ本体には触れず）で、テスト証明書を`openssl x509 -outform DER | base64 -w0`で変換し`SSL_CLIENT_CERT`ヘッダーに乗せたところ、client_credentialsが200で成功し、発行されたアクセストークンの`cnf.x5t#S256`が証明書DERのSHA-256サムプリント（base64url、パディング無し）と完全一致することを確認した。比較対照として、以前と同じURLエンコードPEM形式を同一環境に投げたところ、`Client Certification missing for MTLS HoK Token Binding`という同一のエラーメッセージを再現でき、原因の特定が正しいことも裏付けられた。
+
+この結果、EnvoyのXFCC（`x-forwarded-client-cert`の`Cert=`要素、URL-encoded PEM）から必要な変換は「URLデコード→BEGIN/END行除去→改行除去」という純粋な文字列整形のみであり、証明書のパースや再署名等の暗号処理は不要と分かった。上記「対応（2026-09-24時点）」が前提にしていた「LuaかカスタムSPIのどちらかが必須」という判断材料は成立しなくなっている。判断すべき問いの更新はarchitecture.md §11を参照。
 
 ## 6. 監査ログ集約（Alloy / otel-lgtm）
 

@@ -562,7 +562,7 @@ UC1と同じ流れだが、手順6で東京・大阪のhigh-value口座も結果
 ### 送信者拘束（DPoP / RFC 8705）
 
 - **DPoP**：[ADR 0013](adr/0013-dpop-sender-constraining.md)でfraud-mcp-server→account-serviceの1ホップに実装・実機検証したが、[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)でSPIRE mTLSとの実利の重複を理由に撤去した。再検討時の判断材料（「拘束のスロットは委任チェーンに1箇所、終端ホップのみ」という制約、Keycloak issue #51205等）は[insights.md](insights.md)「DPoP送信者拘束」節。frontend（確定パスの直接exchange）への適用は理論上可能だが未検証。ログイントークン自体を拘束するかも未決定
-- **RFC 8705（証明書拘束アクセストークン）**：機能自体（`tls.client.certificate.bound.access.tokens`）は`client-x509`のSubject DN制約と無関係に動作し、Token Exchangeの発行時接続と提示時接続が別証明書になる問題もPod内サイドカー構成で解消されていることを実機で確認した。一方、Keycloak自身のEnvoyサイドカーがmTLSを終端し証明書を平文転送しない現構成では、`cnf`付与に必要な生の証明書がKeycloak本体に渡らない（KeycloakのSPI標準プロバイダはEnvoyネイティブのXFCC形式に対応しない）。判断材料は[insights.md](insights.md)「RFC 8705 証明書拘束アクセストークンの再検討」節。**判断すべき問い**：この障害を埋める新規コンポーネント（Envoy側のヘッダー変換Lua、またはKeycloak向け独自SPI）を追加する投資が、mTLSの`match_typed_subject_alt_names`による既存の防御に対してどれだけの追加価値を持つか
+- **RFC 8705（証明書拘束アクセストークン）**：機能自体（`tls.client.certificate.bound.access.tokens`）は`client-x509`のSubject DN制約と無関係に動作し、Token Exchangeの発行時接続と提示時接続が別証明書になる問題もPod内サイドカー構成で解消されていることを実機で確認した。当初、Keycloak自身のEnvoyサイドカーがmTLSを終端し証明書を平文転送しない現構成では`cnf`付与に必要な生の証明書がKeycloak本体に渡らないと考えていたが、これは`haproxy`プロバイダが期待するヘッダー形式（PEMではなくBase64(DER)）を取り違えていたことが原因で、新規コンポーネント無しにEnvoy側の文字列整形（XFCCのURLデコード→PEM装飾行の除去→改行除去）だけで解決する見込みが立っている。判断材料は[insights.md](insights.md)「RFC 8705 証明書拘束アクセストークンの再検討」節。**判断すべき問い**：(1) EnvoyのXFCC出力をこの形式へ変換する具体的な実装手段（Envoy設定のみで足りるか、小さな変換用サイドカーが要るか）の実機確認、(2) 発行側とは独立に未着手のまま残っている検証側（account-service等の利用時に、提示された接続の証明書と`cnf.x5t#S256`が一致するかの照合。Envoy標準のフィンガープリント系コマンドオペレータで賄えるか要確認）の設計、(3) その上でなお、mTLSの`match_typed_subject_alt_names`による既存の防御に対してどれだけの追加価値を持つか
 
 ### mTLS / SPIFFE / SPIRE / NetworkPolicy
 
