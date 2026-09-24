@@ -1,10 +1,10 @@
 <script setup lang="ts">
-// 監査画面(ADR 0040/0041/0042/0044)：account-serviceの自己申告とKeycloak/account-service自身の
-// Envoyアクセスログ(いずれも第三者記録)をaudit-serviceが突合した結果を、凍結解除リクエスト
+// 監査画面(ADR 0040/0041/0042/0044/0045)：account-serviceの自己申告とKeycloak/account-service
+// 自身のEnvoyアクセスログ(いずれも第三者記録)をaudit-serviceが突合した結果を、凍結解除リクエスト
 // (提案)単位で表示する。senior analyst限定(判定はaudit-service側。ここでは表示するだけで、
 // 権限自体の判定はしない)。
 // `?accountId=`が付いている場合(dashboard.vueの口座行から遷移してきた場合)、その口座の結果
-// だけに絞り込む(ADR 0044)。
+// だけに絞り込む(ADR 0044)。sub(UUID)はusernameが解決できていればそちらを表示する(ADR 0045)。
 definePageMeta({ layout: "authenticated" });
 
 interface CheckResult {
@@ -35,6 +35,9 @@ interface ReconcileResult {
   until: string;
   requests: RequestAudit[];
   directExecutions: DirectExecutionAudit[];
+  // sub(UUID)→Keycloakのusername(ログインに使った文字列)の対応表。表示専用の補助情報で、
+  // 解決できなかったsubはここに含まれない(ADR 0045)。
+  usernames: Record<string, string>;
 }
 
 // server: false固定(pages/dashboard.vueと同じ理由。Envoyのlua filterが付与する
@@ -78,6 +81,13 @@ function formatTime(iso: string): string {
 
 function statusLabel(status: RequestAudit["status"]): string {
   return { pending: "未決定", approved: "承認", rejected: "却下" }[status] ?? status;
+}
+
+// sub(UUID)のままでは誰の操作か読み取りづらいため、Keycloakのusernameが解決できていれば
+// そちらを表示する(解決できない場合はsubをそのまま表示。ADR 0045)。subは常にtitle属性で
+// 確認できるようにし、正確な識別子を隠さない。
+function nameOf(sub: string): string {
+  return data.value?.usernames?.[sub] ?? sub;
 }
 </script>
 
@@ -151,11 +161,14 @@ function statusLabel(status: RequestAudit["status"]): string {
             <td>
               {{ r.accountId }}<br />
               <span class="sub">{{ r.proposalId }}</span><br />
-              <span class="sub">提案者：{{ r.proposedBySub }}</span>
+              <span class="sub">提案者：<span :title="r.proposedBySub">{{ nameOf(r.proposedBySub) }}</span></span>
             </td>
             <td :class="r.decision && !r.decision.verified ? 'ng' : ''">
               <template v-if="r.decision">
-                <div>自己申告：{{ r.decision.sub }} が {{ formatTime(r.decision.at) }} に{{ statusLabel(r.status) }}</div>
+                <div>
+                  自己申告：<span :title="r.decision.sub">{{ nameOf(r.decision.sub) }}</span>
+                  が {{ formatTime(r.decision.at) }} に{{ statusLabel(r.status) }}
+                </div>
                 <div :class="r.decision.tokenIssued ? 'ok' : 'error'">
                   {{ r.decision.tokenIssued ? "✓" : "✗" }} ①トークン発行(Keycloak)
                 </div>
@@ -167,7 +180,10 @@ function statusLabel(status: RequestAudit["status"]): string {
             </td>
             <td :class="r.execution && !r.execution.verified ? 'ng' : ''">
               <template v-if="r.execution">
-                <div>自己申告：{{ r.execution.sub }} が {{ formatTime(r.execution.at) }} に実行</div>
+                <div>
+                  自己申告：<span :title="r.execution.sub">{{ nameOf(r.execution.sub) }}</span>
+                  が {{ formatTime(r.execution.at) }} に実行
+                </div>
                 <div :class="r.execution.tokenIssued ? 'ok' : 'error'">
                   {{ r.execution.tokenIssued ? "✓" : "✗" }} ①トークン発行(Keycloak)
                 </div>
@@ -199,7 +215,10 @@ function statusLabel(status: RequestAudit["status"]): string {
           <tr v-for="d in filteredDirectExecutions" :key="`${d.accountId}-${d.check.at}`">
             <td>{{ d.accountId }}</td>
             <td :class="d.check.verified ? '' : 'ng'">
-              <div>自己申告：{{ d.check.sub }} が {{ formatTime(d.check.at) }} に実行</div>
+              <div>
+                自己申告：<span :title="d.check.sub">{{ nameOf(d.check.sub) }}</span>
+                が {{ formatTime(d.check.at) }} に実行
+              </div>
               <div :class="d.check.tokenIssued ? 'ok' : 'error'">
                 {{ d.check.tokenIssued ? "✓" : "✗" }} ①トークン発行(Keycloak)
               </div>

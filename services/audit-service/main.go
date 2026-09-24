@@ -204,6 +204,11 @@ type reconcileResult struct {
 	Until            time.Time              `json:"until"`
 	Requests         []unfreezeRequestAudit `json:"requests"`
 	DirectExecutions []directExecutionAudit `json:"directExecutions"`
+	// Usernames: sub(UUID)→Keycloakのusernameの対応表(表示専用の補助情報)。閲覧者にとって
+	// UUIDより読みやすいユーザー名を出すためだけのものであり、突合の判定(verified等)には
+	// 一切使わない。解決できなかったsubはこのマップに含まれず、画面側はsubをそのまま表示する
+	// (ADR 0045)。
+	Usernames map[string]string `json:"usernames"`
 }
 
 type reconciler struct {
@@ -246,6 +251,16 @@ func (rec *reconciler) handleReconcile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result := buildReconcileResult(proposals, executions, issuedJtis, accessLogs, since, until)
+
+	// usernamesは表示専用の補助情報であり突合結果の正しさに影響しないため、取得に失敗しても
+	// 画面全体を止めない(subのまま表示させる。ADR 0045)。
+	usernames, err := rec.fetchUsernames(r.Context(), since, until)
+	if err != nil {
+		log.Printf("fetch usernames failed (non-fatal, display only): %v", err)
+		usernames = map[string]string{}
+	}
+	result.Usernames = usernames
+
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -398,6 +413,8 @@ func (rec *reconciler) getJSON(ctx context.Context, u string, out any) error {
 // --- Loki(第三者記録)からの取得 ---
 
 var tokenIDPattern = regexp.MustCompile(`token_id="([^"]*)"`)
+var userIDPattern = regexp.MustCompile(`userId="([^"]*)"`)
+var usernamePattern = regexp.MustCompile(`username="([^"]*)"`)
 
 type lokiQueryRangeResponse struct {
 	Data struct {
@@ -442,6 +459,35 @@ func (rec *reconciler) fetchUnfreezeTokenIDs(ctx context.Context, since, until t
 		}
 	}
 	return ids, nil
+}
+
+// fetchUsernames: Keycloakのイベントログから、sub(userId)→username(ログインに使った文字列。
+// ADR 0034参照)の対応表を作る。表示専用の補助情報であり、突合の判定には使わない(判定は
+// 引き続きjtiの完全一致のみで行う)。account:unfreezeに限定せず、ログイン等を含む全イベントを
+// 対象にする(誰がいつ何をしたかに関わらず、その人が対象期間内にログインしてさえいればusernameを
+// 解決できるようにするため。例えば提案者(proposedBySub)はaccount:unfreezeのToken Exchangeを
+// 一度も行わないため、対象をaccount:unfreezeに絞ると解決できない)。
+func (rec *reconciler) fetchUsernames(ctx context.Context, since, until time.Time) (map[string]string, error) {
+	query := `{namespace="gekko", container="keycloak"} |= "userId=" |= "username="`
+	lines, err := rec.queryLokiLines(ctx, query, since, until)
+	if err != nil {
+		return nil, err
+	}
+
+	names := make(map[string]string)
+	for _, raw := range lines {
+		var line lokiLogLine
+		if err := json.Unmarshal([]byte(raw), &line); err != nil {
+			continue
+		}
+		uid := userIDPattern.FindStringSubmatch(line.Message)
+		uname := usernamePattern.FindStringSubmatch(line.Message)
+		if uid == nil || uname == nil || uid[1] == "" || uname[1] == "" {
+			continue
+		}
+		names[uid[1]] = uname[1]
+	}
+	return names, nil
 }
 
 // accountServiceAccessLogEntry: account-service自身のEnvoy ingressアクセスログ1行
