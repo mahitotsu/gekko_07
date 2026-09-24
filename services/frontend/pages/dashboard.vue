@@ -56,19 +56,22 @@ async function confirmUnfreeze(accountId: string, proposalId: string | null) {
 
 <template>
   <section>
-    <h1>凍結中口座</h1>
-    <p v-if="pending">読み込み中...</p>
-    <p v-else-if="error">口座一覧の取得に失敗しました。</p>
-    <p v-if="unfreezeError" class="error">{{ unfreezeError }}</p>
-    <table v-if="!pending && accounts && accounts.length">
+    <div class="page-header">
+      <h1>凍結中口座</h1>
+      <p>担当範囲内で凍結中の口座と、AIによる精査状況を確認できます。</p>
+    </div>
+    <p v-if="pending" class="text-muted">読み込み中...</p>
+    <p v-else-if="error" class="text-danger">口座一覧の取得に失敗しました。</p>
+    <p v-if="unfreezeError" class="text-danger">{{ unfreezeError }}</p>
+    <table v-if="!pending && accounts && accounts.length" class="table">
       <thead>
         <tr>
           <th>口座ID</th>
           <th>地域</th>
           <th>ティア</th>
           <th>凍結理由</th>
-          <th></th>
-          <th></th>
+          <th>監査</th>
+          <th>AIによる精査</th>
         </tr>
       </thead>
       <tbody>
@@ -80,23 +83,25 @@ async function confirmUnfreeze(accountId: string, proposalId: string | null) {
           <td>
             <NuxtLink :to="`/audit?accountId=${account.id}`" class="audit-link">監査結果を見る</NuxtLink>
           </td>
-          <td>
+          <td class="action-cell">
             <NuxtLink
               v-if="!account.proposalStatus || account.proposalStatus === 'rejected'"
+              class="btn btn-secondary"
               :to="`/chat?accountId=${account.id}`"
             >
               AIによる精査を依頼
             </NuxtLink>
             <template v-else-if="account.proposalStatus === 'pending'">
-              <span class="badge">精査中</span>
-              <NuxtLink :to="`/chat?accountId=${account.id}`">チャットで確認</NuxtLink>
+              <span class="badge badge-warning">精査中</span>
+              <NuxtLink class="btn btn-secondary" :to="`/chat?accountId=${account.id}`">チャットで確認</NuxtLink>
             </template>
             <template v-else-if="account.proposalRecommendation === 'keep_frozen'">
               <span class="badge badge-muted">精査済み(凍結維持)</span>
-              <NuxtLink :to="`/chat?accountId=${account.id}`">再度精査を依頼</NuxtLink>
+              <NuxtLink class="btn btn-secondary" :to="`/chat?accountId=${account.id}`">再度精査を依頼</NuxtLink>
             </template>
             <button
               v-else
+              class="btn btn-primary"
               :disabled="unfreezingId === account.id"
               @click="confirmUnfreeze(account.id, account.proposalId)"
             >
@@ -106,38 +111,19 @@ async function confirmUnfreeze(accountId: string, proposalId: string | null) {
         </tr>
       </tbody>
     </table>
-    <p v-else-if="!pending && !error">担当範囲内に凍結中の口座はありません。</p>
+    <p v-else-if="!pending && !error" class="text-muted">担当範囲内に凍結中の口座はありません。</p>
   </section>
 </template>
 
 <style scoped>
-table {
-  border-collapse: collapse;
-  width: 100%;
-}
-th,
-td {
-  border: 1px solid #ddd;
-  padding: 0.5rem;
-  text-align: left;
-}
-.error {
-  color: #b00020;
-}
 .audit-link {
   font-size: 0.85rem;
-  color: #555;
+  color: var(--color-text-muted);
 }
-.badge {
-  display: inline-block;
-  margin-right: 0.5rem;
-  padding: 0.1rem 0.4rem;
-  border-radius: 0.25rem;
-  background: #f0ad4e;
-  color: #fff;
-  font-size: 0.85rem;
-}
-.badge-muted {
-  background: #6c757d;
+.action-cell {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
 }
 </style>

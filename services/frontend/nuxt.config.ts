@@ -16,4 +16,7 @@ export default defineNuxtConfig({
       title: "gekko - 不正検知アシスタント",
     },
   },
+  // 全画面共通のデザイントークン・基本コンポーネント(assets/css/main.css参照)。
+  // 各page/layoutのscoped styleはレイアウト固有の調整のみに留める。
+  css: ["~/assets/css/main.css"],
 });

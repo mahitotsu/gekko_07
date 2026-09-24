@@ -93,12 +93,15 @@ function nameOf(sub: string): string {
 
 <template>
   <section>
-    <h1>監査：凍結解除操作の裏付け確認</h1>
-    <p v-if="pending">読み込み中...</p>
-    <p v-else-if="error?.statusCode === 403" class="error">この画面はsenior analyst限定です。</p>
-    <p v-else-if="error" class="error">突合結果の取得に失敗しました。</p>
+    <div class="page-header">
+      <h1>監査：凍結解除操作の裏付け確認</h1>
+      <p>凍結解除の承認・実行が第三者記録(Keycloak/Envoyアクセスログ)で裏付けられているかを確認します。</p>
+    </div>
+    <p v-if="pending" class="text-muted">読み込み中...</p>
+    <p v-else-if="error?.statusCode === 403" class="text-danger">この画面はsenior analyst限定です。</p>
+    <p v-else-if="error" class="text-danger">突合結果の取得に失敗しました。</p>
     <template v-else-if="data">
-      <div class="explain">
+      <div class="callout">
         <h2>何をチェックしているか</h2>
         <p>
           凍結解除の「承認/却下」と「実行」は、それぞれaccount-serviceが
@@ -134,7 +137,7 @@ function nameOf(sub: string): string {
       <h2>結果</h2>
       <p class="meta">
         対象期間：{{ formatTime(data.since) }} 〜 {{ formatTime(data.until) }}
-        <button :disabled="pending" @click="refresh()">再読み込み</button>
+        <button class="btn btn-secondary" :disabled="pending" @click="refresh()">再読み込み</button>
       </p>
       <p v-if="accountFilter" class="filter">
         口座「{{ accountFilter }}」の結果のみ表示中 — <NuxtLink to="/audit">全口座を表示</NuxtLink>
@@ -148,7 +151,7 @@ function nameOf(sub: string): string {
       <p v-if="!filteredRequests.length" class="note">
         {{ accountFilter ? "この口座には対象期間内に承認/却下されたリクエストはありません。" : "対象期間内に承認/却下されたリクエストはありません。" }}
       </p>
-      <table v-else>
+      <table v-else class="table">
         <thead>
           <tr>
             <th>口座 / 提案ID</th>
@@ -204,7 +207,7 @@ function nameOf(sub: string): string {
       <p class="note">
         AIの提案・承認の手順を経ずに直接実行された凍結解除です。経路としては正常ですが、実行の裏付けは同じ基準でチェックします。
       </p>
-      <table v-if="filteredDirectExecutions.length">
+      <table v-if="filteredDirectExecutions.length" class="table">
         <thead>
           <tr>
             <th>口座</th>
@@ -234,46 +237,41 @@ function nameOf(sub: string): string {
 </template>
 
 <style scoped>
-table {
-  border-collapse: collapse;
-  width: 100%;
-  margin-bottom: 1.5rem;
+.table {
+  margin-bottom: var(--space-5);
 }
-th,
-td {
-  border: 1px solid #ddd;
-  padding: 0.5rem;
-  text-align: left;
-  vertical-align: top;
-}
-.explain {
-  background: #f6f8fa;
-  border: 1px solid #ddd;
-  padding: 0.5rem 1rem;
-  margin-bottom: 1.5rem;
+.callout {
+  margin-bottom: var(--space-5);
 }
 .meta,
 .sub,
 .note {
-  color: #555;
+  color: var(--color-text-muted);
   font-size: 0.9rem;
 }
+.meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
 .summary {
-  font-weight: bold;
+  font-weight: 600;
 }
 .filter {
-  background: #fff8e1;
-  border: 1px solid #ffe082;
+  background: var(--color-warning-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
   padding: 0.4rem 0.8rem;
   display: inline-block;
+  margin-bottom: var(--space-3);
 }
 .ng {
-  background: #fdecea;
+  background: var(--color-danger-bg);
 }
 .error {
-  color: #b00020;
+  color: var(--color-danger);
 }
 .ok {
-  color: #2e7d32;
+  color: var(--color-accent);
 }
 </style>

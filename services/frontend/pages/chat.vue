@@ -49,6 +49,9 @@ interface ProposalHint {
   status: "pending" | "approved" | "rejected";
   // AIの精査結論("unfreeze"=解除推奨/"keep_frozen"=根拠なし)。statusとは独立した軸(ADR 0039)。
   recommendation: "unfreeze" | "keep_frozen";
+  // AIの根拠説明。ライブ実行時は直前のテキストメッセージから、復元時は永続化済みの
+  // proposalReasoningから、いずれもこのフィールドへ集約する(結果カードで一元表示するため)。
+  reasoning: string;
   executed: boolean;
   error: string | null;
 }
@@ -125,15 +128,20 @@ function handleAgUiEvent(event: any) {
         try {
           const parsed = JSON.parse(event.content);
           if (parsed.proposalId && parsed.accountId) {
-            // AIの根拠説明は直前のテキストメッセージとして既にmessagesに表示されているため、
-            // ここでは複製しない(ADR 0039の提案時も同様に、復元時のみmessagesへ合成する。
-            // 下記onMounted参照)。
+            // AIの根拠説明は直前のテキストメッセージとして既にmessagesに表示されている。
+            // 精査が完了した時点で実行ログ(ツール進捗・やりとりの吹き出し)は役目を終えるため、
+            // 根拠だけを結果カードへ取り込んでmessagesはクリアする。これにより、ライブ実行
+            // 直後の見た目と、dashboard.vueから後で見返したとき(下記onMounted)の見た目が
+            // 「結果カードのみ」で一致する。
+            const reasoning = [...messages.value].reverse().find((m) => m.role === "assistant")?.text ?? "";
+            messages.value = [];
             proposals.value.push({
               toolCallId: event.toolCallId,
               accountId: parsed.accountId,
               proposalId: parsed.proposalId,
               status: parsed.status === "approved" || parsed.status === "rejected" ? parsed.status : "pending",
               recommendation: parsed.recommendation === "keep_frozen" ? "keep_frozen" : recommendation,
+              reasoning,
               executed: false,
               error: null,
             });
@@ -311,24 +319,16 @@ onMounted(async () => {
       !isClosedOutNoUnfreeze &&
       (account.proposalStatus === "pending" || account.proposalStatus === "approved")
     ) {
-      // 実チャット中はAIの根拠説明がTEXT_MESSAGE_*イベント経由でmessagesに積まれていく(上記
-      // handleAgUiEvent参照)。復元時はそのイベント列が存在しないため、保存済みreasoningを
-      // 同じ形の合成assistantメッセージとしてmessagesに追加し、実チャットと同じ吹き出し
-      // (.message.assistant)で表示する(プレーンテキストの専用行を別途持たせない)。
-      if (account.proposalReasoning) {
-        messages.value.push({
-          id: `restored-${account.proposalId}`,
-          role: "assistant",
-          text: account.proposalReasoning,
-          done: true,
-        });
-      }
+      // ライブ実行時と同じ結果カード(reasoningを含むProposalHint)だけを表示する。実行ログは
+      // 復元しない(ライブ側もTOOL_CALL_RESULT到達時点でmessagesをクリアしており、両者の
+      // 見た目を「結果カードのみ」で一致させている。上記handleAgUiEvent参照)。
       proposals.value.push({
         toolCallId: null,
         accountId: account.id,
         proposalId: account.proposalId,
         status: account.proposalStatus,
         recommendation: account.proposalRecommendation ?? "unfreeze",
+        reasoning: account.proposalReasoning ?? "",
         executed: false,
         error: null,
       });
@@ -345,7 +345,9 @@ onMounted(async () => {
 
 <template>
   <section class="chat">
-    <h1>AIアシスタント</h1>
+    <div class="page-header">
+      <h1>AIアシスタント</h1>
+    </div>
     <div class="messages">
       <p v-for="m in messages" :key="m.id" :class="['message', m.role, { pending: !m.done }]">
         <template v-if="m.role === 'tool'">{{ m.done ? "✓" : "⏳" }} {{ m.text }}</template>
@@ -359,49 +361,56 @@ onMounted(async () => {
     <p v-if="sending" class="running-indicator">🔄 エージェント実行中…</p>
     <p v-if="runError" class="error">
       {{ runError }}
-      <button v-if="lastUserText" type="button" @click="retry">再試行</button>
+      <button v-if="lastUserText" type="button" class="btn btn-secondary" @click="retry">再試行</button>
     </p>
 
-    <div v-for="p in proposals" :key="p.toolCallId ?? p.proposalId" class="proposal">
-      <span>
-        口座 {{ p.accountId }} の{{ p.recommendation === "keep_frozen" ? "精査結果(提案ID" : "凍結解除案(提案ID" }}: {{ p.proposalId }})
-      </span>
-      <template v-if="p.recommendation === 'keep_frozen'">
-        <!-- AIが「根拠なし」と結論したケース(ADR 0039)。凍結解除の承認/却下ではないため、
-             文言を完全に分け、実行(凍結解除)ボタンは一切出さない。 -->
-        <template v-if="p.status === 'approved'">
-          <span>精査完了(凍結維持)</span>
-        </template>
-        <template v-else-if="p.status === 'rejected'">
-          <span>見直しを依頼済み(ダッシュボードから再度精査を依頼できます)</span>
-        </template>
-        <template v-else>
-          <span class="hint">AIは解除の根拠なしと判断しました</span>
-          <button @click="decideProposal(p, 'approve')">了解(凍結を維持)</button>
-          <button @click="decideProposal(p, 'reject')">納得できない(見直しを依頼)</button>
-        </template>
-      </template>
-      <template v-else>
-        <template v-if="p.executed">
-          <span>確定済み</span>
-        </template>
-        <template v-else-if="p.status === 'approved'">
-          <button @click="confirmUnfreeze(p)">凍結解除を確定</button>
-        </template>
-        <template v-else-if="p.status === 'rejected'">
-          <span>却下済み(ダッシュボードから再度精査を依頼できます)</span>
+    <div v-for="p in proposals" :key="p.toolCallId ?? p.proposalId" class="card proposal-card">
+      <header class="proposal-card__header">
+        <span class="proposal-card__account">口座 {{ p.accountId }}</span>
+        <span :class="['badge', p.recommendation === 'keep_frozen' ? 'badge-muted' : 'badge-accent']">
+          {{ p.recommendation === "keep_frozen" ? "精査結果：凍結維持が妥当" : "AIの提案：凍結解除" }}
+        </span>
+      </header>
+      <div v-if="p.reasoning" class="proposal-card__reasoning" v-html="renderMarkdown(p.reasoning)" />
+      <footer class="proposal-card__actions">
+        <template v-if="p.recommendation === 'keep_frozen'">
+          <!-- AIが「根拠なし」と結論したケース(ADR 0039)。凍結解除の承認/却下ではないため、
+               文言を完全に分け、実行(凍結解除)ボタンは一切出さない。 -->
+          <template v-if="p.status === 'approved'">
+            <span>精査完了(凍結維持)</span>
+          </template>
+          <template v-else-if="p.status === 'rejected'">
+            <span>見直しを依頼済み(ダッシュボードから再度精査を依頼できます)</span>
+          </template>
+          <template v-else>
+            <span class="hint">AIは解除の根拠なしと判断しました</span>
+            <button class="btn btn-primary" @click="decideProposal(p, 'approve')">了解(凍結を維持)</button>
+            <button class="btn btn-secondary" @click="decideProposal(p, 'reject')">納得できない(見直しを依頼)</button>
+          </template>
         </template>
         <template v-else>
-          <button @click="decideProposal(p, 'approve')">承認</button>
-          <button @click="decideProposal(p, 'reject')">却下</button>
+          <template v-if="p.executed">
+            <span>確定済み</span>
+          </template>
+          <template v-else-if="p.status === 'approved'">
+            <button class="btn btn-primary" @click="confirmUnfreeze(p)">凍結解除を確定</button>
+          </template>
+          <template v-else-if="p.status === 'rejected'">
+            <span>却下済み(ダッシュボードから再度精査を依頼できます)</span>
+          </template>
+          <template v-else>
+            <button class="btn btn-primary" @click="decideProposal(p, 'approve')">承認</button>
+            <button class="btn btn-secondary" @click="decideProposal(p, 'reject')">却下</button>
+          </template>
         </template>
-      </template>
+        <span class="proposal-card__meta">提案ID: {{ p.proposalId }}</span>
+      </footer>
       <span v-if="p.error" class="error">{{ p.error }}</span>
     </div>
 
     <form @submit.prevent="send()">
       <textarea v-model="input" :disabled="sending" rows="3" placeholder="凍結中の口座について質問する" />
-      <button type="submit" :disabled="sending || !input.trim()">送信</button>
+      <button type="submit" class="btn btn-primary" :disabled="sending || !input.trim()">送信</button>
     </form>
   </section>
 </template>
@@ -409,17 +418,17 @@ onMounted(async () => {
 <style scoped>
 .messages {
   min-height: 4rem;
-  margin-bottom: 1rem;
+  margin-bottom: var(--space-4);
 }
 .message.user {
-  color: #333;
+  color: var(--color-text);
 }
 .message.assistant {
-  color: #0b5394;
+  color: var(--color-primary-dark);
 }
 .message.assistant.pending {
-  background: #eef6fc;
-  border-radius: 0.25rem;
+  background: var(--color-primary-bg);
+  border-radius: var(--radius-sm);
   padding: 0.25rem 0.5rem;
 }
 .message.assistant .assistant-text :deep(p:first-child) {
@@ -438,7 +447,7 @@ onMounted(async () => {
   }
 }
 .message.tool {
-  color: #777;
+  color: var(--color-text-muted);
   font-style: italic;
   font-size: 0.9rem;
 }
@@ -446,24 +455,54 @@ onMounted(async () => {
   opacity: 0.85;
 }
 .running-indicator {
-  color: #777;
+  color: var(--color-text-muted);
   font-size: 0.9rem;
 }
-.proposal {
+.proposal-card {
+  margin-bottom: var(--space-4);
+}
+.proposal-card__header {
   display: flex;
-  gap: 0.75rem;
+  justify-content: space-between;
   align-items: center;
-  margin-bottom: 0.5rem;
+  margin-bottom: var(--space-2);
+}
+.proposal-card__account {
+  font-weight: bold;
+}
+.proposal-card__reasoning {
+  color: var(--color-text);
+  margin-bottom: var(--space-3);
+}
+.proposal-card__reasoning :deep(p:first-child) {
+  margin-top: 0;
+}
+.proposal-card__reasoning :deep(p:last-child) {
+  margin-bottom: 0;
+}
+.proposal-card__actions {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+}
+.proposal-card__meta {
+  margin-left: auto;
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
 }
 .error {
-  color: #b00020;
+  color: var(--color-danger);
 }
 .hint {
-  color: #555;
+  color: var(--color-text-muted);
 }
 textarea {
   width: 100%;
   display: block;
-  margin-bottom: 0.5rem;
+  margin-bottom: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+  font-family: var(--font-sans);
 }
 </style>

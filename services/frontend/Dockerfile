@@ -10,6 +10,7 @@ COPY nuxt.config.ts tsconfig.json app.vue ./
 COPY server ./server
 COPY layouts ./layouts
 COPY pages ./pages
+COPY assets ./assets
 RUN npm run build
 
 # fraud-agentと違い実行段でnode_modulesを別途コピーしない:Nitro(`nuxt build`)は
