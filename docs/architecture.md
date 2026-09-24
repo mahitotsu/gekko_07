@@ -1,71 +1,170 @@
 # アーキテクチャ設計
 
-本ドキュメントは現在有効なアーキテクチャの断面と、それを支える認可のディシジョンテーブル・実行時シナリオ・既知の制約を一体で記録する（§6・§10・§11）。何を・なぜ実現するか（目的・背景・要求水準、業務要件BR0〜BR8を含む）は[requirements.md](requirements.md)、個々の設計判断の根拠・選択経緯は[docs/adr/](adr/)、各サービスの存在意義は[services.md](services.md)を参照。決定が変わった場合は該当箇所を直接書き換え、対応するADRをSupersededに更新する。
+本ドキュメントは**現在有効な**アーキテクチャの断面を記録する。業務要件をどう実現するかのディシジョンテーブル（§6）、実行時シナリオ（§10）、既知の制約・未着手事項（§11）も含む。
+
+- 何を・なぜ実現するか（目的・背景・要求水準、業務要件BR0〜BR11）：[requirements.md](requirements.md)
+- 個々の設計判断の根拠・選択経緯：[docs/adr/](adr/)（[テーマ別索引](adr/README.md)）
+- 各サービスの存在意義・提供機能・保有データ：[services.md](services.md)
+- 実装・実機検証で見つかった罠：[insights.md](insights.md)
+
+決定が変わった場合は本書の該当箇所を直接書き換え、経緯は新しいADRに書く（運用ルールは[CLAUDE.md](../CLAUDE.md)）。
 
 ## 1. 採用する認可サーバー
 
-**Keycloak**を使用する（バージョン・realm設計の詳細は実装時に決定）。トークンのクレームに含めるデータと、業務サービス側に外部化して都度照会するデータの切り分けは、役割（委譲の天井か実行時の個別業務判断か）・オーナーシップ・機密性の3軸で判断する（[ADR 0006](adr/0006-claim-vs-external-attribute-criteria.md)）。この基準の具体的な適用例は§6「認証」節を参照。
+**Keycloak 26.7.0**（realm名`gekko`）を使用する。realm定義は[k8s/keycloak/realm-configmap.yaml](../k8s/keycloak/realm-configmap.yaml)。Token ExchangeはKeycloakのStandard Token Exchange V2（RFC 8693、Impersonation方式）を使う。
+
+トークンのクレームに含めるデータと、業務サービス側に外部化して都度照会するデータの切り分けは、役割（委譲の天井か実行時の個別業務判断か）・オーナーシップ・機密性の3軸で判断する（[ADR 0006](adr/0006-claim-vs-external-attribute-criteria.md)）。この基準の具体的な適用例は§6「認証」節を参照。
 
 ## 2. シナリオとサービス構成
 
-金融の不正検知・口座凍結解除（[ADR 0001](adr/0001-scenario-fraud-detection-with-agent-assist.md)・[ADR 0011](adr/0011-scenario-ai-assisted-unfreeze.md)）。
+金融の不正検知・口座凍結解除（[ADR 0011](adr/0011-scenario-ai-assisted-unfreeze.md)。精緻化は[ADR 0036](adr/0036-unfreeze-proposal-approval-step.md)・[ADR 0039](adr/0039-unfreeze-recommendation-axis.md)）。自動検知エンジンが口座を凍結し、AIエージェントが凍結の妥当性を分析して解除を提案し、アナリストが承認・確定して初めて解除される。監査サービスが事後にその記録を第三者記録と突合する。
 
+```mermaid
+flowchart LR
+  browser(["アナリスト<br/>（ブラウザ）"]) -->|"port-forward<br/>localhost:3000"| edge[edge-proxy]
+  edge -->|"/realms/ /admin/ /resources/"| kc[(Keycloak)]
+  edge -->|"それ以外"| fe[frontend]
+
+  subgraph proposal ["① 提案生成パス（AI起因・読み取り＋提案のみ）"]
+    fa[fraud-agent] -->|MCP| fmcp[fraud-mcp-server]
+  end
+  fe -->|チャット| fa
+  fmcp --> acct[account-service]
+  fe -->|"② 確定パス（承認・凍結解除）"| acct
+  fde[fraud-detection-engine] -->|"③ 自動凍結"| acct
+  acct --> aas[analyst-attribute-service]
+  fe -->|"④ 監査閲覧"| audit[audit-service]
+  audit --> acct
+  audit --> aas
+  audit -.->|"第三者記録の取得"| loki[(Loki)]
+  fa -.->|"クラスタ外"| anthropic[Anthropic API]
 ```
-[アナリスト] --ログイン--> [frontend]
-                              │
-              ┌───────────────┼────────────────────┐
-              │ (提案生成パス)                        │ (確定パス)
-              ▼                                     ▼
-      [fraud-agent] --MCP--> [fraud-mcp-server] --> [account-service] <-- [fraud-detection-engine]
-                                                          │
-                                                          ▼
-                                              [analyst-attribute-service]
-```
 
-各サービスの存在意義・提供機能・保有データは[services.md](services.md)を参照。認証（ログイン時に発行されるトークンの内容）は§6を参照。
+図では省略しているが、トークンを取得する全サービスはKeycloakのトークンエンドポイントへ、DBを持つサービス（Keycloak・account-service・analyst-attribute-service・fraud-detection-engine）は共有Postgres（§8）へ接続する。①〜④は§5のトークンチェーンに対応する。
 
-## 3. Token Exchangeの実装方式
+| サービス | 役割 | 言語 / フレームワーク |
+|---|---|---|
+| frontend | アナリスト向けBFF。ログイン・ダッシュボード・チャット・監査画面 | TypeScript / Nuxt.js |
+| fraud-agent | AIエージェント。凍結理由を分析し解除を提案する（実行権限なし） | TypeScript / Claude Agent SDK |
+| fraud-mcp-server | account-serviceの読み取り・提案系機能をMCPツールとして公開する | Python / FastMCP |
+| account-service | 口座・取引・凍結・提案を保有し、アナリスト属性に基づくアクセス制御を行う | Java / Spring Boot |
+| analyst-attribute-service | アナリストの担当地域・権限レベルを保有する（委任チェーンの終端） | Go（標準ライブラリ） |
+| fraud-detection-engine | 取引パターンを監視し口座を自動凍結する（機械間認証） | Rust / Axum |
+| audit-service | account-serviceの自己申告とKeycloak/Envoyの第三者記録を突合する | Go（標準ライブラリ） |
 
-**各サービスのEnvoyサイドカーから呼ばれるext_authzサービスとして実装する**（[ADR 0002](adr/0002-token-exchange-in-envoy-sidecar.md)）。アプリケーション本体にはToken Exchangeのコードを一切持たせない。
+詳細は[services.md](services.md)、言語選定の理由は[ADR 0007](adr/0007-per-service-language-selection.md)を参照。
 
-- 各サービスのPodは**initContainer 1つ＋アプリコンテナ＋Envoyサイドカーの構成**（initContainerの役割は§3後半・[ADR 0009](adr/0009-envoy-ingress-responsibility-and-bypass-prevention.md)参照）。Envoyサイドカーはネイティブsidecarコンテナ（`initContainers`の`restartPolicy: Always`）として実装しており、Postgresに接続するサービス（keycloak・account-service・analyst-attribute-service・fraud-detection-engine）はその後ろに`wait-for-postgres` initContainerを置き、appコンテナの起動をPostgres疎通確認後まで遅らせている（[ADR 0028](adr/0028-postgres-mtls-tcp-proxy.md) Consequences、[insights.md](insights.md)参照。edge-proxyのみEnvoy単体Podのため対象外）
-- アプリは相手サービスの**実サービス名・実APIパスをそのまま**使ってリクエストを組み立てる（例：`http://account-service/accounts/123/transactions`）。人工的なURLプレフィックスやegress専用ポートは使わない。Podの`hostAliases`で相手サービス名を`127.0.0.1`へ静的にマッピングし、Envoyサイドカーが1つのリスナー上の複数`virtual_hosts`（`domains`でサービス名をマッチ）で受け、`ext_authz`（HTTPモード）フィルタが横取りしてToken Exchangeを実行してから実際のアップストリームへ転送する（[ADR 0010](adr/0010-egress-listener-granularity.md)）
-- **audienceはHostヘッダーから自動導出する**。Keycloakクライアントid＝Kubernetes Service名＝audience名を常に同一の文字列にする（MUST。§6表1の既存の前提をKubernetes Service名にも拡張したもの）ため、ext_authzサービスはCheckRequestに**自動転送される**`Host`ヘッダー（後述）をそのまま`audience`として使え、リスナー・ルートごとの明示設定が不要になる
-- **scopeは常に「相手サービスの(パス, メソッド) → scope」という単一の仕組みで決める**（§6表2に拡張済みの対応表。account-service自身のingress側rbacポリシーと共有する単一の情報源）。特別扱いするケースはない——scopeがpathによらず1つだけのホップ（fraud-detection-engine→account-service、account-service→analyst-attribute-service、frontend→fraud-agent、fraud-agent→fraud-mcp-server）は、この仕組みがワイルドカードルート1本に潰れているだけ。scopeがpathで変わるホップ（frontend→account-service、fraud-mcp-server→account-service。それぞれ`account:read`/`account:unfreeze`、`account:read`/`account:propose`）は複数ルートになる。パスパターンは表2に決まっているため、account-serviceの完全なAPI実装を待たずに全ホップのEnvoy route設計が今すぐ完成する。アプリのコードは常に実ホスト名・実パス・実メソッドで普通にAPIを呼ぶだけで、どちらのケースかを意識しない
-  - この対応表は**ext_authzサービス自身がコードとして持つ**。HTTPモードのext_authzは`Host`・`Method`・`Path`・`Content-Length`・`Authorization`を常に自動転送するため（Envoyの標準動作。`ExtAuthzPerRoute`の`context_extensions`はgRPCモード限定で使わない。[ADR 0010](adr/0010-egress-listener-granularity.md)の訂正箇所参照）、Envoy側のroute設定はどのクラスタへ転送するかという宛先の振り分けだけを担う
-- egressで必要な処理は2種類ある（ADR 0010、[ADR 0014](adr/0014-fraud-agent-token-exchange.md)で③④廃止）：①Token Exchange（大半のホップ、透過的プロキシ。frontend→fraud-agent・fraud-agent→fraud-mcp-serverもここに含まれる）②client_credentials発行（fraud-detection-engine→account-service、透過的プロキシ）。[ADR 0030](adr/0030-fraud-agent-implementation.md)でfraud-agent→Anthropic API向けに3つ目のegressパターンが加わった：Keycloak登録済みaudience宛てではない（メッシュ外の公開エンドポイントのため①②いずれにも該当しない）ため、appは内部専用の別名（`anthropic-gateway`、`ANTHROPIC_BASE_URL`環境変数で指定）経由で接続し、Envoyが公開CA検証でTLSを終端して実際の`api.anthropic.com`へ再接続する
-- `ext_authz`の応答ヘッダー許可リスト（①②とも`allowed_upstream_headers`に`Authorization`を含める）
-- 以下の全9ホップでToken Exchange/client_credentialsが動作する：fraud-mcp-server→account-serviceの`account:read`/`account:propose`（パターン①）、fraud-detection-engine→account-serviceの`account:freeze`（パターン②、client_credentials）、account-service→analyst-attribute-serviceの`analyst:read`（表3）、fraud-agent→fraud-mcp-serverの`account:read`（[ADR 0023](adr/0023-fraud-agent-fraud-mcp-server-hop.md)）、frontend→account-serviceの`account:read`/`account:unfreeze`・frontend→fraud-agentの`account:read`（[ADR 0024](adr/0024-frontend-edge-proxy-and-simplified-login.md)）、audit-service→account-serviceの`account:audit`（パターン②と同じclient_credentials）、audit-service→analyst-attribute-serviceの`analyst:read`（表3、senior限定閲覧ゲート判定）、frontend→audit-serviceの`audit:read`（[ADR 0040](adr/0040-audit-service-reconciliation.md)・[0041](adr/0041-audit-service-implementation.md)・[0042](adr/0042-audit-service-senior-gate.md)）。frontendのログインはAuthorization Code + PKCE（[ADR 0031](adr/0031-frontend-implementation.md)）。各ホップの実装場所は`k8s/account-service/`・`k8s/fraud-mcp-server/`・`k8s/fraud-detection-engine/`・`k8s/analyst-attribute-service/`・`k8s/fraud-agent/`・`k8s/frontend/`・`k8s/audit-service/`。end-to-endの検証ウォークスルーは§10、実行可能な検証は`scripts/verify-hop.sh`（audit-serviceは`scripts/verify-audit-service.sh`）、実機で見つかった罠は[insights.md](insights.md)を参照
-- パターン①（fraud-mcp-server→account-service）・パターン②（fraud-detection-engine→account-service）・表3（account-service→analyst-attribute-service）とも、Token Exchange/client_credentials実行主体は各呼び出し元自身のPod内サイドカーに置き、クライアント認証はSPIRE発行JWT-SVID（KeycloakネイティブのSPIFFE対応）を使う（[ADR 0019](adr/0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md)・[ADR 0020](adr/0020-fraud-detection-engine-identity-gap-and-client-credentials-federated-jwt.md)・[ADR 0021](adr/0021-account-service-analyst-attribute-service-spiffe-jwt-svid.md)）
-- Keycloak側で見落としやすい前提：Token Exchangeの`audience`パラメータが実際に解決されるには、要求元クライアントに割り当てたclient scope（`account:read`等）が、対象audienceを指す`oidc-audience-mapper`（protocol mapper）を持っている必要がある（[k8s/keycloak/realm-configmap.yaml](../k8s/keycloak/realm-configmap.yaml)）。`account:read`のように同名scopeが複数audience（account-service・fraud-agent・fraud-mcp-server）へ使われる場合は、そのscopeに全てのマッパーを持たせてよい——実際に発行されるトークンは、その時の`audience`パラメータで指定した1つだけに絞り込まれ、単一audience原則（[ADR 0005](adr/0005-single-audience-tokens-only.md)）は保たれる（実機で確認済み）
+## 3. Token Exchangeの実装方式とサイドカー構成
 
-**サイドカーの受信側（ingress）の責務**（[ADR 0009](adr/0009-envoy-ingress-responsibility-and-bypass-prevention.md)）：
+**Token Exchangeは各サービスのEnvoyサイドカーから呼ばれるext_authzサービスとして実装する**（[ADR 0002](adr/0002-token-exchange-in-envoy-sidecar.md)）。アプリケーション本体にはToken Exchangeのコードを一切持たせない。
 
-- JWT検証（`jwt_authn`フィルタ：署名・`iss`・`exp`・`aud`がこのサービス自身であること）とscope検証（`rbac`フィルタ：§6表2）はEnvoy側で完結させる。表5等の業務データに依存する認可判定自体はアプリ内に残さざるを得ない（理由は[ADR 0006](adr/0006-claim-vs-external-attribute-criteria.md)参照）
-- 検証済みの身元はヘッダー（`x-auth-sub`等）でアプリへ転送し、アプリは自前のJWTライブラリを持たない。`jwt_authn`の`claim_to_headers`設定でクレームからヘッダーへ直接変換できる（実機確認済み。[k8s/account-service/envoy-configmap.yaml](../k8s/account-service/envoy-configmap.yaml)）ため、別フィルタでのクレーム転記は不要
-- **Envoyを経由しない直接アクセスのバイパス防止**（3層。詳細はADR 0009）：①アプリは`127.0.0.1`にのみbindし、Serviceはアプリのポートではなく Envoyのリスナーを指す（構造的な防止）②アプリ自身も接続元がloopbackでなければ拒否する（多層防御）③initContainerがPod起動時に生成しemptyDirで共有する使い捨ての合言葉を、jwt_authn/rbacを通過した後にのみEnvoyがヘッダーへ付与し、アプリはこれを検証してから他の認証ヘッダーを信用する（Envoyの設定ミスや誤操作によるバイパスの検知）。付与方式はADR 0009が候補に挙げた`envoy.filters.http.lua`を採用し、rbacより後段に置くことでフィルタ順序による保証を実現した（実機確認済み）
-- 上記②③の検証ロジックはk8s環境外でもテスト可能にする。ただし「テスト時は検証をスキップする」条件分岐は作らない（[CWE-489](https://cwe.mitre.org/data/definitions/489.html)）。検証ロジックは環境によらず単一とし、期待値の読み出し元（ファイルパス等）のみ環境変数で設定可能にする
+### 3.1 Podの構成
 
-**mTLS（ワークロードID）**：上記のOAuth Token Exchangeは「誰が何をしてよいか」という業務認可層であり、「誰と話しているか」という通信路の身元検証・暗号化とは独立の関心事である。fraud-mcp-server→account-service（[ADR 0012](adr/0012-spiffe-spire-mtls-single-hop.md)）・fraud-detection-engine→account-service（[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)）・account-service→analyst-attribute-service（[ADR 0021](adr/0021-account-service-analyst-attribute-service-spiffe-jwt-svid.md)）・fraud-agent→fraud-mcp-server（[ADR 0023](adr/0023-fraud-agent-fraud-mcp-server-hop.md)）・frontend→account-service/fraud-agent（[ADR 0024](adr/0024-frontend-edge-proxy-and-simplified-login.md)）の全ホップは、SPIFFE/SPIREが発行するX.509-SVIDによるmTLS＋ALPNネゴシエーションのHTTP/2で接続する（`k8s/spire/`）。SPIRE agentのWorkload API（UDS）をEnvoyのSDSフィルタが参照し、証明書のプロビジョニング・ローテーションはSPIREが自動で行うため、Envoy bootstrap設定・アプリ本体のどちらにも証明書のライフサイクル管理コードは一切現れない。account-serviceのingressリスナーは単一のmTLS必須filter_chainのみで構成されており、plaintextでの到達経路は存在しない。fraud-agent→Anthropic APIのみ例外で、信頼メッシュの外にあるクラスタ外エンドポイントのためSPIRE mTLS（SPIFFE SDS）の対象ではなく、Envoyは通常のTLSクライアントとして公開CA検証でこの接続を終端する（[ADR 0030](adr/0030-fraud-agent-implementation.md)）。Keycloakが検証する身元（mTLS/JWT-SVID）と主張するclient_idは、fraud-mcp-server・fraud-detection-engine・account-serviceのいずれのホップでも一致する（[ADR 0019](adr/0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md)・[ADR 0020](adr/0020-fraud-detection-engine-identity-gap-and-client-credentials-federated-jwt.md)・[ADR 0021](adr/0021-account-service-analyst-attribute-service-spiffe-jwt-svid.md)）。
+各サービスのPodは次のコンテナで構成する（edge-proxyのみEnvoy単体Pod）。
 
-送信者拘束（DPoP、RFC 9449）は採用していない。検討経緯は[ADR 0013](adr/0013-dpop-sender-constraining.md)・[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)、再検討時の実機知見は[insights.md](insights.md)、再検討の要否は§11を参照。
+| コンテナ | 種別 | 役割 | 置かれるサービス |
+|---|---|---|---|
+| `handshake-init` | initContainer | バイパス防止用の使い捨て合言葉を生成し、emptyDirで共有する（§3.4） | ingressを持つ全サービス（fraud-detection-engine・Keycloak以外） |
+| `envoy` | ネイティブsidecar（`initContainers`の`restartPolicy: Always`） | ingress（JWT検証・scope検証）、egress（ext_authz経由のToken Exchange）、SPIRE mTLS | 全サービス |
+| `wait-for-postgres` | initContainer | appコンテナの起動をPostgres疎通確認後まで遅らせる（[ADR 0028](adr/0028-postgres-mtls-tcp-proxy.md)） | Keycloak・account-service・analyst-attribute-service・fraud-detection-engine |
+| `app` | コンテナ | アプリ本体。`127.0.0.1`にのみbindする | 全サービス |
+| `token-exchange` / `client-credentials` / `egress-auth` | コンテナ | ext_authzサービス本体。SPIRE発行JWT-SVIDでKeycloakにクライアント認証し、Token Exchange（または client_credentials）を実行する（[ADR 0019](adr/0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md)・[ADR 0020](adr/0020-fraud-detection-engine-identity-gap-and-client-credentials-federated-jwt.md)） | 次ホップへ委任するサービス（`client-credentials`はfraud-detection-engine、`egress-auth`は両グラントを使い分けるaudit-service） |
 
-**NetworkPolicy（L3/4のdefault-deny）**（[ADR 0018](adr/0018-network-policy-default-deny.md)）：上記2層（業務認可・mTLS）とは独立な3層目として、`gekko` namespace全体にingress/egress双方向のdefault-denyを導入し、実装済みの接続経路のみを明示的に許可する。`spire` namespace（hostNetworkで動くspire-agent等）は本ADRの対象外（§11参照）。Keycloakのkubelet向けhttp-mgmt:9000はexecプローブ化し`KC_HTTP_MANAGEMENT_HOST=127.0.0.1`に限定しているため、ネットワーク経由では誰からも到達不能（[ADR 0022](adr/0022-keycloak-mgmt-probe-exec.md)）。共有Postgresインスタンス（8節参照）は、常駐4サービス（keycloak/account-service/analyst-attribute-service/fraud-detection-engine）およびdb-init/seed Job（1回限りの初期化Job。ネイティブsidecarコンテナでEnvoyを持つ）の接続を全てEnvoyのtcp_proxy＋mTLS配下に置き（[ADR 0028](adr/0028-postgres-mtls-tcp-proxy.md)）、平文5432への直接到達経路（NetworkPolicyの許可ルール・Serviceのポート）を持たない。fraud-agentのみ例外があり、Anthropic API（`api.anthropic.com`）向けにpodSelectorで宛先を特定できない公開インターネットegress（`ipBlock 0.0.0.0/0`からRFC1918プライベートレンジを除外した範囲、port 443のみ）を許可している（[ADR 0030](adr/0030-fraud-agent-implementation.md)）。
+### 3.2 egress：宛先・audience・scopeの決め方
+
+- アプリは相手サービスの**実サービス名・実APIパスをそのまま**使ってリクエストを組み立てる（例：`http://account-service/accounts/123/transactions`）。人工的なURLプレフィックスやegress専用ポートは使わない。Podの`hostAliases`で相手サービス名を`127.0.0.1`へ静的にマッピングし、Envoyが1つのリスナー上の複数`virtual_hosts`（`domains`でサービス名をマッチ）で受け、`ext_authz`（HTTPモード）フィルタが横取りしてToken Exchangeを実行してから実際のアップストリームへ転送する（[ADR 0010](adr/0010-egress-listener-granularity.md)）
+- **audienceはHostヘッダーから自動導出する**。Keycloakクライアントid＝Kubernetes Service名＝audience名を常に同一の文字列にする（MUST）ため、ext_authzサービスはCheckRequestに自動転送される`Host`ヘッダーをそのまま`audience`として使える
+- **scopeは「相手サービスの(パス, メソッド) → scope」という単一の対応表で決める**（§6表2。account-service自身のingress側rbacポリシーと共有する単一の情報源）。この対応表はext_authzサービス自身がコード（`SCOPE_RULES`）として持つ。HTTPモードのext_authzは`Host`・`Method`・`Path`・`Content-Length`・`Authorization`を常に自動転送するため（`ExtAuthzPerRoute`の`context_extensions`はgRPCモード限定で使えない。[insights.md](insights.md)参照）、Envoy側のroute設定は転送先クラスタの振り分けだけを担う。scopeが1つしかないホップは、この対応表がワイルドカード1行になっているだけで、特別扱いはない
+- ext_authzの応答から`Authorization`ヘッダーを上流へ引き継ぐため、`allowed_upstream_headers`に`Authorization`を含める
+- Keycloak側の前提：Token Exchangeの`audience`が解決されるには、要求元クライアントに割り当てたclient scope（`account:read`等）が対象audienceを指す`oidc-audience-mapper`を持っている必要がある。`account:read`のように同名scopeが複数audience（account-service・fraud-agent・fraud-mcp-server）へ使われる場合は、そのscopeに全てのマッパーを持たせる。実際に発行されるトークンは`audience`パラメータで指定した1つだけに絞り込まれ、単一audience原則（[ADR 0005](adr/0005-single-audience-tokens-only.md)）は保たれる（[insights.md](insights.md)参照）
+
+### 3.3 ホップ一覧
+
+Token Exchange/client_credentialsが動作するホップは次の9つ。全ホップで、トークン取得の実行主体は呼び出し元自身のPod内サイドカーであり、Keycloakへのクライアント認証はSPIRE発行JWT-SVID（Keycloakの`federated-jwt`）で行う。
+
+| # | 呼び出し元 → 宛先 | グラント | scope | ADR |
+|---|---|---|---|---|
+| 1 | frontend → account-service | Token Exchange | `account:read`（GET）／`account:unfreeze`（承認・却下・凍結解除のPOST） | [0024](adr/0024-frontend-edge-proxy-and-simplified-login.md)・[0036](adr/0036-unfreeze-proposal-approval-step.md) |
+| 2 | frontend → fraud-agent | Token Exchange | `account:read` | [0014](adr/0014-fraud-agent-token-exchange.md)・[0024](adr/0024-frontend-edge-proxy-and-simplified-login.md) |
+| 3 | frontend → audit-service | Token Exchange | `audit:read` | [0042](adr/0042-audit-service-senior-gate.md) |
+| 4 | fraud-agent → fraud-mcp-server | Token Exchange | `account:read` | [0014](adr/0014-fraud-agent-token-exchange.md)・[0023](adr/0023-fraud-agent-fraud-mcp-server-hop.md) |
+| 5 | fraud-mcp-server → account-service | Token Exchange | `account:read`（GET）／`account:propose`（提案のPOST） | [0019](adr/0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md) |
+| 6 | account-service → analyst-attribute-service | Token Exchange | `analyst:read` | [0021](adr/0021-account-service-analyst-attribute-service-spiffe-jwt-svid.md) |
+| 7 | audit-service → analyst-attribute-service | Token Exchange | `analyst:read` | [0042](adr/0042-audit-service-senior-gate.md) |
+| 8 | fraud-detection-engine → account-service | client_credentials | `account:freeze` | [0020](adr/0020-fraud-detection-engine-identity-gap-and-client-credentials-federated-jwt.md) |
+| 9 | audit-service → account-service | client_credentials | `account:audit` | [0041](adr/0041-audit-service-implementation.md) |
+
+OAuthの委任チェーンに参加しない接続が2つある。
+
+- **fraud-agent → Anthropic API**：Keycloak登録済みのaudienceではない、メッシュ外の公開エンドポイント。appは内部専用の別名（`anthropic-gateway`、`ANTHROPIC_BASE_URL`環境変数で指定）へ接続し、Envoyが公開CA検証のTLSで`api.anthropic.com`へ再接続する（[ADR 0030](adr/0030-fraud-agent-implementation.md)）。LLM呼び出しの実行時間が不定長なため、このルートは`timeout: 0s`＋`idle_timeout: 300s`にしている（[ADR 0038](adr/0038-fraud-agent-anthropic-route-timeout.md)）
+- **audit-service → Loki**：第三者記録（Keycloakイベントログ・Envoyアクセスログ）の取得元。OAuth/mTLSのメッシュには参加せず、NetworkPolicyのみで到達を制御する（[ADR 0041](adr/0041-audit-service-implementation.md)）
+
+各ホップの実装は`k8s/<サービス名>/`配下（envoy-configmap.yaml・\*-app-configmap.yaml）。end-to-endの流れは§10、実行可能な検証は`scripts/verify-hop.sh`（audit-serviceは`scripts/verify-audit-service.sh`）を参照。
+
+### 3.4 ingress：受信側の責務
+
+[ADR 0009](adr/0009-envoy-ingress-responsibility-and-bypass-prevention.md)。
+
+- JWT検証（`jwt_authn`フィルタ：署名・`iss`・`exp`・`aud`がこのサービス自身であること）とscope検証（`rbac`フィルタ：§6表2）はEnvoy側で完結させる。表5等の業務データに依存する認可判定はアプリ内に置く（理由は[ADR 0006](adr/0006-claim-vs-external-attribute-criteria.md)）
+- 検証済みの身元は`jwt_authn`の`claim_to_headers`でヘッダー（`x-auth-sub`・`x-auth-scope`・`x-auth-jti`）に変換してアプリへ転送する。アプリは自前のJWTライブラリを持たない
+- **Envoyを経由しない直接アクセスのバイパス防止**（3層）：
+  1. アプリは`127.0.0.1`にのみbindし、ServiceはアプリのポートではなくEnvoyのリスナーを指す（構造的な防止）
+  2. アプリ自身も接続元がloopbackでなければ拒否する（多層防御）
+  3. `handshake-init`が生成した使い捨ての合言葉を、jwt_authn/rbacを通過した後にのみEnvoyが`x-gekko-handshake`ヘッダーとして付与し（`envoy.filters.http.lua`をrbacより後段に配置）、アプリはこれを検証してから他の認証ヘッダーを信用する（Envoyの設定ミスによるバイパスの検知）。合言葉ファイルのパスは全言語共通で環境変数`HANDSHAKE_TOKEN_FILE`から読む
+- 上記2・3の検証ロジックはk8s環境外でもテスト可能にする。ただし「テスト時は検証をスキップする」条件分岐は作らない（[CWE-489](https://cwe.mitre.org/data/definitions/489.html)）。検証ロジックは環境によらず単一とし、期待値の読み出し元（ファイルパス等）のみ環境変数で設定可能にする
+
+### 3.5 mTLS（ワークロードID）
+
+OAuth Token Exchangeは「誰が何をしてよいか」という業務認可層であり、「誰と話しているか」という通信路の身元検証・暗号化とは独立の関心事である。後者はSPIFFE/SPIREが発行するX.509-SVIDによるmTLSで担う（[ADR 0012](adr/0012-spiffe-spire-mtls-single-hop.md)・[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)・[ADR 0017](adr/0017-edge-proxy-full-keycloak-mtls.md)・[ADR 0028](adr/0028-postgres-mtls-tcp-proxy.md)、`k8s/spire/`）。
+
+- SPIRE agentのWorkload API（UDS）をEnvoyのSDSが参照し、証明書のプロビジョニング・ローテーションはSPIREが自動で行う。Envoy bootstrap設定・アプリ本体のどちらにも証明書のライフサイクル管理コードは現れない
+- HTTPのホップはmTLS＋ALPNネゴシエーションのHTTP/2で接続する。各サービスのingressリスナーはmTLS必須のfilter_chainのみで構成し、plaintextでの到達経路は存在しない
+- 受信側は`match_typed_subject_alt_names`で呼び出し元のSPIFFE ID（`spiffe://gekko.internal/ns/gekko/sa/default/<名前>`）を限定する
+
+| 受信側 | mTLSで受け入れる呼び出し元 |
+|---|---|
+| account-service | fraud-mcp-server・fraud-detection-engine・frontend・audit-service |
+| analyst-attribute-service | account-service・audit-service |
+| fraud-mcp-server | fraud-agent |
+| fraud-agent | frontend |
+| audit-service | frontend |
+| frontend | edge-proxy |
+| Keycloak | edge-proxy、およびトークンエンドポイント・JWKSを呼ぶ各サービス |
+| Postgres（Envoyのtcp_proxy、ポート6432） | Keycloak・account-service・analyst-attribute-service・fraud-detection-engine、および5つのdb-init/seed Job |
+
+Postgres本体の平文ポート5432への直接到達経路（NetworkPolicyの許可ルール・Serviceのポート）は存在しない。
+
+メッシュ外の接続（fraud-agent→Anthropic API、audit-service→Loki）は上記の対象外（§3.3）。
+
+Keycloakが検証するクライアントの身元（JWT-SVID）と、そのクライアントが主張する`client_id`は全クライアントで一致する（[ADR 0019](adr/0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md)・[ADR 0020](adr/0020-fraud-detection-engine-identity-gap-and-client-credentials-federated-jwt.md)・[ADR 0021](adr/0021-account-service-analyst-attribute-service-spiffe-jwt-svid.md)）。
+
+送信者拘束（DPoP、RFC 9449）・証明書拘束アクセストークン（RFC 8705）は採用していない。検討経緯は[ADR 0013](adr/0013-dpop-sender-constraining.md)・[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)、再検討時の判断材料は[insights.md](insights.md)、再検討の要否は§11を参照。
+
+### 3.6 NetworkPolicy（L3/4のdefault-deny）
+
+業務認可・mTLSとは独立な3層目として、`gekko` namespace全体にingress/egress双方向のdefault-denyを置き、実装済みの接続経路のみを明示的に許可する（[ADR 0018](adr/0018-network-policy-default-deny.md)、`k8s/*/networkpolicy.yaml`）。`observability` namespaceも同様にdefault-denyにしている。
+
+- `spire` namespace（hostNetworkで動くspire-agent等）は対象外（§11参照）
+- Keycloakのkubelet向けhttp-mgmt（9000）はexecプローブ化し`KC_HTTP_MANAGEMENT_HOST=127.0.0.1`に限定しているため、ネットワーク経由では誰からも到達できない（[ADR 0022](adr/0022-keycloak-mgmt-probe-exec.md)）
+- fraud-agentのみ、Anthropic API向けにpodSelectorで宛先を特定できない公開インターネットegress（`ipBlock 0.0.0.0/0`からRFC1918プライベートレンジを除外した範囲、port 443のみ）を許可している（[ADR 0030](adr/0030-fraud-agent-implementation.md)）
 
 ## 4. Keycloakのクライアント・スコープ設計
 
 **クライアント**
 
-| クライアント | 種別 | 備考 |
-|---|---|---|
-| `frontend` | confidential, standard token exchange有効 | アナリスト向けBFF |
-| `fraud-agent` | confidential, standard token exchange有効 | AIエージェント本体。frontendから受け取ったトークンを自身でfraud-mcp-server宛てに再exchangeする（[ADR 0014](adr/0014-fraud-agent-token-exchange.md)） |
-| `fraud-mcp-server` | confidential | AIエージェントの代理としてaccount-serviceを呼ぶ |
-| `fraud-detection-engine` | confidential, client_credentials | 機械間認証。ユーザー委任なし |
-| `audit-service` | confidential, client_credentials **かつ** standard token exchange有効 | account-serviceへは機械間認証（client_credentials）、frontendから委任されたsenior analystの閲覧リクエストはanalyst-attribute-serviceへToken Exchangeで照会する（[ADR 0040](adr/0040-audit-service-reconciliation.md)・[0041](adr/0041-audit-service-implementation.md)・[0042](adr/0042-audit-service-senior-gate.md)） |
-| `account-service` | confidential | analyst-attribute-serviceへの委任元 |
+全ての要求元クライアントはconfidential clientで、クライアント認証はSPIRE発行JWT-SVID（`federated-jwt`）で行う（client secretは持たない）。
 
-全てのトークンは常に単一のaudienceのみを持つ（[ADR 0005](adr/0005-single-audience-tokens-only.md)）。ログイントークンは`aud=frontend`（単一。内容は§6参照）のみで、`account:read`等のスコープは持たない。frontendがaccount-serviceにアクセスする際（直接・委任いずれも）は、都度明示的なToken Exchangeで単一audienceのトークンを取得する（§5参照）。
+| クライアント | グラント | 備考 |
+|---|---|---|
+| `frontend` | Authorization Code + PKCE、Token Exchange | アナリスト向けBFF（[ADR 0031](adr/0031-frontend-implementation.md)） |
+| `fraud-agent` | Token Exchange | frontendから受け取ったトークンをfraud-mcp-server宛てに再exchangeする（[ADR 0014](adr/0014-fraud-agent-token-exchange.md)） |
+| `fraud-mcp-server` | Token Exchange | AIエージェントの代理としてaccount-serviceを呼ぶ |
+| `account-service` | Token Exchange | analyst-attribute-serviceへの委任元 |
+| `fraud-detection-engine` | client_credentials | 機械間認証。ユーザー委任なし |
+| `audit-service` | client_credentials、Token Exchange | account-serviceへは機械間認証、analyst-attribute-serviceへはfrontendから委任されたアナリストとしてToken Exchangeで照会する（[ADR 0041](adr/0041-audit-service-implementation.md)・[ADR 0042](adr/0042-audit-service-senior-gate.md)） |
+| `analyst-attribute-service` | なし | audience名としてのみ存在する（自身はトークンを要求しない） |
+
+全てのトークンは常に単一のaudienceのみを持つ（[ADR 0005](adr/0005-single-audience-tokens-only.md)）。ログイントークンは`aud=frontend`のみで、`account:read`等のスコープは持たない（§6「認証」）。frontendが他サービスを呼ぶ際は、都度明示的なToken Exchangeで単一audienceのトークンを取得する（§5）。
 
 **スコープとトポロジー制御**（各クライアントに付与するoptional client scopeのみで委任トポロジーを制御する。Client Policiesは使わない）
 
@@ -74,25 +173,25 @@
 | `account:read` | account-service | frontend, fraud-mcp-server | 取引・口座の読み取り |
 | `account:read` | fraud-agent | **frontend のみ** | AIエージェントとのチャット開始（委任チェーンの入口。[ADR 0014](adr/0014-fraud-agent-token-exchange.md)） |
 | `account:read` | fraud-mcp-server | **fraud-agent のみ** | MCPツール呼び出し（[ADR 0014](adr/0014-fraud-agent-token-exchange.md)） |
-| `account:propose` | account-service | fraud-mcp-server のみ | 凍結解除案の記録（可逆・低リスク） |
+| `account:propose` | account-service | **fraud-mcp-server のみ** | 凍結解除案の記録（可逆・低リスク） |
 | `account:freeze` | account-service | **fraud-detection-engine のみ** | 口座凍結の自動実行（機械間認証。業務属性チェックなし） |
-| `account:unfreeze` | account-service | **frontend のみ** | 口座凍結の解除の実行（不可逆・高リスク） |
-| `account:audit` | account-service | **audit-service のみ** | 凍結解除の自己申告記録（承認・実行）の読み取り（機械間認証。[ADR 0040](adr/0040-audit-service-reconciliation.md)・[0041](adr/0041-audit-service-implementation.md)） |
-| `analyst:read` | analyst-attribute-service | account-service, **audit-service**（[ADR 0042](adr/0042-audit-service-senior-gate.md)） | アナリストの担当地域・権限レベル照会 |
-| `audit:read` | audit-service | **frontend のみ** | 監査（自己申告と第三者記録の突合結果）の閲覧。senior限定はaudit-service側でanalyst-attribute-serviceに照会して判定する（[ADR 0042](adr/0042-audit-service-senior-gate.md)） |
+| `account:unfreeze` | account-service | **frontend のみ** | 凍結解除提案の承認・却下、口座凍結の解除の実行（不可逆・高リスク） |
+| `account:audit` | account-service | **audit-service のみ** | 凍結解除の自己申告記録（承認・実行）の読み取り（機械間認証。[ADR 0040](adr/0040-audit-service-reconciliation.md)・[ADR 0041](adr/0041-audit-service-implementation.md)） |
+| `analyst:read` | analyst-attribute-service | account-service, audit-service | アナリストの担当地域・権限レベル照会 |
+| `audit:read` | audit-service | **frontend のみ** | 監査（自己申告と第三者記録の突合結果）の閲覧。senior限定の判定はaudit-service側で行う（[ADR 0042](adr/0042-audit-service-senior-gate.md)） |
 
 `account:unfreeze`は`fraud-mcp-server`にも`fraud-agent`にも一切付与しない。AIエージェントがどれだけ「解除すべき」と提案しても、Keycloakのスコープ設計上そもそも凍結解除APIを呼べるトークンを取得できない、という形で認可レイヤーで強制する（§6表1・表2）。
 
 ## 5. トークンチェーン
 
-ログイントークン（`aud=frontend`、単一audience、それ以上のスコープを持たない。詳細は§6参照）を起点に、目的ごとに異なる単一audienceトークンを都度Token Exchangeで取得する（[ADR 0005](adr/0005-single-audience-tokens-only.md)）。frontendが「ログイントークンをそのまま使う近道」は存在しない。
+ログイントークン（`aud=frontend`）を起点に、目的ごとに異なる単一audienceトークンを都度Token Exchangeで取得する（[ADR 0005](adr/0005-single-audience-tokens-only.md)）。frontendが「ログイントークンをそのまま使う近道」は存在しない。
 
 **① 提案生成パス（AI起因、読み取り＋提案のみ）**
 ```
 analystトークン(aud=frontend)
   → Token Exchange (frontend実行, audience=fraud-agent, scope=account:read)
   → Token Exchange (fraud-agent実行, audience=fraud-mcp-server, scope=account:read)
-  → Token Exchange (fraud-mcp-server実行, audience=account-service, scope=account:read/account:propose)
+  → Token Exchange (fraud-mcp-server実行, audience=account-service, scope=account:read または account:propose)
   → account-serviceがToken Exchange (audience=analyst-attribute-service, scope=analyst:read) でアクセス制御
 ```
 
@@ -100,8 +199,9 @@ analystトークン(aud=frontend)
 ```
 analystトークン(aud=frontend)
   → Token Exchange (frontend実行, audience=account-service, scope=account:unfreeze)
-  → account-serviceが同じくanalyst-attribute-serviceへ照会（提案生成パスと同じ判定ロジック）
-  → 凍結解除を実行。①で記録された提案IDと紐付けて記録
+  → 提案の承認/却下（依頼者本人のみ。BR9）、または凍結解除の実行
+  → いずれもaccount-serviceが同じくanalyst-attribute-serviceへ照会（提案生成パスと同じ判定ロジック）
+  → 凍結解除の実行は、①で記録され承認された提案IDと紐付けて記録
 ```
 
 **③ 自動凍結パス（機械間、業務属性チェック対象外）**
@@ -118,114 +218,118 @@ analystトークン(aud=frontend)
     levelを照会し、senior以外は403で拒否する（表5のABAC判定とは別軸の二値ゲート。
     地域/ティアによる絞り込みは行わない）
   → 通過した場合、audit-serviceは別途client_credentials(scope=account:audit)で
-    account-serviceの自己申告を取得し、Lokiの第三者記録と突合して返す（①②③とは独立した
-    委任チェーン。ADR 0040・0041参照）
+    account-serviceの自己申告を取得し、Lokiの第三者記録と突合して返す
 ```
 
-`sub`は①②④を通じて常に元のanalystのまま維持される（Impersonation方式、Keycloak Standard Token Exchange V2を使用予定）ため、「AIが何を見て何を提案したか」と「人間が何を確定したか」を同一`sub`かつ異なる`jti`/`scope`で追跡でき、監査で再構成できる。①②はどちらもfrontendが自身のログイントークン（`aud=frontend`）を`subject_token`として、目的の異なる別々のToken Exchangeを実行した結果であり、1つのトークンが複数の用途を兼ねることはない。
+`sub`は①②④を通じて常に元のanalystのまま維持される（Impersonation方式）ため、「AIが何を見て何を提案したか」と「人間が何を確定したか」を同一`sub`かつ異なる`jti`/`scope`で追跡でき、監査で再構成できる（§9）。①②④はいずれもfrontendが自身のログイントークンを`subject_token`として実行する別々のToken Exchangeの結果であり、1つのトークンが複数の用途を兼ねることはない。
 
 ## 6. 認可のディシジョンテーブル
 
-[requirements.md](requirements.md)「業務要件（アクセス制御）」で定めた業務要件（BR0〜BR8）を、上記§3〜§5の認可設計がどう実現しているかを、条件と結果が漏れなく列挙できる形（ディシジョンテーブル）で示す。各表の見出しに対応する要件番号を明記し、業務要件と実装の対応関係を追跡できるようにする。性質の異なる認可判断ごとに表を分ける。
+[requirements.md](requirements.md)「業務要件（アクセス制御）」で定めた業務要件（BR0〜BR11）を、§3〜§5の認可設計がどう実現しているかを、条件と結果が漏れなく列挙できる形（ディシジョンテーブル）で示す。各表の見出しに対応する要件番号を明記する。要件→表の対応一覧は[requirements.md](requirements.md)「architecture.mdとの対応」を参照。
 
 ### 認証（アナリストのログイントークン、BR0に対応）
 
-以降の表は全て「認証済みの主体が保持するトークン」を前提にしている。ここではその出発点、すなわちアナリストがログインした時点で何が発行されるかを定める。BR0（認証の必須化）は、ここで発行されるログイントークンを持たない限り、以降のどのToken Exchangeも開始できない、という形で実現される。
+以降の表は全て「認証済みの主体が保持するトークン」を前提にしている。BR0（認証の必須化）は、ここで発行されるログイントークンを持たない限り以降のどのToken Exchangeも開始できない、という形で実現される。
 
-アナリストはOAuth 2.0 Authorization Code + PKCEでKeycloakにログインする。frontendはconfidential clientとして、ブラウザから受け取ったauthorization codeをKeycloakのトークンエンドポイントで自身のクライアント資格情報とともにアクセストークンに交換する（このやり取り自体はToken Exchangeではない、通常のOIDC認可コードフロー）。
+アナリストはOAuth 2.0 Authorization Code + PKCEでKeycloakにログインする（コールバックは`response_mode=form_post`。[ADR 0031](adr/0031-frontend-implementation.md)・[ADR 0032](adr/0032-frontend-oidc-callback-form-post.md)）。frontendはconfidential clientとして、受け取ったauthorization codeをKeycloakのトークンエンドポイントでアクセストークンに交換する（通常のOIDC認可コードフローであり、Token Exchangeではない）。
 
 ここで発行される**ログイントークン**の内容は以下の通り。
 
 | クレーム | 値 |
 |---|---|
 | `sub` | アナリストの一意識別子（uid）。以降の全てのToken Exchangeを通じて維持され、委任チェーン全体を追跡するキーになる |
-| `preferred_username` | アナリストがログインに使った読める名前（例: `yamada-analyst`）。`sub`と異なりid_tokenのみに含まれ、画面表示等の人間可読な用途にのみ使う（[ADR 0034](adr/0034-frontend-display-username-instead-of-sub.md)） |
+| `preferred_username` | アナリストがログインに使った読める名前（例: `yamada-analyst`）。id_tokenのみに含まれ、画面表示等の人間可読な用途にのみ使う（[ADR 0034](adr/0034-frontend-display-username-instead-of-sub.md)） |
 | `aud` | `frontend`（単一。[ADR 0005](adr/0005-single-audience-tokens-only.md)） |
 | `iss` | Keycloakのrealm発行者 |
 | scope | 最小限（`openid`程度）。`account:read`・`account:unfreeze`等のスコープはこの時点では一切持たない |
 
-このトークンには、アナリストの担当地域・権限レベルは一切含まれない。これらはanalyst-attribute-serviceが保持する外部属性であり、必要になった都度、後続のToken Exchangeの先で照会される（表5）。クレームにするか業務データとして外部化するかの判断基準（役割・オーナーシップ・機密性の3軸）は[ADR 0006](adr/0006-claim-vs-external-attribute-criteria.md)を参照。担当地域・権限レベルは3軸全てで「外部化すべき」側に該当する：これは実行時の個別業務判断（今このアナリストが何をできるか）のもとになるデータであり、正典は業務ドメイン（人事上の配属情報）であり、fraud-mcp-server等の中継者に見せる必要がないため。
+このトークンには、アナリストの担当地域・権限レベルは一切含まれない。これらはanalyst-attribute-serviceが保持する外部属性であり、必要になった都度、後続のToken Exchangeの先で照会される（表5）。担当地域・権限レベルは[ADR 0006](adr/0006-claim-vs-external-attribute-criteria.md)の3軸全てで「外部化すべき」側に該当する：実行時の個別業務判断（今このアナリストが何をできるか）のもとになるデータであり、正典は業務ドメイン（人事上の配属情報）であり、fraud-mcp-server等の中継者に見せる必要がないため。
 
-このログイントークンをそのままaccount-service等の呼び出しに使う経路は存在しない。account-serviceへのアクセスが必要になった時点で、frontendが目的別に明示的なToken Exchangeを実行する（表1、§5）。ログイントークンをDPoP等で送信者拘束するかどうかは未決定（§11参照）。
+このログイントークンをそのままaccount-service等の呼び出しに使う経路は存在しない。frontendが目的別に明示的なToken Exchangeを実行する（表1、§5）。ログイントークンを送信者拘束するかどうかは未決定（§11参照）。
 
-### 表1: Audience間のToken Exchange可否（BR5・BR6に対応）
+### 表1: Audience間のToken Exchange可否（BR4・BR5・BR6・BR11に対応）
 
-この表は「あるaudience宛てのトークンを、別のどのaudience宛てのトークンに交換できるか」を示す。行は交換前トークンの`aud`（元audience）、列は交換後に要求する`aud`（先audience）である。全てのトークンは常に単一のaudienceのみを持つ（[ADR 0005](adr/0005-single-audience-tokens-only.md)）ため、「元audience」は常に一意に定まる。fraud-detection-engineはToken Exchangeに参加しない（client_credentials）ため、この表には含めない（表4で別に扱う）。
+行は交換前トークンの`aud`（元audience）、列は交換後に要求する`aud`（先audience）である。全てのトークンは単一のaudienceのみを持つため、「元audience」は常に一意に定まる。client_credentials（fraud-detection-engine、audit-service→account-service）はToken Exchangeに参加しないため、この表には含めない（表4）。
 
-**注意点（重要）**：
+| 元audience \ 先audience | account-service | fraud-agent | fraud-mcp-server | analyst-attribute-service | audit-service |
+|---|---|---|---|---|---|
+| frontend | ALLOW | ALLOW | DENY | DENY | ALLOW |
+| fraud-agent | DENY | — | ALLOW | DENY | DENY |
+| fraud-mcp-server | ALLOW | DENY | — | DENY | DENY |
+| account-service | — | DENY | DENY | ALLOW | DENY |
+| audit-service | DENY | DENY | DENY | ALLOW | — |
+| analyst-attribute-service | DENY | DENY | DENY | DENY | DENY |
 
-- Keycloakの実際の許可判定は「トークンのaudienceそのもの」ではなく、「Token Exchangeを要求しているクライアント自身の認証情報（client_id/secret）が、要求先audienceについて許可されているか」、かつ「提示された`subject_token`の`aud`に、その要求元クライアント自身が含まれているか」の2点で行われる。本システムでは各サービスの`audience名`と`Keycloakのクライアントid`を同一にしており、かつ各サービスは自分宛て（＝自分のクライアントidと一致するaudience）のトークンしか受け取らない設計にしているため、結果として「元audience」と「それを正当に提示できる唯一のクライアント」が1対1に対応する。だからこそ本表を「audience→audience」の単純な遷移表として記述できる。この前提（audience名＝client id、1トークン1保持者）が崩れる場合、この単純化は成立しなくなる
-- 「実際に交換をリクエストしたプロセスが誰か」という素性は、この表のALLOW/DENY判定に一切現れない。判定に使われるのは「提示されたトークンのaudience」と「要求元として認証されたクライアント資格情報」だけである
-- この表はあくまで「どのaudience間でToken Exchangeが許可されているか」という認可トポロジーを示すものであり、「そのトークンを提示しているプロセスが本当にその正当な保持者かどうか」は別の関心事である。ベアラートークンである以上、盗まれたトークン文字列は誰でも提示できてしまう。これを防ぐには送信者拘束（DPoP、RFC 9449等）のような別の仕組みが必要で、本表の許可トポロジー単体では保証されない（DPoPの適用範囲は未決定。§11参照）
-
-| 元audience \ 先audience | account-service | fraud-agent | fraud-mcp-server | analyst-attribute-service |
-|---|---|---|---|---|
-| frontend | ALLOW | ALLOW | DENY | DENY |
-| fraud-agent | DENY | — | ALLOW | DENY |
-| fraud-mcp-server | ALLOW | DENY | — | DENY |
-| account-service | DENY | DENY | DENY | ALLOW |
-| analyst-attribute-service | DENY | DENY | DENY | DENY |
-
-- ALLOWは4マスのみ。frontendの行に2つALLOWがあるのは、frontendが1つのログイントークン（`aud=frontend`）から、目的の異なる2つの単一audienceトークン（account-service向け・fraud-agent向け）をそれぞれ個別のToken Exchangeで取得するため（[ADR 0005](adr/0005-single-audience-tokens-only.md)）。1つのトークンが複数audienceを同時に持つわけではない
-- 委任チェーンはfrontend→fraud-agent→fraud-mcp-server→account-serviceの4ホップになった（[ADR 0014](adr/0014-fraud-agent-token-exchange.md)）。各ホップは常に「自分宛て（`aud`が自分自身のクライアントidと一致する）」トークンだけを`subject_token`として次のToken Exchangeに使う。これにより「元audience」と「それを正当に提示できる唯一のクライアント」の1対1対応（上記注意点参照）が保たれる
-- fraud-mcp-server→account-serviceの1マス以外、AIエージェント側の経路にはanalyst-attribute-serviceへの到達手段がない。ホップ飛ばし（例：fraud-agentやfraud-mcp-serverが直接account-service・analyst-attribute-serviceを呼ぶ）は構造上不可能（各クライアントへの`optionalClientScopes`の割当のみで実現。Client Policiesは使わない）
+- ALLOWは6マス。frontendの行に3つALLOWがあるのは、frontendが1つのログイントークンから、目的の異なる単一audienceトークン（account-service向け・fraud-agent向け・audit-service向け）をそれぞれ個別のToken Exchangeで取得するため。1つのトークンが複数audienceを同時に持つわけではない
+- AIエージェント側の委任チェーンはfrontend→fraud-agent→fraud-mcp-server→account-serviceの4ホップ（[ADR 0014](adr/0014-fraud-agent-token-exchange.md)）。各ホップは常に自分宛て（`aud`が自分自身のクライアントidと一致する）トークンだけを`subject_token`として次のToken Exchangeに使う
+- AIエージェント側の経路からanalyst-attribute-serviceへ到達する手段は、account-serviceを経由するものだけである。ホップ飛ばし（例：fraud-agentが直接account-serviceやanalyst-attribute-serviceを呼ぶ）は構造上不可能（各クライアントへの`optionalClientScopes`の割当のみで実現）
 - frontend→fraud-agent、fraud-agent→fraud-mcp-serverいずれの交換で発行されるトークンも`account:read`のみを持ち、`account:unfreeze`は含まれない。これがAIエージェントに凍結解除の実行権限を渡さないための核心の仕組み（表2参照）
+
+**この表の読み方の前提（重要）**：
+
+- Keycloakの実際の許可判定は「トークンのaudienceそのもの」ではなく、「Token Exchangeを要求しているクライアント自身（JWT-SVIDで認証された`client_id`）が、要求先audienceについて許可されているか」、かつ「提示された`subject_token`の`aud`に、その要求元クライアント自身が含まれているか」の2点で行われる。本システムではaudience名とKeycloakのクライアントidを同一にし、かつ各サービスは自分宛てのトークンしか受け取らないため、「元audience」と「それを正当に提示できる唯一のクライアント」が1対1に対応する。だからこそ本表を「audience→audience」の単純な遷移表として記述できる。この前提（audience名＝client id、1トークン1保持者）が崩れる場合、この単純化は成立しない
+- この表は「どのaudience間でToken Exchangeが許可されているか」という認可トポロジーを示すものであり、「そのトークンを提示しているプロセスが本当に正当な保持者か」は別の関心事である。ベアラートークンである以上、盗まれたトークン文字列は誰でも提示できる。これを防ぐ送信者拘束（DPoP等）は採用しておらず、通信路の身元検証はmTLS（§3.5）が担う（§11参照）
+- `account:read`は複数audience向けのマッパーを1つのclient scopeで共有しているため、表1のDENYの一部はKeycloakの設定ではなく、各クライアントのサイドカーが正しいaudienceしか要求しないことに依存している（§11「`account:read`スコープのaudience監査ギャップ」）
 
 ### 表2: account-serviceのスコープ別操作可否（BR5・BR6・BR9に対応）
 
-条件は「トークンが保有するスコープ」と「操作種別」の2軸。パスパターンは、account-service自身のingress側rbacポリシーと、account-serviceを呼ぶ全ての呼び出し元のegress側scope解決（[ADR 0010](adr/0010-egress-listener-granularity.md)）の両方が参照する単一の情報源である。account-serviceの実装時にAPIの詳細（レスポンス形式・ページネーション等）を決める際も、このパスパターン自体は変えない（変える場合はここを直接書き換える）。
+パスパターンは、account-service自身のingress側rbacポリシー（[k8s/account-service/envoy-configmap.yaml](../k8s/account-service/envoy-configmap.yaml)）と、account-serviceを呼ぶ全ての呼び出し元のegress側scope解決（`SCOPE_RULES`）の両方が参照する単一の情報源である。パスを追加・変更する場合は両方を同時に更新する（[insights.md](insights.md)参照）。
 
-| 操作 | 必要スコープ | パスパターン（Envoyのroute解決用） |
+| 操作 | 必要スコープ | パスパターン |
 |---|---|---|
-| 取引履歴・凍結中口座の照会（read） | `account:read` | `GET /accounts/{id}/**`（get_frozen_accounts・get_account_history・ダッシュボード表示を含む、読み取り系は全てこの配下） |
+| 取引履歴・凍結中口座の照会（read） | `account:read` | `GET /accounts/**`（`/accounts/frozen`・`/accounts/{id}/transactions`を含む、読み取り系は全てこの配下） |
 | 凍結解除案の記録（propose） | `account:propose` | `POST /accounts/{id}/unfreeze-proposals` |
 | 口座凍結の自動実行（freeze） | `account:freeze`（機械間認証。業務属性チェックなし。表4参照） | `POST /accounts/{id}/freeze` |
 | 凍結解除提案の承認・却下（decide） | `account:unfreeze`（提案を依頼した本人アナリストのみ。BR9・[ADR 0036](adr/0036-unfreeze-proposal-approval-step.md)） | `POST /accounts/{id}/unfreeze-proposals/{proposalId}/approve`, `.../reject` |
-| 口座凍結の解除の実行（unfreeze） | `account:unfreeze`（実行時にanalyst-attribute-serviceへの再照会あり。表5参照。提案経由の場合は承認済み・依頼者本人であることも検証） | `POST /accounts/{id}/unfreeze` |
+| 口座凍結の解除の実行（unfreeze） | `account:unfreeze`（実行時にanalyst-attribute-serviceへの再照会あり。表5参照。提案経由の場合は承認済み・依頼者本人・AIの結論が`unfreeze`であることも検証） | `POST /accounts/{id}/unfreeze` |
+| 自己申告記録の読み取り（audit） | `account:audit`（機械間認証。表4参照） | `GET /audit/**`（`/audit/unfreeze-proposals`・`/audit/unfreeze-executions`） |
 
 #### どのトークンがどのスコープを保有するか
 
-§4のクライアント別スコープ割当を前提に、実際に発生する交換パスごとにトークンが保有するスコープを列挙したものが以下の表である。
+§4のクライアント別スコープ割当を前提に、実際に発生する交換パスごとにトークンが保有しうるスコープを列挙したものが以下の表である。サイドカーは1回のToken Exchangeでリクエストの(パス, メソッド)から解決したscopeを1つだけ要求するため、個々のトークンが持つscopeは常に1つである。
 
-| トークン | 発行経路 | 保有スコープ |
+| トークン | 発行経路 | 保有しうるスコープ |
 |---|---|---|
-| frontendが発行するトークン（account-service宛て、確定パス用） | frontendが`aud=frontend`のログイントークンを`subject_token`にToken Exchange | `account:read`, `account:unfreeze` |
+| frontendが発行するトークン（account-service宛て） | frontendがログイントークンを`subject_token`にToken Exchange | `account:read`（ダッシュボード表示）または`account:unfreeze`（承認・却下・凍結解除） |
 | frontendが発行するトークン（fraud-agent宛て、提案生成パス用） | 同上、target audienceのみ異なる（[ADR 0014](adr/0014-fraud-agent-token-exchange.md)） | `account:read`のみ |
-| fraud-agentが発行するトークン（fraud-mcp-server宛て） | fraud-agentが受け取った`aud=fraud-agent`のトークンを`subject_token`にToken Exchange（[ADR 0014](adr/0014-fraud-agent-token-exchange.md)） | `account:read`のみ |
-| fraud-mcp-serverが発行するトークン（account-service宛て） | fraud-mcp-serverがToken Exchange | `account:read`, `account:propose` |
+| frontendが発行するトークン（audit-service宛て、監査閲覧用） | 同上（[ADR 0042](adr/0042-audit-service-senior-gate.md)） | `audit:read`のみ |
+| fraud-agentが発行するトークン（fraud-mcp-server宛て） | fraud-agentが受け取った`aud=fraud-agent`のトークンを`subject_token`にToken Exchange | `account:read`のみ |
+| fraud-mcp-serverが発行するトークン（account-service宛て） | fraud-mcp-serverがToken Exchange | `account:read`または`account:propose` |
 | fraud-detection-engineのclient_credentialsトークン | client_credentials（委任チェーン外） | `account:freeze`のみ |
+| audit-serviceのclient_credentialsトークン | client_credentials（委任チェーン外） | `account:audit`のみ |
 
 fraud-agent・fraud-mcp-server（ひいてはAIエージェント）が`account:unfreeze`を持つ経路は存在しない。凍結解除の実行、および提案の承認・却下のいずれも、frontendが確定パス用に発行するトークンのみで到達可能であり、これはアナリストがUIで決定論的操作（承認/却下ボタン、「凍結解除を確定」ボタン）を行った場合にのみ発行・使用される。
 
 #### scopeチェックの実施箇所（MUST）
 
-この表のスコープチェックは、**Envoyサイドカーの受信側（アプリの外）で行うか、やむを得ずaccount-serviceのアプリ内で行う場合もリクエストの入口（ハンドラの先頭、表5のABAC判定より前）でのみ**行う。ビジネスロジックの途中や、表5のABAC判定の後にスコープチェックを行ってはならない。理由は[ADR 0006](adr/0006-claim-vs-external-attribute-criteria.md)を参照。
+この表のスコープチェックは、**Envoyサイドカーの受信側（アプリの外）で行うか、やむを得ずアプリ内で行う場合もリクエストの入口（ハンドラの先頭、表5のABAC判定より前）でのみ**行う。ビジネスロジックの途中や、表5のABAC判定の後にスコープチェックを行ってはならない。理由は[ADR 0006](adr/0006-claim-vs-external-attribute-criteria.md)を参照。
 
-### 表3: analyst-attribute-serviceの照会可否（BR4に対応）
+### 表3: analyst-attribute-serviceの照会可否（BR4・BR11に対応）
 
-fraud-mcp-server等のAIエージェント経由の経路がanalyst-attribute-serviceへ直接到達できないことを保証する表。これにより、表5のABAC判定は必ずaccount-serviceを経由した最新の属性照会に基づいて行われ、BR4（AIエージェントの閲覧範囲はアナリスト本人を超えない）の前提が成り立つ。audit-service（[ADR 0042](adr/0042-audit-service-senior-gate.md)）は2件目の正当な呼び出し元だが、目的はBR4とは別軸（senior限定閲覧ゲートの二値判定）であり、いずれもToken Exchangeでsubを元のアナリスト本人のまま維持し、analyst-attribute-service自身のx-auth-sub一致チェック（本人以外の属性照会を防ぐ）を通過する必要がある点は共通する。
+AIエージェント経由の経路がanalyst-attribute-serviceへ直接到達できないことを保証する表。これにより、表5のABAC判定は必ずaccount-serviceを経由した最新の属性照会に基づいて行われ、BR4（AIエージェントの閲覧範囲はアナリスト本人を超えない）の前提が成り立つ。
 
-| 呼び出し元 | 照会可否 |
-|---|---|
-| account-service（`aud=account-service`のトークンを`subject_token`に交換、scope=`analyst:read`） | ALLOW |
-| audit-service（`aud=audit-service`のトークンを`subject_token`に交換、scope=`analyst:read`。[ADR 0042](adr/0042-audit-service-senior-gate.md)） | ALLOW |
-| その他すべて | DENY |
-
-### 表4: fraud-detection-engineのaccount-serviceアクセス（Token Exchange対象外、BR7に対応）
-
-fraud-detection-engineはユーザー委任チェーンに参加しない機械間認証（client_credentials）のため、表1の委任トポロジーとは別枠で扱う。
-
-| 認証方式 | スコープ | 業務属性チェック |
+| 呼び出し元 | 目的 | 照会可否 |
 |---|---|---|
-| client_credentials（fraud-detection-engineの自クライアント） | `account:freeze` | なし（スコープチェックのみ） |
+| account-service（`aud=account-service`のトークンを`subject_token`に交換、scope=`analyst:read`） | 表5のABAC判定（BR1〜BR4） | ALLOW |
+| audit-service（`aud=audit-service`のトークンを`subject_token`に交換、scope=`analyst:read`） | 監査閲覧のsenior限定ゲート（BR11。[ADR 0042](adr/0042-audit-service-senior-gate.md)） | ALLOW |
+| その他すべて | — | DENY |
+
+いずれの呼び出し元もToken Exchangeで`sub`を元のアナリスト本人のまま維持しており、analyst-attribute-serviceは照会対象と`x-auth-sub`の一致を検証して本人以外の属性照会を拒否する。
+
+### 表4: client_credentialsによるaccount-serviceアクセス（Token Exchange対象外、BR7に対応）
+
+ユーザー委任チェーンに参加しない機械間認証のため、表1の委任トポロジーとは別枠で扱う。
+
+| 呼び出し元 | スコープ | 業務属性チェック | 対応要件 |
+|---|---|---|---|
+| fraud-detection-engine | `account:freeze` | なし（スコープチェックのみ） | BR7 |
+| audit-service | `account:audit` | なし（スコープチェックのみ。読み取り専用） | BR8の検証手段（§9） |
 
 ### 表5: account-serviceの口座別アクセス可否（アナリスト経由、RBAC+ABAC、BR1・BR2・BR3に対応）
 
-アナリスト経由のリクエスト（`account:read`/`account:propose`/`account:unfreeze`のいずれか）にのみ適用される。fraud-detection-engineの`account:freeze`には適用しない（表4、BR7）。
+アナリスト経由のリクエスト（`account:read`/`account:propose`/`account:unfreeze`のいずれか）にのみ適用される。表4のclient_credentialsアクセスには適用しない（BR7）。
 
-`sub`がアナリスト本人のまま委任チェーンを通じて維持されるため（表1）、この判定はfrontend直接・AIエージェント経由のどちらのリクエストであっても同じアナリスト本人の属性に対して行われる。これによりBR4（AIエージェントの閲覧範囲はアナリスト本人を超えない）が成り立つ。
-
-条件は「アナリストの権限レベル」と「口座の地域一致・ティア」の2軸。
+`sub`がアナリスト本人のまま委任チェーンを通じて維持されるため（表1）、この判定はfrontend直接・AIエージェント経由のどちらのリクエストであっても同じアナリスト本人の属性に対して行われる。これによりBR4が成り立つ。
 
 | 権限レベル \ 口座の地域・ティア | 担当地域一致・standard | 担当地域一致・high-value | 担当地域不一致 |
 |---|---|---|---|
@@ -239,6 +343,8 @@ fraud-detection-engineはユーザー委任チェーンに参加しない機械�
 
 ### 表6: テストアナリスト
 
+`make deploy-verify-hop`が投入する（[k8s/keycloak/test-fixtures-configmap.yaml](../k8s/keycloak/test-fixtures-configmap.yaml)・[k8s/analyst-attribute-service/seed-configmap.yaml](../k8s/analyst-attribute-service/seed-configmap.yaml)）。パスワードは`.secrets/<アナリスト名>-password`。
+
 | アナリスト | 担当地域 | 権限レベル |
 |---|---|---|
 | yamada-analyst | 東京 | junior |
@@ -247,56 +353,83 @@ fraud-detection-engineはユーザー委任チェーンに参加しない機械�
 
 ## 7. ローカル実行環境
 
-**k3d**（[ADR 0003](adr/0003-k3d-without-istio.md)）。Istioは当面不採用、サイドカーは素のEnvoyを手動構成する。
+**k3d**（[ADR 0003](adr/0003-k3d-without-istio.md)）。Istioは使わず、サイドカーは素のEnvoyを手動構成する。
 
-- クラスタ定義は[k3d/cluster-config.yaml](../k3d/cluster-config.yaml)。単一サーバーノード、Traefik・servicelbは無効化（Ingressを使わないため。[ADR 0004](adr/0004-external-access-via-port-forward.md)）
-- 外部公開はIngressではなく`kubectl port-forward`で行う（[ADR 0004](adr/0004-external-access-via-port-forward.md)）。edge-proxy相当のServiceに直接port-forwardし、`KC_HOSTNAME`はホストからブラウザで到達する固定URL（`http://localhost:3000`を想定）に固定する
-- クラスタのup/down/stop/start/statusは`make`タスクで操作する（[Makefile](../Makefile)）
-- 実行に必要なWSL2側の前提条件（cgroup v2化）とその対応経緯は[insights.md](insights.md)を参照
-- Keycloakは`kc.sh build`済みイメージ（[services/keycloak/Dockerfile](../services/keycloak/Dockerfile)）を`start --optimized`で起動する。起動のたびにaugmentationをやり直す`start-dev`と比べ起動時間を約半分に短縮している（[ADR 0035](adr/0035-keycloak-optimized-build.md)）
+- クラスタ定義は[k3d/cluster-config.yaml](../k3d/cluster-config.yaml)。単一サーバーノード、Traefik・servicelbは無効化（Ingressを使わないため）
+- 外部公開はIngressではなく`kubectl port-forward`で行う（[ADR 0004](adr/0004-external-access-via-port-forward.md)）。`make keycloak-forward`がedge-proxyのServiceを`localhost:3000`へport-forwardし、edge-proxyは`/realms/`・`/admin/`・`/resources/`をKeycloakへ、それ以外をfrontendへ振り分ける（[ADR 0017](adr/0017-edge-proxy-full-keycloak-mtls.md)・[ADR 0024](adr/0024-frontend-edge-proxy-and-simplified-login.md)）。`KC_HOSTNAME`はブラウザから到達する固定URL`http://localhost:3000`に固定している
+- Keycloakは`kc.sh build`済みイメージ（[services/keycloak/Dockerfile](../services/keycloak/Dockerfile)）を`start --optimized`で起動する（[ADR 0035](adr/0035-keycloak-optimized-build.md)）
+- 各サービスのイメージはローカルでビルドし`k3d image import`で持ち込む（レジストリは使わない）。`make sync`は全サービスを再ビルドし、イメージIDが変わったサービスだけをrollout restartする
+- クラスタのup/down/stop/start/statusは`make`タスクで操作する（[Makefile](../Makefile)、一覧は[README.md](../README.md)）
+- 実行に必要なWSL2側の前提条件（cgroup v2化・メモリ上限）は[insights.md](insights.md)「k3d / WSL2」を参照
 
 ## 8. データストア
 
-各サービスは自分のデータの唯一の番人であり、他サービスは直接テーブル・コレクションを見ない（サービス境界をスコープ付きトークンで越えるという本プロジェクトの核心と矛盾するため）。ローカル環境はメモリ制約が既知（[insights.md](insights.md)）のため、エンジン自体は共有しつつサービスごとに論理DB・認証情報を分離する。詳細・選定理由は[ADR 0008](adr/0008-per-service-datastore-strategy.md)を参照。
+各サービスは自分のデータの唯一の番人であり、他サービスは直接テーブルを見ない（サービス境界をスコープ付きトークンで越えるという本プロジェクトの核心と矛盾するため）。ローカル環境はメモリ制約が既知（[insights.md](insights.md)）のため、エンジン自体は共有しつつサービスごとに論理DB・認証情報を分離する。詳細・選定理由は[ADR 0008](adr/0008-per-service-datastore-strategy.md)を参照。
 
 | サービス | エンジン |
 |---|---|
 | account-service | PostgreSQL（専用データベース） |
-| fraud-detection-engine | PostgreSQL（account-serviceと同一インスタンス内の別データベース） |
+| fraud-detection-engine | PostgreSQL（同一インスタンス内の別データベース） |
 | analyst-attribute-service | PostgreSQL（同一インスタンス内の別データベース） |
-| frontend | なし（ログインセッションは暗号化Cookieでステートレスに保持） |
-| audit-service | なし（ステートレス。呼び出しの都度account-service・Lokiから取得して突合するのみ。[ADR 0040](adr/0040-audit-service-reconciliation.md)） |
 | Keycloak（業務サービス群の外・プラットフォーム基盤） | PostgreSQL（同一インスタンス内の別データベース） |
+| frontend | なし（ログインセッションは暗号化Cookieでステートレスに保持） |
+| fraud-agent・fraud-mcp-server | なし（受け取った委任トークンを中継するのみ） |
+| audit-service | なし（呼び出しの都度account-service・Lokiから取得して突合するのみ。[ADR 0040](adr/0040-audit-service-reconciliation.md)） |
+
+各DBの初期化（データベース・ロール作成）は1回限りのdb-init Job、テストアナリスト属性の投入はseed Jobが行う。共有Postgresへの接続はJobを含め全てEnvoyのtcp_proxy＋mTLS配下にある（§3.5、[ADR 0028](adr/0028-postgres-mtls-tcp-proxy.md)）。
 
 ## 9. 監査
 
-[requirements.md](requirements.md) BR8（事後追跡可能性）を満たすため、監査ログ集約基盤（Grafana Alloy + `grafana/otel-lgtm`、[ADR 0025](adr/0025-audit-log-aggregation.md)）でEnvoyアクセスログ・Keycloakイベントログを集約し、以下の相関キーで事後の再構成を可能にする。
+[requirements.md](requirements.md) BR8（事後追跡可能性）を満たすため、2段構えにしている。
 
-- **`sessionId`**（Keycloakのログインセッションid）：委任チェーン1インスタンスの相関キー。同一のfrontendログインセッションに由来する全ホップのToken Exchangeイベントは同じ`sessionId`を持つ（実機確認済み。insights.md参照）。`sub`単体では同一アナリストの複数の並行操作（別タブでの別操作等）を区別できないため、これを主キーとする
-- **`sub`/`userId`/`username`**：誰が。委任チェーン全体で元のアナリストのまま維持される（Impersonation方式）。client_credentialsグラント（fraud-detection-engineの自動凍結処理）には`sessionId`自体が存在せず、`sub`はその処理自身のサービスアカウントになる（BR7と整合）
-- **`token_id`（jti）/`scope`/`audience`**：各ホップで何をしたか。ホップごとに新しいトークンが発行されるため、`jti`はホップごとに変わる
+1. **記録と集約**：account-serviceが「誰が提案し・誰がいつ承認し・誰がいつ実行したか」を自己申告として記録し、監査ログ集約基盤がKeycloak・Envoyの第三者記録を集める
+2. **突合**：独立したaudit-serviceが、自己申告と第三者記録が一致するかを検証する
 
-集約先はKeycloakのイベントログ（`eventsEnabled`、`TOKEN_EXCHANGE`/`LOGIN`等。`userId`/`username`/`sessionId`/`token_id`/`scope`/`audience`/`subject_token_client_id`を含む）を主軸とし、全ホップのEnvoyアクセスログ（`x-auth-sub`/`x-auth-scope`/`x-auth-jti`）を補助的に併用する。`proposal_id`（AIの提案と人間の確定を紐付けるための識別子）はaccount-serviceの本実装（[ADR 0026](adr/0026-account-service-analyst-attribute-service-implementation.md)）でDB永続化済み：`unfreeze_proposals.id`として発行され、`unfreeze_executions.proposal_id`（NULL可、AIの提案に基づかない実行を許すため）で突合する。提案の承認・却下（BR9、[ADR 0036](adr/0036-unfreeze-proposal-approval-step.md)）は`unfreeze_proposals.status`/`decided_by_sub`/`decided_at`に記録され、「誰が提案し・誰がいつ承認し・誰がいつ実行したか」の3点を事後に区別して追跡できる。
+### 記録と集約
+
+監査ログ集約基盤（Grafana Alloy + `grafana/otel-lgtm`、`observability` namespace、[ADR 0025](adr/0025-audit-log-aggregation.md)）で、Envoyアクセスログ・KeycloakイベントログをLokiに集約する。相関キーは次の通り。
+
+| キー | 意味 |
+|---|---|
+| `sessionId` | Keycloakのログインセッションid。委任チェーン1インスタンスの相関キー。同一のfrontendログインセッションに由来する全ホップのToken Exchangeイベントは同じ`sessionId`を持つ（[insights.md](insights.md)参照）。`sub`単体では同一アナリストの並行操作（別タブでの別操作等）を区別できないため、これを主キーとする。client_credentialsグラントには`sessionId`が存在しない |
+| `sub`/`userId`/`username` | 誰が。委任チェーン全体で元のアナリストのまま維持される（Impersonation方式）。client_credentialsグラントでは`sub`はそのサービス自身のサービスアカウントになる（BR7と整合） |
+| `token_id`（jti）/`scope`/`audience` | 各ホップで何をしたか。ホップごとに新しいトークンが発行されるため、`jti`はホップごとに変わる |
+
+主軸はKeycloakのイベントログ（`eventsEnabled`、`TOKEN_EXCHANGE`/`LOGIN`等。`userId`/`username`/`sessionId`/`token_id`/`scope`/`audience`/`subject_token_client_id`を含む）で、全ホップのEnvoyアクセスログ（`x-auth-sub`/`x-auth-scope`/`x-auth-jti`）を補助的に併用する。
+
+account-service側の自己申告は次の通り。
+
+- 提案：`unfreeze_proposals.id`が`proposal_id`として発行される。AIの結論（`recommendation`＝`unfreeze`/`keep_frozen`、[ADR 0039](adr/0039-unfreeze-recommendation-axis.md)）と、承認・却下（BR9、[ADR 0036](adr/0036-unfreeze-proposal-approval-step.md)）の`status`/`decided_by_sub`/`decided_at`/`decided_jti`を持つ
+- 実行：`unfreeze_executions`が実行者・実行時刻・`executed_jti`を持ち、`proposal_id`（NULL可。AIの提案に基づかない直接実行を許すため）で提案と紐付く
 
 ### 自己申告と第三者記録の突合（audit-service）
 
-上記の相関キーは「事後に再構成できる」ところまでで、account-service自身の自己申告（`decided_at`/`executed_at`）とKeycloak/Envoyの第三者記録が実際に一致するかを検証する仕組みは、独立したサービス**audit-service**が担う（AI支援・人間の判断を行うコンポーネントとは別のコンポーネント。[ADR 0040](adr/0040-audit-service-reconciliation.md)・[0041](adr/0041-audit-service-implementation.md)）。
+AI支援・人間の判断を行うコンポーネントとは別の独立したサービス**audit-service**が担う（[ADR 0040](adr/0040-audit-service-reconciliation.md)・[ADR 0041](adr/0041-audit-service-implementation.md)・[ADR 0044](adr/0044-audit-service-per-request-report.md)）。
 
-- **ステートレス**：audit-service自身は永続ストアを持たない。`GET /reconcile?since=`が呼ばれるたびに、(a) account-serviceの`/audit/unfreeze-proposals`・`/audit/unfreeze-executions`（`account:audit`スコープ、機械間認証）から自己申告（`decided_jti`/`executed_jti`を含む。[ADR 0044](adr/0044-audit-service-per-request-report.md)）を、(b) Lokiの`/loki/api/v1/query_range`から2種類の第三者記録——Keycloakイベントログ（`TOKEN_EXCHANGE`かつ`account:unfreeze`）とaccount-service自身のEnvoy ingressアクセスログ——を、その場で取得する
-- **決定的なキー一致のみ、LLMは不使用**（[ADR 0044](adr/0044-audit-service-per-request-report.md)）：自己申告に含まれるトークン識別子(jti)について、(1)Keycloakのイベントログに同じjtiでのトークン発行記録があるか、(2)account-service自身のEnvoyアクセスログに同じjtiで対応するAPIパスへの2xxリクエストが記録されているか、の2点が両方確認できて初めて一致とする。jtiはトークン発行ごとに一意なため、以前の`sub`+時刻近接という近似一致(近くにあった無関係な本物のイベントを誤って裏付けとして採用してしまう偽陽性の余地があった)を排除する完全一致判定になっている。検証者自身がAI（fraud-agent）と同種の非決定性・不透明さを持つと、「検証者は再現可能で説明可能である」という前提が崩れるため、判定はこの決定的なキー一致のみで行う
-- **突合対象は`account:unfreeze`スコープを要求する操作のみ**：承認/却下（`decided_at`）・凍結解除実行（`executed_at`）。可逆・低リスクな提案の新規作成（`account:propose`）は対象外
-- **片方向のみ**：自己申告に対応する第三者記録が無いことは検知するが、逆（第三者記録はあるが自己申告が無いこと）は検知しない（拒否された承認・実行試行がノイズになるため。[ADR 0041](adr/0041-audit-service-implementation.md) Decision参照）。この片方向だけでも、自己申告側の改ざん・欠落は検知できる
-- **突合結果の閲覧はsenior analyst限定**（[ADR 0042](adr/0042-audit-service-senior-gate.md)）：frontendに新設した「監査」画面（`/audit`）がsenior analystのログインセッションから`audience=audit-service, scope=audit:read`でToken Exchangeを行い、`GET /reconcile`を呼ぶ（§5パス④）。audit-service自身のingressはmTLS（frontendのみ許可）+jwt_authn（audience=audit-service）+rbac（`audit:read`保有）で保護され、その先で`x-auth-sub`を使いanalyst-attribute-serviceへ照会してlevelがseniorであることを確認する（表5のABAC判定とは別軸の二値ゲート。地域/ティアによる絞り込みは行わない）。junior analystが同じ画面・APIを呼ぶと403になる
-- **結果は凍結解除リクエスト（提案）単位でまとめる**（[ADR 0044](adr/0044-audit-service-per-request-report.md)）：カテゴリ別の件数集計だけでは「何と何が対応しているか」が伝わらなかったため、`GET /reconcile`のレスポンスは提案(`unfreeze_proposals`)ごとに承認/却下・実行それぞれの突合結果をまとめる形に変更した。提案に紐付かない直接実行（`proposalId`省略）は別枠で返し、「対応する提案が無いこと自体は異常ではない」ことを区別できるようにする。各操作の結果は「トークンが発行されたか」「account-serviceへ実際に届いたか」の2点を個別に返し、監査画面はこの構造をそのまま表示して画面冒頭に「何を・なぜ・どんな基準で」照合しているかを固定の説明文として明示する
-- **jtiを持たない旧形式の自己申告データはサポートしない**（[ADR 0044](adr/0044-audit-service-per-request-report.md)）：本変更の導入時点で、`unfreeze_proposals`/`unfreeze_executions`の既存データはjtiを持たないため削除した（デモ用データのため実データの保全は要件でない）。以降のデータは全てjti付きで蓄積される
+- **ステートレス**：audit-service自身は永続ストアを持たない。`GET /reconcile?since=`が呼ばれるたびに、(a) account-serviceの`/audit/unfreeze-proposals`・`/audit/unfreeze-executions`（`account:audit`スコープ、機械間認証）から自己申告を、(b) Lokiの`/loki/api/v1/query_range`から2種類の第三者記録——Keycloakイベントログ（`TOKEN_EXCHANGE`かつ`account:unfreeze`）とaccount-service自身のEnvoy ingressアクセスログ——を、その場で取得する
+- **判定はjtiの完全一致のみ、LLMは不使用**：自己申告に含まれるjtiについて、(1) Keycloakのイベントログに同じjtiでのトークン発行記録があるか、(2) account-serviceのEnvoyアクセスログに同じjtiで対応するAPIパスへの2xxリクエストが記録されているか、の2点が両方確認できて初めて一致とする。検証者自身がAIと同種の非決定性を持つと「検証者は再現可能で説明可能である」という前提が崩れるため、判定はこの決定的なキー一致のみで行う
+- **突合対象は`account:unfreeze`スコープを要求する操作のみ**：承認/却下・凍結解除の実行。可逆・低リスクな提案の新規作成（`account:propose`）は対象外
+- **片方向のみ**：自己申告に対応する第三者記録が無いことは検知するが、逆（第三者記録はあるが自己申告が無いこと）は検知しない（拒否された承認・実行試行がノイズになるため。[ADR 0041](adr/0041-audit-service-implementation.md)）。この片方向だけでも、自己申告側の改ざん・欠落は検知できる
+- **結果は凍結解除リクエスト（提案）単位**：`GET /reconcile`のレスポンスは提案ごとに承認/却下・実行それぞれの突合結果（「トークンが発行されたか」「account-serviceへ実際に届き成功したか」）をまとめる。提案に紐付かない直接実行（`proposalId`省略）は`directExecutions`として別枠で返す。監査画面はこの構造をそのまま表示し、画面冒頭に照合の対象・理由・基準を固定の説明文として示す
+- **jtiを持たない自己申告データはサポートしない**（[ADR 0044](adr/0044-audit-service-per-request-report.md)）
+- **表示専用の補助情報**：Keycloakのイベントログから`sub`→username（ログインに使った文字列）の対応表を返し、監査画面は解決できた場合にsubへusernameを添える。突合の判定には使わない（[ADR 0045](adr/0045-audit-service-username-display.md)）
+- **閲覧はsenior analyst限定**（BR11、[ADR 0042](adr/0042-audit-service-senior-gate.md)）：frontendの監査画面（`/audit`）が§5パス④でaudit-serviceを呼ぶ。audit-serviceのingressはmTLS（frontendのみ許可）＋jwt_authn（audience=audit-service）＋rbac（`audit:read`保有）で保護され、その先で`x-auth-sub`を使いanalyst-attribute-serviceへ照会してlevelがseniorであることを確認する。junior analystが同じ画面・APIを呼ぶと403になる。`?accountId=`で特定口座の結果に絞り込める（ダッシュボードの口座行からの導線）
 
 ## 10. 実行時シナリオ（ユースケース）
 
-上記§1〜§9が関心事ごとに分割して説明している各層（Token Exchange・スコープ・ABAC判定）を、具体的なリクエストフローとして正常系・異常系ともに1本の線で串刺しにし、実装が噛み合っていることを示す（`scripts/verify-hop.sh`の人間可読版）。異常系は「どのように拒否が観測されるか」も明記する。同じ「拒否」でも、リクエスト自体がエラーになる場合と、処理は完了しつつ結果セットが絞り込まれる場合があり、両者を区別する。
+§1〜§9が関心事ごとに分割して説明している各層（Token Exchange・スコープ・ABAC判定）を、具体的なリクエストフローとして正常系・異常系ともに1本の線で串刺しにし、実装が噛み合っていることを示す（`scripts/verify-hop.sh`・`scripts/verify-audit-service.sh`の人間可読版）。異常系は「どのように拒否が観測されるか」も明記する。同じ「拒否」でも、リクエスト自体がエラーになる場合と、処理は完了しつつ結果セットが絞り込まれる場合があり、両者を区別する。
 
-### 不正検知・口座凍結解除
+| UC | 種別 | 内容 | 主な要件 |
+|---|---|---|---|
+| UC0 | 前提 | fraud-detection-engineによる自動凍結 | BR7 |
+| UC1 | 正常系 | AIが標準口座の凍結解除を提案し、juniorアナリストが承認・確定する（却下・「根拠なし」の分岐を含む） | BR5・BR6・BR9・BR10 |
+| UC2 | 正常系 | seniorアナリストがhigh-value口座を扱う | BR3 |
+| UC3 | 異常系 | juniorにはhigh-value口座がAI経由でも見えない | BR2・BR4 |
+| UC4 | 異常系 | 担当地域外の口座はAI経由でも人間経由でも見えない | BR1・BR4 |
+| UC5 | 異常系 | AIエージェントが凍結解除を直接実行しようとする（構造的に不可能） | BR5 |
+| UC6 | 正常系/異常系 | 監査結果の閲覧（seniorは閲覧でき、juniorは拒否される） | BR8・BR11 |
 
-#### UC0: 前提（fraud-detection-engineによる自動凍結）
+### UC0: 前提（fraud-detection-engineによる自動凍結）
 
 登場人物：なし（機械間認証）
 
@@ -309,38 +442,64 @@ fraud-detection-engineはユーザー委任チェーンに参加しない機械�
 
 このパスはユーザー委任チェーンに一切参加しない、account-serviceの「通常のマイクロサービスから利用される」側面を示す。以降のUC1〜UC5は、この自動凍結が既に起きていることを前提にする。
 
-#### UC1: 正常系（AIが標準口座の凍結解除を提案し、juniorアナリストが確定する）
+### UC1: 正常系（AIが標準口座の凍結解除を提案し、juniorアナリストが確定する）
 
 登場人物：yamada-analyst（junior, 担当地域=東京）
+
+```mermaid
+sequenceDiagram
+  actor A as yamada-analyst
+  participant FE as frontend
+  participant FA as fraud-agent
+  participant MCP as fraud-mcp-server
+  participant AS as account-service
+  participant AAS as analyst-attribute-service
+  A->>FE: ログイン、「AIによる精査を依頼」
+  FE->>FA: POST /chat（aud=fraud-agent, account:read）
+  FA->>MCP: MCPツール呼び出し（aud=fraud-mcp-server, account:read）
+  MCP->>AS: GET /accounts/frozen（aud=account-service, account:read）
+  AS->>AAS: 属性照会（analyst:read）
+  AAS-->>AS: 東京, junior
+  AS-->>MCP: 東京のstandard口座のみ（表5）
+  FA->>MCP: propose_unfreeze
+  MCP->>AS: POST .../unfreeze-proposals（account:propose）→ status=pending
+  FA-->>FE: 提案と根拠（SSE）
+  A->>FE: 「承認」
+  FE->>AS: POST .../approve（account:unfreeze）→ status=approved
+  A->>FE: 「凍結解除を確定」
+  FE->>AS: POST /accounts/{id}/unfreeze（account:unfreeze, proposalId）
+  AS->>AAS: 属性再照会（多層防御）
+  AS-->>FE: 凍結解除を実行し提案IDと紐付けて記録
+```
 
 ```
 1. yamada-analystがfrontendからログイン
 2. frontendでAIエージェント（fraud-agent）とのチャットを開始
-   → frontend: 自身のログイントークン（aud=frontend）を`subject_token`にToken Exchangeを実行（audience=fraud-agent, scope=account:read）し、そのトークンでfraud-agentのチャット開始APIを呼ぶ（[ADR 0014](adr/0014-fraud-agent-token-exchange.md)）
+   → frontend: 自身のログイントークン（aud=frontend）を`subject_token`にToken Exchangeを実行（audience=fraud-agent, scope=account:read）し、そのトークンでfraud-agentのチャット開始APIを呼ぶ。会話の対象口座IDを`POST /chat?accountId=`で渡し、fraud-mcp-serverはその口座以外へのツール呼び出しを拒否する（[ADR 0043](adr/0043-chat-account-scoping.md)）
 3. fraud-agent → fraud-mcp-server: 受け取ったトークン（aud=fraud-agent）を`subject_token`に自身のToken Exchangeを実行（audience=fraud-mcp-server, scope=account:read）した上で、MCPツール get_frozen_accounts を呼ぶ
 4. fraud-mcp-server: Token Exchange（audience=account-service, scope=account:read）
 5. account-service: Token Exchange（audience=analyst-attribute-service, scope=analyst:read）でyamada-analystの属性（東京, junior）を取得
 6. account-service: 東京の standard 口座のうち凍結中のものを、凍結根拠とともに返す（表5）
-7. fraud-agentが凍結理由・取引履歴を分析し「この口座は誤検知の疑いがあり、凍結を解除すべきです」と提案。fraud-mcp-serverのpropose_unfreezeツールで提案を記録（scope=account:propose、status=pending）
+7. fraud-agentが凍結理由・取引履歴を分析し「この口座は誤検知の疑いがあり、凍結を解除すべきです」と提案。fraud-mcp-serverのpropose_unfreezeツールで提案を記録（scope=account:propose、recommendation=unfreeze、status=pending）
 8. yamada-analystがチャット画面で提案内容・根拠を確認し、「承認」ボタンを押す
    → frontend: 自身のログイントークン（aud=frontend）を`subject_token`に別のToken Exchangeを実行（audience=account-service, scope=account:unfreeze）し、承認APIを呼ぶ
    → account-service: 再度analyst-attribute-serviceへ照会し（多層防御）ALLOW。かつ手順7の提案を依頼したのがyamada-analyst本人であることを確認した上で（BR9）、提案のstatusをapprovedに更新する
 9. yamada-analystが（チャット画面またはダッシュボードで）「凍結解除を確定」ボタンを押す
    → frontend: 同様にToken Exchangeを実行し、そのトークンでaccount-serviceの凍結解除APIを呼ぶ（手順8で承認済みの提案IDを添えて）
-10. account-service: 再度analyst-attribute-serviceへ照会し（多層防御）、東京・standard・junior → ALLOW。かつ提案のstatusがapproved・依頼者=実行者本人であることを確認した上で、凍結解除を実行し提案IDと紐付けて記録
+10. account-service: 再度analyst-attribute-serviceへ照会し（多層防御）、東京・standard・junior → ALLOW。かつ提案のstatusがapproved・依頼者=実行者本人・recommendation=unfreezeであることを確認した上で、凍結解除を実行し提案IDと紐付けて記録
 ```
 
-却下の場合：手順8で「却下」ボタンを押すと、account-serviceは提案のstatusをrejectedに更新するのみで、手順9以降は発生しない。ダッシュボードは「AIによる精査を依頼」ボタンを再表示し、手順2からやり直せる。
+**却下の場合**：手順8で「却下」ボタンを押すと、account-serviceは提案のstatusをrejectedに更新するのみで、手順9以降は発生しない。ダッシュボードは「AIによる精査を依頼」ボタンを再表示し、手順2からやり直せる。
 
-AIが「解除の根拠なし」と結論した場合（[ADR 0039](adr/0039-unfreeze-recommendation-axis.md)）：手順7でfraud-agentはpropose_unfreezeの代わりにconclude_no_unfreezeツールを呼び、提案をrecommendation=keep_frozenで記録する（scope=account:propose、status=pendingは共通）。手順8のボタンは「承認/却下」ではなく「了解(凍結を維持)/納得できない(見直しを依頼)」になる（BR10。凍結解除の承認・却下と混同されないよう文言を分ける）。「了解」を押すとstatusがapprovedになり精査完了(凍結維持)で終了、手順9・10（凍結解除の実行）は発生しない。「納得できない」を押すとstatusがrejectedになり、却下の場合と同じくダッシュボードから精査をやり直せる。account-serviceの凍結解除実行API（手順9・10）は、紐付く提案のrecommendationがunfreeze以外の場合は多層防御として拒否する。
+**AIが「解除の根拠なし」と結論した場合**（BR10、[ADR 0039](adr/0039-unfreeze-recommendation-axis.md)）：手順7でfraud-agentはpropose_unfreezeの代わりにconclude_no_unfreezeツールを呼び、提案をrecommendation=keep_frozenで記録する（scope=account:propose、status=pendingは共通）。手順8のボタンは「承認/却下」ではなく「了解(凍結を維持)/納得できない(見直しを依頼)」になる（凍結解除の承認・却下と混同されないよう文言を分ける）。「了解」を押すとstatusがapprovedになり精査完了(凍結維持)で終了し、手順9・10は発生しない。「納得できない」を押すとstatusがrejectedになり、却下の場合と同じくダッシュボードから精査をやり直せる。account-serviceの凍結解除APIは、紐付く提案のrecommendationがunfreeze以外の場合は多層防御として拒否する。
 
-#### UC2: 正常系（AIがhigh-value口座の凍結解除を提案し、seniorアナリストが確定する）
+### UC2: 正常系（seniorアナリストがhigh-value口座を扱う）
 
 登場人物：suzuki-senior（senior, 担当地域=東京・大阪）
 
-UC1と同じ流れだが、手順6で大阪のhigh-value口座も結果に含まれる（表5、senior行は地域一致であればティア不問でALLOW）。
+UC1と同じ流れだが、手順6で東京・大阪のhigh-value口座も結果に含まれる（表5、senior行は地域一致であればティア不問でALLOW）。
 
-#### UC3: 異常系・権限不足（juniorアナリストにはhigh-value口座がAI経由でも見えない）
+### UC3: 異常系・権限不足（juniorアナリストにはhigh-value口座がAI経由でも見えない）
 
 登場人物：yamada-analyst（junior, 担当地域=東京）が東京のhigh-value口座について尋ねる場合
 
@@ -352,93 +511,103 @@ UC1と同じ流れだが、手順6で大阪のhigh-value口座も結果に含ま
 
 **拒否の見え方**：HTTPエラーにはならない。AIエージェントに見えるデータの時点で既に絞り込まれているため、「AIが見落とした」のではなく「そもそも見せていない」という設計になる。
 
-#### UC4: 異常系・地域不一致（担当地域外の口座はAI経由でも人間経由でも見えない）
+### UC4: 異常系・地域不一致（担当地域外の口座はAI経由でも人間経由でも見えない）
 
 登場人物：yamada-analyst（担当地域=東京）が大阪の口座について尋ねる、またはfrontendから直接大阪の口座を照会しようとする場合
 
 ```
 - AI経由：UC3と同じ経路で、大阪の口座はaccount-serviceの結果セットから除外される
-- frontend直接：account-serviceが同じく表5に基づき除外する（呼び出し経路が違うだけで、判定権威はaccount-service一箇所に集約されている）
+- frontend直接：account-serviceが同じく表5に基づき除外する（一覧は結果セットから除外、単一口座の照会は404）
 ```
 
-#### UC5: 異常系・AIエージェントが凍結解除を直接実行しようとするケース（構造的に不可能）
+呼び出し経路が違うだけで、判定権威はaccount-service一箇所に集約されている。
+
+### UC5: 異常系・AIエージェントが凍結解除を直接実行しようとするケース（構造的に不可能）
 
 ```
 1. 仮にfraud-agent（またはfraud-mcp-server）が凍結解除APIを直接呼ぼうとしても、
-   手持ちのトークンは委任チェーン（frontend→fraud-agent→fraud-mcp-server、いずれもToken Exchangeで発行。[ADR 0014](adr/0014-fraud-agent-token-exchange.md)）上のどのトークンも scope=account:read のみであり、
-   account:unfreezeスコープを含まない
+   手持ちのトークンは委任チェーン（frontend→fraud-agent→fraud-mcp-server）上のどのトークンも
+   scope=account:read（fraud-mcp-serverはaccount:proposeも）であり、account:unfreezeを含まない
 2. account-serviceのスコープチェック（表2）でDENY
 ```
 
-**拒否の見え方**：これはリクエスト時点のスコープ不足によるHTTPエラー（403相当）であり、UC3/UC4の「結果セットの絞り込み」とは異なる種類の拒否。そもそも`fraud-mcp-server`クライアントには`account:unfreeze`のoptional client scopeが割り当てられていない（§4、表2）ため、Token Exchangeの時点で`account:unfreeze`を要求しても`invalid_scope`等で拒否される（トークン自体がそもそも取得できないパターン）。
+**拒否の見え方**：リクエスト時点のスコープ不足によるHTTPエラー（403）であり、UC3/UC4の「結果セットの絞り込み」とは異なる種類の拒否。そもそも`fraud-agent`・`fraud-mcp-server`クライアントには`account:unfreeze`のoptional client scopeが割り当てられていない（§4）ため、Token Exchangeの時点で`account:unfreeze`を要求しても拒否される（トークン自体が取得できない）。
+
+### UC6: 監査結果の閲覧（seniorは閲覧でき、juniorは拒否される）
+
+登場人物：suzuki-senior（senior）、yamada-analyst（junior）
+
+```
+1. アナリストがfrontendの「監査」画面（/audit）を開く
+   → frontend: ログイントークンを`subject_token`にToken Exchange（audience=audit-service, scope=audit:read）し、GET /reconcile を呼ぶ
+2. audit-service: Token Exchange（audience=analyst-attribute-service, scope=analyst:read）で呼び出し元のlevelを照会
+3a. suzuki-senior（senior）：通過。account-serviceの自己申告（client_credentials, account:audit）とLokiの第三者記録を取得し、提案単位の突合結果を返す
+3b. yamada-analyst（junior）：403で拒否。frontendは画面上に閲覧権限がない旨を表示する
+```
+
+**拒否の見え方**：junior analystでもToken Exchange（手順1）自体は成功する（`audit:read`はfrontendクライアントに付与されたscopeであり、アナリストの属性を見ない）。seniorかどうかはaudit-service側の業務判定（手順2）で決まり、403として観測される。地域・ティアによる絞り込みは行わない（BR11）。
 
 ## 11. 既知の制約・未着手事項
 
-未着手の改善項目・未決定事項のみを列挙する。着手したらその場で該当項目を削除し、結果を本書の該当章・[services.md](services.md)・[insights.md](insights.md)のいずれかへ記録する。未決事項の判断材料となる実機知見・調査結果が既に[insights.md](insights.md)やADRにある場合は、それを再掲せずポインタで済ませる。
+未着手の改善項目・未決定事項のみを列挙する。着手したらその場で該当項目を削除し、結果を本書の該当章・[services.md](services.md)・[insights.md](insights.md)のいずれかへ記録する。判断材料となる実機知見・調査結果が既に[insights.md](insights.md)やADRにある場合は、再掲せずポインタで済ませる。
 
 ### Token Exchange / Envoyサイドカー
 
-- **合言葉ヘッダー名・env var名の確定**：1ホップ先行検証でヘッダー名`x-gekko-handshake`・env var名`HANDSHAKE_TOKEN_FILE`を採用し、Python実装のスタブ間で統一した（[k8s/account-service/app-configmap.yaml](../k8s/account-service/app-configmap.yaml)等）。Java/TypeScript/Rust/Go等、他言語での本実装時にも同じ命名を踏襲する
-- **Unixドメインソケット化の再検討**：[ADR 0009](adr/0009-envoy-ingress-responsibility-and-bypass-prevention.md)でTCP loopback+合言葉方式を採用しUnixドメインソケット化は見送ったが、「同一Pod内でアプリが侵害された場合」まで守る要求が出てきたら再検討する
+- **Unixドメインソケット化の再検討**：[ADR 0009](adr/0009-envoy-ingress-responsibility-and-bypass-prevention.md)はTCP loopback+合言葉方式を採用しUnixドメインソケット化は見送った。「同一Pod内でアプリが侵害された場合」まで守る要求が出てきたら再検討する
 - **Token Exchange結果のキャッシュ**：`(subject jti, audience)`単位でのキャッシュを検討しているが、各サイドカー内に閉じるか、どの範囲で共有するかは未決定。キャッシュTTLは性能とのトレードオフを意図的に選んだ短い値にする
-- **交換後トークンのアクセストークン有効期間**：[ADR 0006](adr/0006-claim-vs-external-attribute-criteria.md)は、トークン漏洩・誤用時の被害範囲を抑える多層防御として交換後トークンの有効期間を短く設定する方針を前提にしている。ログイントークンとは別に、各クライアント（frontend/fraud-mcp-server/account-service）が交換で得るトークンのAccess Token Lifespanを具体的に何秒にするかは未決定
-- **`account:read`スコープのaudience監査ギャップ**：`account:read`は複数audience（account-service・fraud-agent・fraud-mcp-server）向けの`oidc-audience-mapper`を1つのclient scopeで共有しているため、Keycloak側は要求元クライアントが`account:read`を持ってさえいれば任意のaudienceを要求できてしまう（表1のDENYはKeycloakのクライアント設定ではなく、各クライアントの実装＝token-exchangeサイドカーが正しいaudienceしか要求しないことに依存している）。Client Policiesを使わない設計（§4）の下ではこの自制に頼るしかなく、現状は全クライアントの実装が正しいaudienceしか要求しないためリスクは顕在化していないが、監査要件が強まった場合はClient Policies導入を再検討する（[ADR 0024](adr/0024-frontend-edge-proxy-and-simplified-login.md) Consequences、[insights.md](insights.md)参照）
+- **交換後トークンのアクセストークン有効期間**：[ADR 0006](adr/0006-claim-vs-external-attribute-criteria.md)は、トークン漏洩・誤用時の被害範囲を抑える多層防御として交換後トークンの有効期間を短く設定する方針を前提にしている。各クライアントが交換で得るトークンのAccess Token Lifespanを具体的に何秒にするかは未決定（現状はrealm既定値）
+- **`account:read`スコープのaudience監査ギャップ**：`account:read`は複数audience（account-service・fraud-agent・fraud-mcp-server）向けの`oidc-audience-mapper`を1つのclient scopeで共有しているため、Keycloak側は要求元クライアントが`account:read`を持ってさえいれば任意のそのaudienceを要求できる（表1のDENYの一部はKeycloakの設定ではなく、各クライアントのサイドカーが正しいaudienceしか要求しないことに依存している）。Client Policiesを使わない設計（§4）の下ではこの自制に頼るしかない。監査要件が強まった場合はClient Policies導入を再検討する（[ADR 0024](adr/0024-frontend-edge-proxy-and-simplified-login.md) Consequences、[insights.md](insights.md)参照）
 
-### DPoP
+### 送信者拘束（DPoP / RFC 8705）
 
-適用範囲は未定。[ADR 0013](adr/0013-dpop-sender-constraining.md)でfraud-mcp-server→account-serviceの1ホップに実装・実機検証したが、[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)で撤去した（このホップは既にSPIRE mTLSで身元を限定済みのため実利の重複が大きく、投資に見合わないと判断）。再検討する場合の判断材料（「拘束のスロットは委任チェーンに1箇所、終端ホップのみ」という制約、Keycloak issue #51205等）は[insights.md](insights.md)「DPoP送信者拘束」節に集約してある。frontendへの適用（pattern②、確定パスの直接exchange）は理論上は可能だが、[ADR 0024](adr/0024-frontend-edge-proxy-and-simplified-login.md)でのfrontend実装時もDPoPは有効化しなかった（SPIRE JWT-SVIDクライアント認証のみ採用）ため、依然として未検証。
+- **DPoP**：[ADR 0013](adr/0013-dpop-sender-constraining.md)でfraud-mcp-server→account-serviceの1ホップに実装・実機検証したが、[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)でSPIRE mTLSとの実利の重複を理由に撤去した。再検討時の判断材料（「拘束のスロットは委任チェーンに1箇所、終端ホップのみ」という制約、Keycloak issue #51205等）は[insights.md](insights.md)「DPoP送信者拘束」節。frontend（確定パスの直接exchange）への適用は理論上可能だが未検証。ログイントークン自体を拘束するかも未決定
+- **RFC 8705（証明書拘束アクセストークン）**：機能自体（`tls.client.certificate.bound.access.tokens`）は`client-x509`のSubject DN制約と無関係に動作し、Token Exchangeの発行時接続と提示時接続が別証明書になる問題もPod内サイドカー構成で解消されていることを実機で確認した。一方、Keycloak自身のEnvoyサイドカーがmTLSを終端し証明書を平文転送しない現構成では、`cnf`付与に必要な生の証明書がKeycloak本体に渡らない（KeycloakのSPI標準プロバイダはEnvoyネイティブのXFCC形式に対応しない）。判断材料は[insights.md](insights.md)「RFC 8705 証明書拘束アクセストークンの再検討」節。**判断すべき問い**：この障害を埋める新規コンポーネント（Envoy側のヘッダー変換Lua、またはKeycloak向け独自SPI）を追加する投資が、mTLSの`match_typed_subject_alt_names`による既存の防御に対してどれだけの追加価値を持つか
 
-### RFC 8705（証明書拘束アクセストークン）
+### mTLS / SPIFFE / SPIRE / NetworkPolicy
 
-適用は未定。ADR 0012/0013/0019が「不成立」と結論したのはmTLSをクライアント認証方式として使う場合（`client-x509`、Subject DNしか見ないKeycloakの製品上の制約）についての話で、証明書拘束アクセストークン機能自体（`tls.client.certificate.bound.access.tokens`）はこの制約と無関係に動作することを実機で確認した。ADR 0012が挙げたもう一つの構造的ブロッカー（Token Exchangeの発行時接続と提示時接続が別証明書になる）も、ADR 0019以降のtoken-exchangeサイドカー再配置により解消済みと判断できる。一方、Keycloak自身のEnvoyサイドカーがmTLSを終端し証明書を平文転送しない現構成では、`cnf`付与に必要な生の証明書がKeycloak本体（JVM）に渡らない、という新たな障害が見つかった（KeycloakのSPI標準プロバイダはEnvoyネイティブのXFCC形式に対応しない）。判断材料は[insights.md](insights.md)「RFC 8705 証明書拘束アクセストークンの再検討」節に集約してある。**判断すべき問い**：この障害を埋める新規コンポーネント（Envoy側のヘッダー変換Lua、またはKeycloak向け独自SPI）を追加する投資が、mTLSの`match_typed_subject_alt_names`による既存の防御に対してどれだけの追加価値を持つか（DPoPと同種の再検討）。
-
-### mTLS / SPIFFE / SPIRE
-
-fraud-mcp-server・fraud-detection-engine・account-service・analyst-attribute-service・fraud-agent・frontend・edge-proxy・Keycloak間の全ホップ、常駐4サービス(keycloak/account-service/analyst-attribute-service/fraud-detection-engine)とPostgres間、および5つのdb-init/seed Job(1回限りの初期化Job。ネイティブsidecarコンテナでEnvoyを持つ)とPostgres間にSPIRE mTLSを導入済み（[ADR 0012](adr/0012-spiffe-spire-mtls-single-hop.md)/[0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)/[0017](adr/0017-edge-proxy-full-keycloak-mtls.md)/[0019](adr/0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md)/[0020](adr/0020-fraud-detection-engine-identity-gap-and-client-credentials-federated-jwt.md)/[0021](adr/0021-account-service-analyst-attribute-service-spiffe-jwt-svid.md)/[0023](adr/0023-fraud-agent-fraud-mcp-server-hop.md)/[0024](adr/0024-frontend-edge-proxy-and-simplified-login.md)/[0028](adr/0028-postgres-mtls-tcp-proxy.md)）。Postgres本体の平文5432への直接到達経路は全て廃止された。全ホップへの横展開は完了し、残るのは以下の明示的スコープ外項目のみ。
-
-- **NetworkPolicyのspire namespaceへの横展開**：[ADR 0018](adr/0018-network-policy-default-deny.md)で`gekko` namespaceにL3/4のdefault-denyを導入したが、`spire` namespace（spire-server/spire-agent）は対象外とした。spire-agentが`hostNetwork: true`で動作しており、kube-router netpolがhostNetwork Podに対してどう振る舞うかが未検証なため。加えて`spire-entries` Job（`kubectl exec`でspire-serverへ接続する）等、`gekko` namespaceとは異なる接続パターンを持つ点も要考慮
-- **ワークロードPod（account-service/fraud-mcp-server等）自体への`hostPID`/`hostNetwork`付与**：SPIRE agentには必要だが、ワークロードPod側はカーネルのPID名前空間の性質上不要なはずという推測のもとで見送った。属性解決が実機で失敗した場合（SDS呼び出しがタイムアウトする、spire-serverのログに"no selectors found after max poll attempts"が出る等）のみ再検討する
-- **`spiffe-csi`ドライバ・`spire-controller-manager`**：新規可動部を増やさないため、hostPathでのソケット共有・`spire-server entry create` CLIでの手動登録を選んだ。本番相当の運用を検証したくなった場合に再評価する
+- **NetworkPolicyのspire namespaceへの横展開**：[ADR 0018](adr/0018-network-policy-default-deny.md)は`spire` namespace（spire-server/spire-agent）を対象外とした。spire-agentが`hostNetwork: true`で動作しており、kube-router netpolがhostNetwork Podに対してどう振る舞うかが未検証なため。加えて`spire-entries` Job（`kubectl exec`でspire-serverへ接続する）等、`gekko` namespaceとは異なる接続パターンを持つ点も要考慮
+- **ワークロードPod自体への`hostPID`/`hostNetwork`付与**：SPIRE agentには必要だが、ワークロードPod側はカーネルのPID名前空間の性質上不要なはずという推測のもとで付与していない。属性解決が実機で失敗した場合（SDS呼び出しがタイムアウトする、spire-serverのログに"no selectors found after max poll attempts"が出る等）のみ再検討する
+- **`spiffe-csi`ドライバ・`spire-controller-manager`**：新規可動部を増やさないため、hostPathでのソケット共有・`spire-server entry create` CLIでの手動登録を選んでいる。本番相当の運用を検証したくなった場合に再評価する
 
 ### 属性・アクセス制御の粒度
 
-- **口座属性の拡張要否**：現状は地域(`region`)とティア(`standard`/`high-value`)の2軸のみ（表5）。実装を進める中でさらに軸が必要になるか要検討
+- **口座属性の拡張要否**：現状は地域(`region`)とティア(`standard`/`high-value`)の2軸のみ（表5）。さらに軸が必要になるか要検討
+- **依頼者本人しか決定できないpending提案の救済**：BR9により提案の承認・却下は依頼者本人（`sub`の完全一致）に限るため、依頼者が決定できなくなった提案（退職・異動、デモ環境ではrealm再importによる`sub`の変化）は誰にも決定できないまま残る。一定期間での失効、上長による代理決定等の救済導線を設けるかは未決定（[insights.md](insights.md)「realm再importでユーザーIDが変わり、既存のpending提案が誰にも承認・却下できなくなる」）
 
 ### fraud-detection-engine
 
-- **実際の取引イベントストリームとの連携**：[ADR 0027](adr/0027-fraud-detection-engine-implementation.md)で本実装した監視ループは、上流の取引イベント基盤が存在しないため観測シグナル（口座ID・発火ルール・スコア・理由）を起動時の固定シードで代用している。実際の取引ストリームと連携したくなった場合、BR7（fraud-detection-engineはaccount:readを持たない。表4）とどう両立させるか（account-serviceからの何らかのイベント供給の形を取るのか等）を含めて再検討が必要
-- **スキャン間隔のチューニング**：既定5秒はデモの応答性優先の値であり実運用相当ではない。実運用を想定した値・可変間隔（負荷に応じた調整等）が必要になった場合に見直す
+- **実際の取引イベントストリームとの連携**：監視ループは、上流の取引イベント基盤が存在しないため観測シグナル（口座ID・発火ルール・スコア・理由）を起動時の固定シードで代用している（[ADR 0027](adr/0027-fraud-detection-engine-implementation.md)）。実際の取引ストリームと連携する場合、BR7（fraud-detection-engineは`account:read`を持たない。表4）とどう両立させるか（account-serviceからの何らかのイベント供給の形を取るのか等）を含めて再検討が必要
+- **スキャン間隔のチューニング**：既定5秒（`SCAN_INTERVAL_SECONDS`）はデモの応答性優先の値であり実運用相当ではない。実運用を想定した値・可変間隔が必要になった場合に見直す
 
 ### fraud-agent
 
-- **Anthropic API向けNetworkPolicyのIPレンジ絞り込み**：[ADR 0030](adr/0030-fraud-agent-implementation.md)で導入した`ipBlock 0.0.0.0/0`（RFC1918除外）は、Anthropicの実IPを固定できないための暫定措置。将来Anthropicが固定IPレンジを公開する、またはegress-filteringプロキシ（例：Envoyの`sni_dynamic_forward_proxy`をFQDN許可リストと組み合わせる等）を追加で検討したくなった場合に絞り込む
-- **複数ターン会話の永続化**：現状はリクエストごとに新しい`ClaudeAgentAdapter`インスタンスを作って単発実行しており、会話履歴は保持しない（AG-UIの`threadId`は受け取るが、同じ`threadId`でも毎回新規セッション。複数ターンをまたぐ会話が必要になった場合、アダプタのセッション管理機能や永続化ストアの追加を検討する）
-- **AG-UIの状態同期・frontend tool機能の活用**：`@ag-ui/claude-agent-sdk`アダプタは`STATE_SNAPSHOT`/`STATE_DELTA`によるフロントエンドとの双方向状態同期や、クライアント提供ツール（human-in-the-loop）もサポートするが、今回は使っていない（`RunAgentInput.tools`/`state`を渡していない）。frontend本実装（[ADR 0031](adr/0031-frontend-implementation.md)）でも`pages/chat.vue`は最小限の手書きSSEパーサに留めており未活用のまま。AG-UI準拠のUIを本格的に作る際に活用を検討する
+- **Anthropic API向けNetworkPolicyのIPレンジ絞り込み**：`ipBlock 0.0.0.0/0`（RFC1918除外）は、Anthropicの実IPを固定できないための暫定措置（[ADR 0030](adr/0030-fraud-agent-implementation.md)）。将来Anthropicが固定IPレンジを公開する、またはegress-filteringプロキシ（例：Envoyの`sni_dynamic_forward_proxy`をFQDN許可リストと組み合わせる等）を追加で検討したくなった場合に絞り込む
+- **複数ターン会話の永続化**：リクエストごとに新しい`ClaudeAgentAdapter`インスタンスを作って単発実行しており、会話履歴は保持しない（AG-UIの`threadId`は受け取るが、同じ`threadId`でも毎回新規セッション）。複数ターンをまたぐ会話が必要になった場合、アダプタのセッション管理機能や永続化ストアの追加を検討する
+- **AG-UIの状態同期・frontend tool機能の活用**：`@ag-ui/claude-agent-sdk`アダプタは`STATE_SNAPSHOT`/`STATE_DELTA`によるフロントエンドとの双方向状態同期や、クライアント提供ツール（human-in-the-loop）もサポートするが使っていない（`RunAgentInput.tools`/`state`を渡していない。frontendの`pages/chat.vue`も最小限の手書きSSEパーサ）。AG-UI準拠のUIを本格的に作る際に活用を検討する
 
 ### frontend
 
-- **セッション暗号鍵の複数レプリカ対応**：[ADR 0031](adr/0031-frontend-implementation.md)でCookie暗号化鍵をPod起動時にプロセス内生成する方式にしたため、`replicas`を2以上にすると別レプリカが処理したリクエストの`gekko_session`を復号できない（無効セッション扱いになり`/login`へ302される）。複数レプリカ化する場合はKubernetes Secret等での鍵共有を検討する
-- **より長いが上限付き（絶対タイムアウト）のセッション**：[ADR 0031](adr/0031-frontend-implementation.md)はリフレッシュトークンを一切使わず、セッションをKeycloakのAccess Token Lifespan（既定5分）で必ず失効させる設計にした。5分ごとの再ログインが実用上不便になった場合、リフレッシュトークンを使いつつ絶対タイムアウト（ログイン時刻からの上限）を別途設ける設計を再検討する
-- **Cookieの`secure`属性**：[ADR 0031](adr/0031-frontend-implementation.md)はローカルk3d port-forwardがhttpのため`gekko_session`・`gekko_pkce`両Cookieとも`secure: false`固定にしている。本番相当のHTTPS環境で動かす場合は`secure: true`に切り替える
-- **AIの「根拠なし」結論に人間が納得できない場合の直接実行導線**：[ADR 0039](adr/0039-unfreeze-recommendation-axis.md)で「納得できない」を押した場合、現状は精査のやり直しに戻すのみで、BR8が許容する「提案に基づかない直接実行」経路（`proposalId`省略の凍結解除API）をUIから呼び出す導線は無い。人間がAIの「根拠なし」判断に明確に反対し独自に解除したいケースが実運用で必要になった場合、ダッシュボードに直接実行ボタンを追加するか検討する
+- **セッション暗号鍵の複数レプリカ対応**：Cookie暗号化鍵をPod起動時にプロセス内生成しているため（[ADR 0031](adr/0031-frontend-implementation.md)）、`replicas`を2以上にすると別レプリカが処理したリクエストの`gekko_session`を復号できない（無効セッション扱いになり`/login`へ302される）。複数レプリカ化する場合はKubernetes Secret等での鍵共有を検討する
+- **より長いが上限付き（絶対タイムアウト）のセッション**：リフレッシュトークンを一切使わず、セッションをKeycloakのAccess Token Lifespan（既定5分）で必ず失効させている（[ADR 0031](adr/0031-frontend-implementation.md)）。5分ごとの再ログインが実用上不便になった場合、リフレッシュトークンを使いつつ絶対タイムアウトを別途設ける設計を再検討する
+- **Cookieの`secure`属性**：ローカルk3d port-forwardがhttpのため`gekko_session`・`gekko_pkce`両Cookieとも`secure: false`固定にしている（[ADR 0031](adr/0031-frontend-implementation.md)）。HTTPS環境で動かす場合は`secure: true`に切り替える
+- **AIの「根拠なし」結論に人間が納得できない場合の直接実行導線**：「納得できない」を押した場合は精査のやり直しに戻すのみで、BR8が許容する「提案に基づかない直接実行」経路（`proposalId`省略の凍結解除API）をUIから呼び出す導線は無い（[ADR 0039](adr/0039-unfreeze-recommendation-axis.md)）。人間がAIの「根拠なし」判断に明確に反対し独自に解除したいケースが必要になった場合、ダッシュボードに直接実行ボタンを追加するか検討する
 
 ### 監査
 
-- **otel-lgtmの同梱コンポーネント（Prometheus/Tempo/Pyroscope/OTel Collector）を無効化できるか**：ADR 0025で採用した`grafana/otel-lgtm`はGrafana+Lokiのみ使う想定だが、残り4コンポーネントも起動している。個別に無効化できるかは未調査（動くが未使用として許容している）
-- **`k8s/keycloak/test-fixtures-job.yaml`のパスワード設定の再現性問題**：realm再import直後にジョブを実行すると、作成直後のユーザーでログインが401になることがある（kcadmでset-passwordを打ち直すと直る）。原因未特定（[insights.md](insights.md)参照）
-- **時系列の傾向・履歴レポート**：監査画面（[ADR 0044](adr/0044-audit-service-per-request-report.md)）は呼び出し時点のスナップショットのみを表示する（[ADR 0040](adr/0040-audit-service-reconciliation.md)のステートレス方針を維持）。過去の不一致件数の推移を追う要件が明確になった場合、突合結果の永続化（ADR 0040が見送ったステートフル構成）を再検討する必要がある
+- **otel-lgtmの同梱コンポーネント（Prometheus/Tempo/Pyroscope/OTel Collector）を無効化できるか**：Grafana+Lokiのみ使う想定だが、残り4コンポーネントも起動している。個別に無効化できるかは未調査（動くが未使用として許容している）
+- **時系列の傾向・履歴レポート**：監査画面は呼び出し時点のスナップショットのみを表示する（[ADR 0040](adr/0040-audit-service-reconciliation.md)のステートレス方針）。過去の不一致件数の推移を追う要件が明確になった場合、突合結果の永続化（ADR 0040が見送ったステートフル構成）を再検討する
 
 ### データストア
 
-- **本番相当環境でのインスタンス分離**：現状はローカルのメモリ制約を理由にaccount-service/fraud-detection-engine/analyst-attribute-service/KeycloakのPostgreSQLを共有インスタンスにしている（ADR 0008）。本番相当の構成を検証したくなった場合、サービスごとの専用インスタンスへの切り替えを検討する
-- **既定メンテナンスDB（`postgres`）への接続が全ロールに残っている**：[k8s/keycloak/db-init-configmap.yaml](../k8s/keycloak/db-init-configmap.yaml)で`keycloak`データベースはPUBLICのCONNECT権限を剥奪したが、Postgresの既定メンテナンスデータベース自体は未対応。実データを持たないため実害はないが、完全な分離ではない
+- **本番相当環境でのインスタンス分離**：ローカルのメモリ制約を理由にaccount-service/fraud-detection-engine/analyst-attribute-service/KeycloakのPostgreSQLを共有インスタンスにしている（[ADR 0008](adr/0008-per-service-datastore-strategy.md)）。本番相当の構成を検証したくなった場合、サービスごとの専用インスタンスへの切り替えを検討する
+- **既定メンテナンスDB（`postgres`）への接続が全ロールに残っている**：[k8s/keycloak/db-init-configmap.yaml](../k8s/keycloak/db-init-configmap.yaml)で`keycloak`データベースはPUBLICのCONNECT権限を剥奪しているが、Postgresの既定メンテナンスデータベース自体は未対応。実データを持たないため実害はないが、完全な分離ではない
 
 ### Keycloak
 
-- **`standard.token.exchange.enabled`属性の機能的検証**：1ホップ先行検証（frontend→fraud-mcp-server、fraud-mcp-server→account-service、account-service→analyst-attribute-service）でRFC 8693トークン交換リクエストが実際に通ることを確認済み（[insights.md](insights.md)・[ADR 0021](adr/0021-account-service-analyst-attribute-service-spiffe-jwt-svid.md)参照）。ただしaudience解決には対象audience向けの`oidc-audience-mapper`がclient scope側に必要という追加の前提が判明した（同insights.md）
-- **標準client scope（profile/email/roles等）の要否**：`--import-realm`での直接importでは自動生成されないため現状未定義（詳細はrealm-configmap.yamlのコメント参照）。`preferred_username`は画面表示用に必要になったため[ADR 0034](adr/0034-frontend-display-username-instead-of-sub.md)でdedicated protocol mapperとして解決済み（`profile`スコープ自体は導入していない）。email/roles等、他の標準クレームが必要になった場合は改めてclientScopesへの追加を検討する
+- **標準client scope（profile/email/roles等）の要否**：`--import-realm`での直接importでは自動生成されないため未定義（詳細はrealm-configmap.yamlのコメント参照）。`preferred_username`はdedicated protocol mapperで付与している（[ADR 0034](adr/0034-frontend-display-username-instead-of-sub.md)）。email/roles等、他の標準クレームが必要になった場合は改めてclientScopesへの追加を検討する
+- **テストフィクスチャのパスワード設定の再現性問題**：realm再import直後に`make deploy-verify-hop`を実行すると、作成直後のユーザーでログインが401になることがある（kcadmでset-passwordを打ち直すと直る）。原因未特定（[insights.md](insights.md)「`k8s/keycloak/test-fixtures-configmap.yaml`のパスワード設定に再現性のある問題がある」）
 
 ### インフラ
 
-- **k3dクラスタの複数ノード化**：現状`servers: 1, agents: 0`（k3d/cluster-config.yaml）。スケジューリングの検証が必要になった場合はagentノードを追加するか検討
-- **WSL2 cgroup v2化の恒久性**：`.wslconfig`の`kernelCommandLine = cgroup_no_v1=all`で対応済み（insights.md参照）だが、Windows Update等で設定が失われないかは未検証
+- **k3dクラスタの複数ノード化**：現状`servers: 1, agents: 0`（[k3d/cluster-config.yaml](../k3d/cluster-config.yaml)）。スケジューリングの検証が必要になった場合はagentノードを追加するか検討
+- **WSL2 cgroup v2化の恒久性**：`.wslconfig`の`kernelCommandLine = cgroup_no_v1=all`で対応している（[insights.md](insights.md)参照）が、Windows Update等で設定が失われないかは未検証

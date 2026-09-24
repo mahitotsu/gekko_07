@@ -25,11 +25,11 @@ AIエージェントに実行系の操作まで許してしまうと、エージ
 - この制限はアプリケーションロジックの分岐（`if`文）ではなく、**Keycloakのスコープ設計そのもの**で強制する。エージェント側のコードにバグがあっても、そもそも実行系のトークンを取得できない構造にする
 - 実行系の操作は、人間がUI上で行う明示的な操作（決定論的操作）でのみ到達可能なパスに限定する
 
-上記を含む「誰が何をできて何をできてはいけないか」の具体的な業務要件は次節（BR0〜BR8）に列挙する。それを実現する具体的なスコープ設計・認可のディシジョンテーブルは[architecture.md](architecture.md) §4・§6を参照。
+上記を含む「誰が何をできて何をできてはいけないか」の具体的な業務要件は「業務要件（アクセス制御）」節（BR0〜BR11）に列挙する。それを実現する具体的なスコープ設計・認可のディシジョンテーブルは[architecture.md](architecture.md) §4・§6を参照。
 
 ## 委任チェーンの事後監査
 
-「AIが何を根拠に何を提案したか」と「人間がいつ・どのトークンで確定したか」を事後に区別して追跡できることを要件とする（BR8）。監査ログ集約基盤（[ADR 0025](adr/0025-audit-log-aggregation.md)）で、Keycloakのログインセッションid（`sessionId`）を委任チェーン1インスタンスの相関キーとし、`sub`/`jti`（発行識別子）を組み合わせて事後に再構成する（詳細は[architecture.md](architecture.md) §9）。AIの提案と人間の確定を紐付ける`proposal_id`のaccount-service側実装は、account-serviceの本実装まで持ち越している。
+「AIが何を根拠に何を提案したか」と「人間がいつ・どのトークンで確定したか」を事後に区別して追跡できることを要件とする（BR8）。さらに、その記録を残したコンポーネント自身の申告だけに依存せず、判断に関与しない独立したコンポーネントが第三者の記録（認可サーバー・通信路のログ）と突合して検証できるようにする（[ADR 0040](adr/0040-audit-service-reconciliation.md)）。突合結果は全口座を横断する情報のため、閲覧できる者を限定する（BR11）。実現方式は[architecture.md](architecture.md) §9を参照。
 
 ## 業務ロジックのリアリティ水準
 
@@ -104,10 +104,10 @@ AIエージェントに実行系の操作まで許してしまうと、エージ
 | BR0 | [architecture.md](architecture.md) §6「認証（アナリストのログイントークン）」。全てのToken Exchangeは認証済みのログイントークンを起点とするため、未認証の主体はそもそも`subject_token`を持てず、以降のどの表にも到達できない |
 | BR1, BR2, BR3 | [architecture.md](architecture.md) 表5（口座別アクセス可否） |
 | BR4 | [architecture.md](architecture.md) 表1（`sub`がアナリスト本人のまま維持されるため、経由するサービスが増えても表5の判定はアナリスト本人の属性に対して行われる）・表3（account-service以外はanalyst-attribute-serviceへ到達できないため、迂回して別の属性を取得することもできない） |
-| BR5 | [architecture.md](architecture.md) 表1・表2（`account:unfreeze`スコープがfraud-mcp-server/fraud-agentに割り当てられない） |
+| BR5 | [architecture.md](architecture.md) §4・表1・表2（`account:unfreeze`スコープがfraud-mcp-server/fraud-agentに割り当てられない）、§10 UC5 |
 | BR6 | [architecture.md](architecture.md) 表2（`account:unfreeze`はアナリストのログイントークンのみが保有） |
 | BR7 | [architecture.md](architecture.md) 表4（fraud-detection-engineのclient_credentialsアクセス。業務属性チェックなし） |
-| BR8 | [architecture.md](architecture.md) §9（`sessionId`/`sub`/`jti`による相関、[ADR 0025](adr/0025-audit-log-aggregation.md)） |
+| BR8 | [architecture.md](architecture.md) §9（`sessionId`/`sub`/`jti`による相関と、audit-serviceによる自己申告と第三者記録の突合。[ADR 0025](adr/0025-audit-log-aggregation.md)・[ADR 0040](adr/0040-audit-service-reconciliation.md)） |
 | BR9 | [architecture.md](architecture.md) 表2（承認・却下エンドポイントも`account:unfreeze`スコープ配下。[ADR 0036](adr/0036-unfreeze-proposal-approval-step.md)） |
-| BR10 | [architecture.md](architecture.md) §10 UC1（精査結論の分岐）。認可スコープ自体はBR9と同じ`account:propose`/`account:unfreeze`の範囲内で変更なし（[ADR 0039](adr/0039-unfreeze-recommendation-axis.md)） |
-| BR11 | [architecture.md](architecture.md) §5パス④・§9「突合結果の閲覧はsenior analyst限定」・表3（audit-serviceのanalyst-attribute-service照会許可）（[ADR 0042](adr/0042-audit-service-senior-gate.md)） |
+| BR10 | [architecture.md](architecture.md) §10 UC1（「根拠なし」の結論の分岐）。認可スコープはBR9と同じ`account:propose`（結論の記録）・`account:unfreeze`（確認）で扱う（[ADR 0039](adr/0039-unfreeze-recommendation-axis.md)） |
+| BR11 | [architecture.md](architecture.md) §5パス④・表3（audit-serviceのanalyst-attribute-service照会許可）・§9「閲覧はsenior analyst限定」・§10 UC6（[ADR 0042](adr/0042-audit-service-senior-gate.md)） |

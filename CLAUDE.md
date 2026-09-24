@@ -43,7 +43,7 @@ adr/はarchitecture.mdの決定根拠を記録するだけで、本文を上書�
 - **architecture.md・services.md（reference系）**：「今どうなっているか」だけを書く。「当初〜だったが〜になった」「〜済み」「全廃した」「移行した」のような経緯・変化を語る表現（journey narrative）は書かない。それらは既に該当ADRのContext/Decision/Consequencesに書いてあるはずのものであり、無ければADR側に書く。追記するときは必ず「これは現在の事実か、それとも変化の記述か」を自問し、後者なら該当ADRへ差し戻す。
 - **docs/adr/NNNN-*.md**：一度Acceptedにした後のContext/Decision本文は書き換えない（歴史記録として保持）。決定が変わった場合はStatus行と、必要ならConsequencesへの追記だけで対応する。例外として、ドキュメント再編で参照先ファイルが移動・統合された場合の**リンク先パスの更新**は、決定の書き換えに当たらないため許可する（文言・reasoning・Statusは変更しない）。詳細な運用ルールは下記「ADR運用ルール」を参照。
 - **architecture.md §11（既知の制約・未着手事項）**：「未着手・未決定」のみを列挙する。着手したらその場で項目を削除し、結果はarchitecture.mdの該当章/services.md/insights.mdのいずれかへ記録する。未決事項の判断材料となる実機知見・調査結果が既にinsights.mdやADRにあるなら、それを再掲せずポインタで済ませる（判断すべき問いそのものだけをここに書く）。
-- **insights.md**：設計判断ではなく、実装中に踏んだ罠・実機で判明した仕様上の制約を「症状/原因/対応」の型で記録する。ただし対象が完全に撤去・置き換え済みの機構（過去に導入し後日撤去したもの）の場合、その知見は再検討時のみ価値を持つため、architecture.md §11から参照される形に留め、§11側に同じ内容を再掲しない。
+- **insights.md**：設計判断ではなく、実装中に踏んだ罠・実機で判明した仕様上の制約を「症状/原因/対応」の型で記録する。ただし対象が完全に撤去・置き換え済みの機構（過去に導入し後日撤去したもの）の場合、その知見は再検討時のみ価値を持つため、architecture.md §11から参照される形に留め、§11側に同じ内容を再掲しない。章は「どの作業中に見つけたか」ではなく「どの技術・コンポーネントで起きたか」で切る（Keycloak・Envoy・SPIRE等）。追記時は該当する節に置き、同じ罠の別の現れ方は既存項目の直下に置く。症状から引ける項目なら冒頭の「症状から探す」表にも1行足す。
 
 ## ADR運用ルール
 
@@ -67,11 +67,12 @@ grep -n "^## " docs/adr/[0-9]*.md | grep -vE "(Context|Decision|Consequences)$"
 
 ### 他のADRへの言及ルール（MUST）
 
-ある変更が過去のAccepted ADRの**Decision sectionに書かれた決定そのもの**を変える場合、次の3点を**同じコミットで**行う。
+ある変更が過去のAccepted ADRの**Decision sectionに書かれた決定そのもの**を変える場合、次の4点を**同じコミットで**行う。
 
 1. 新しいADRのStatus行の直後に`- **Amends**: [NNNN](NNNN-slug.md)（変更範囲を一言で）`を追加する
 2. 変更対象の旧ADRのStatus行を`Partially superseded by [NNNN](NNNN-slug.md)（何が・なぜ覆ったか、有効なまま残る部分は何か）`に更新する。旧ADRのContext/Decision本文は書き換えない
 3. 旧ADR本文中に訂正箇所がある場合は`〔[ADR NNNN](NNNN-slug.md)で訂正/追加/削除〕`という統一形式のインライン注記を該当箇所に添える（Status行を読まず本文だけ読む読者にも伝わるようにするため）
+4. [docs/adr/README.md](docs/adr/README.md)の索引のStatus列（新ADRの行の追加と、旧ADRの行のStatus）を更新する（2026-09-24、ADR本体のStatus行は更新されていたが索引のStatus列が古いままのものが4件〔0017・0024・0031・0041〕見つかった）
 
 **Decision内容を変えない訂正**（例示に使った固有名詞の言い換え、typo等）はStatus更新の対象外。ただし判断に迷う場合は安全側（Status更新する）に倒す。
 
@@ -81,9 +82,14 @@ grep -n "^\- \*\*Amends\*\*" docs/adr/[0-9]*.md
 grep -no "〔\[\?ADR [0-9]\{4\}[^〕]*〕" docs/adr/[0-9]*.md
 ```
 
+続けて、索引のStatus列が各ADRのStatus行と一致しているかを確認する（出力が空であること。Status行・索引それぞれに現れるADR番号の集合を比較する）：
+```
+for f in docs/adr/[0-9]*.md; do n=$(basename $f | cut -c1-4); a=$(grep -m1 '^- \*\*Status\*\*' $f | grep -o '\[[0-9]\{4\}\]' | tr -d '[]' | sort | tr '\n' ' '); b=$(grep "^| \[$n\]" docs/adr/README.md | awk -F'|' '{print $4}' | grep -o '[0-9]\{4\}' | sort | tr '\n' ' '); [ "$a" = "$b" ] || echo "$n: ADR=[$a] 索引=[$b]"; done
+```
+
 ### ADR番号の表記統一（MUST）
 
-- Status行で他のADRを参照する場合：`[NNNN](NNNN-slug.md)`（"ADR"は書かない）
+- Status行・Amends行で他のADRを参照する場合：`[NNNN](NNNN-slug.md)`（"ADR"は書かない）
 - Context/Decision/Consequences本文中で参照する場合：`[ADR NNNN](NNNN-slug.md)`（文中に埋め込むため"ADR"を明示する）
 
 ### 実装ADR（1サービスの本実装をまとめて扱うもの）の粒度

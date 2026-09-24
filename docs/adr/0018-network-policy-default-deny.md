@@ -1,6 +1,6 @@
 # ADR 0018: gekko namespaceにNetworkPolicyでL3/4のdefault-denyを導入する
 
-- **Status**: Partially superseded by [0022](0022-keycloak-mgmt-probe-exec.md)（Keycloakのhttp-mgmt:9000に対する`ipBlock`ベースのingress許可ルールは0022で撤廃された）・[0028](0028-postgres-mtls-tcp-proxy.md)（「共有PostgresインスタンスはmTLS適用対象外」という前提を0028が覆し、常駐4サービスの接続はEnvoyのmTLS配下に移した。db-init/seed JobはNetworkPolicyのみで保護する現状維持）・[0030](0030-fraud-agent-implementation.md)（「全ての許可ルールはpodSelectorで宛先を特定できる」という前提を0030が初めて崩し、fraud-agent→Anthropic API向けに`ipBlock 0.0.0.0/0`ベースの公開インターネットegressを追加した）。その他の許可ルールの決定は有効なまま
+- **Status**: Partially superseded by [0022](0022-keycloak-mgmt-probe-exec.md)（Keycloakのhttp-mgmt:9000に対する`ipBlock`ベースのingress許可ルールは0022で撤廃された）・[0028](0028-postgres-mtls-tcp-proxy.md)（「共有PostgresインスタンスはmTLS適用対象外」という前提を0028が覆し、常駐4サービスの接続はEnvoyのmTLS配下に移した。0028の決定時点ではdb-init/seed JobをNetworkPolicyのみで保護する現状維持としたが、同ADRのConsequencesでJobもmTLS配下へ移し、Postgresの平文5432への到達経路は廃止された）・[0030](0030-fraud-agent-implementation.md)（「全ての許可ルールはpodSelectorで宛先を特定できる」という前提を0030が初めて崩し、fraud-agent→Anthropic API向けに`ipBlock 0.0.0.0/0`ベースの公開インターネットegressを追加した）。その他の許可ルールの決定は有効なまま
 - **Date**: 2026-09-16
 
 ## Context

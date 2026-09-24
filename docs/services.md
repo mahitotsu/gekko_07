@@ -2,15 +2,13 @@
 
 各サービスの存在意義・提供機能・保有データを定義する。認可の詳細・トークンチェーンの実装方式は[architecture.md](architecture.md)を参照。
 
-各サービスの技術スタックは意図的に統一しない（多言語構成の理由は[requirements.md](requirements.md)「背景（なぜサイドカーへ切り出すか）」参照：Token Exchangeをサイドカーへ切り出す価値は、実装言語がバラバラな構成でこそ際立つ）。個々の選定理由は[ADR 0007](adr/0007-per-service-language-selection.md)を参照。
-
-frontendはAuthorization Code + PKCEブラウザフローでログインする（[ADR 0031](adr/0031-frontend-implementation.md)）。
+各サービスの技術スタックは意図的に統一しない（多言語構成の理由は[requirements.md](requirements.md)「背景（なぜサイドカーへ切り出すか）」参照：Token Exchangeをサイドカーへ切り出す価値は、実装言語がバラバラな構成でこそ際立つ）。個々の選定理由は[ADR 0007](adr/0007-per-service-language-selection.md)を参照。全サービスの一覧と構成図は[architecture.md](architecture.md) §2、各サービスのPod構成（Envoyサイドカー等）は§3を参照。
 
 ## frontend（BFF。[ADR 0031](adr/0031-frontend-implementation.md)）
 
 - **存在意義**：アナリストがシステムに触れる唯一の入口。ログイン・チャットUI・取引ダッシュボード・凍結解除確定ボタンを提供する
 - **提供機能**：
-  - ログイン（Authorization Code + PKCE）。発行される直後のトークンは`aud=frontend`のみ（スコープなし。[ADR 0005](adr/0005-single-audience-tokens-only.md)）
+  - ログイン（Authorization Code + PKCE、コールバックは`response_mode=form_post`。[ADR 0032](adr/0032-frontend-oidc-callback-form-post.md)）。画面にはKeycloakの`preferred_username`を表示する（[ADR 0034](adr/0034-frontend-display-username-instead-of-sub.md)）。発行される直後のトークンは`aud=frontend`のみ（スコープなし。[ADR 0005](adr/0005-single-audience-tokens-only.md)）
   - 取引ダッシュボード：ログイントークンを`subject_token`にToken Exchange（audience=account-service, scope=account:read）を行い、そのトークンでaccount-serviceにアクセスする。各口座行から「監査結果を見る」リンクで`/audit?accountId=`へ遷移でき、その口座に絞り込んだ監査結果を確認できる（[ADR 0044](adr/0044-audit-service-per-request-report.md)）
   - 「AIによる精査を依頼」ボタン：チャット画面へ遷移し、AIエージェントによる凍結事由の精査を自動的に開始する
   - チャット画面の「承認」「却下」「凍結解除を確定」ボタン：いずれもToken Exchange（audience=account-service, scope=account:unfreeze）を行い、そのトークンでaccount-serviceにアクセスする。承認済みの提案がある場合のみ「凍結解除を確定」ボタンが有効になる（[ADR 0036](adr/0036-unfreeze-proposal-approval-step.md)）。決定論的操作の起点
@@ -39,28 +37,30 @@ frontendはAuthorization Code + PKCEブラウザフローでログインする�
 ## fraud-detection-engine（不正検知エンジン。[ADR 0027](adr/0027-fraud-detection-engine-implementation.md)）
 
 - **存在意義**：取引パターンを監視し、疑わしい取引を検知した口座を自動的に凍結する。account-serviceが「MCPサーバー経由（AI）」だけでなく「通常のマイクロサービス」からも利用されることを示す対照項（[ADR 0011](adr/0011-scenario-ai-assisted-unfreeze.md)）
-- **提供機能**：ingressの受け口は持たず、バックグラウンドで一定間隔（既定5秒）ごとに自身が保有する観測シグナルを検知ルールのしきい値と照合し、該当する口座があればaccount-serviceへ機械間認証（client_credentials, scope=account:freeze）で凍結を依頼する。凍結時の判定根拠（発火した検知ルール・スコア等）をaccount-serviceに記録させる。実際の取引イベントストリームは存在しないため、観測シグナル自体は起動時に投入する固定シードで代用する（実運用ではここが実際の監視入力に置き換わる想定。architecture.md参照）
+- **提供機能**：ingressの受け口は持たず、バックグラウンドで一定間隔（既定5秒）ごとに自身が保有する観測シグナルを検知ルールのしきい値と照合し、該当する口座があればaccount-serviceへ機械間認証（client_credentials, scope=account:freeze）で凍結を依頼する。凍結時の判定根拠（発火した検知ルール・スコア等）をaccount-serviceに記録させる。実際の取引イベントストリームは存在しないため、観測シグナル自体は起動時に投入する固定シードで代用する（実運用ではここが実際の監視入力に置き換わる想定。[architecture.md](architecture.md) §11参照）
 - **保有データ**：検知ルール・しきい値の設定、観測シグナル（口座ID・発火ルール・スコア・理由）、凍結実行済みマーク（同じ口座を繰り返し凍結依頼しないための冪等性管理）。PostgreSQL（account-service・analyst-attribute-serviceと同一インスタンス内の別データベース。[ADR 0008](adr/0008-per-service-datastore-strategy.md)）
 - **連携相手**：account-serviceへ機械間認証で直接アクセスする。ユーザー委任チェーンには参加しない
 - **技術スタック**：Rust / Axum（選定理由は[ADR 0007](adr/0007-per-service-language-selection.md)。DBアクセスは`tokio-postgres`のみでORM・マイグレーションフレームワークは導入しない）
 
-## account-service（今回の主役）
+## account-service（[ADR 0026](adr/0026-account-service-analyst-attribute-service-implementation.md)）
 
 - **存在意義**：口座・取引データを保有する共有マイクロサービス。MCPサーバー（fraud-mcp-server）と通常のマイクロサービス（fraud-detection-engine）の双方から利用され、呼び出し元アナリストの業務属性に基づくアクセス制御を行う
 - **提供機能**：
   - 取引履歴・凍結中口座の照会（`account:read`）
-  - 凍結解除案の記録（`account:propose`）
+  - 凍結解除案の記録（`account:propose`）。AIの結論（解除推奨／根拠なし）を併せて記録する（[ADR 0039](adr/0039-unfreeze-recommendation-axis.md)）
+  - 凍結解除提案の承認・却下（`account:unfreeze`）。提案を依頼した本人アナリストのみ（BR9、[ADR 0036](adr/0036-unfreeze-proposal-approval-step.md)）
   - 口座凍結の自動実行（`account:freeze`）。fraud-detection-engineからの機械間認証リクエストのみを受け付け、業務属性チェックは行わない
   - 口座凍結の解除の実行（`account:unfreeze`）。実行時にanalyst-attribute-serviceへ再照会し業務属性を再検証する（多層防御）
-  - アナリスト経由のリクエストでは、呼び出し元の担当地域・権限レベルに応じて閲覧・凍結解除可能な口座を制限する（architecture.md 表5）
+  - 凍結解除の自己申告記録（提案の承認・却下、実行）の読み取り（`account:audit`）。audit-serviceからの機械間認証リクエストのみを受け付ける（[ADR 0041](adr/0041-audit-service-implementation.md)）
+  - アナリスト経由のリクエストでは、呼び出し元の担当地域・権限レベルに応じて閲覧・凍結解除可能な口座を制限する（[architecture.md](architecture.md) 表5）
 - **保有データ**：口座（地域`region`、ティア`standard`/`high-value`）、取引履歴、口座凍結記録（fraud-detection-engineがいつ・何を根拠に凍結したか）、凍結解除提案（誰が・何を根拠に、AIの結論（`unfreeze`=解除推奨/`keep_frozen`=根拠なし。[ADR 0039](adr/0039-unfreeze-recommendation-axis.md)）は何か、承認/却下の状態と決定者・決定日時・決定に使われたトークンのjti。[ADR 0036](adr/0036-unfreeze-proposal-approval-step.md)・[0044](adr/0044-audit-service-per-request-report.md)）、凍結解除実行記録（誰が・どの提案を確定したか、実行に使われたトークンのjti）。PostgreSQL（[ADR 0008](adr/0008-per-service-datastore-strategy.md)）
-- **連携相手**：fraud-mcp-server・fraud-detection-engine・frontendから呼ばれる。アナリスト経由のリクエストではanalyst-attribute-serviceへさらに委任する
+- **連携相手**：fraud-mcp-server・fraud-detection-engine・frontend・audit-serviceから呼ばれる。アナリスト経由のリクエストではanalyst-attribute-serviceへさらに委任する
 - **技術スタック**：Java / Spring Boot（選定理由は[ADR 0007](adr/0007-per-service-language-selection.md)）
 
-## analyst-attribute-service
+## analyst-attribute-service（[ADR 0026](adr/0026-account-service-analyst-attribute-service-implementation.md)）
 
 - **存在意義**：アナリストの業務属性（担当地域・権限レベル）を一元管理する属性局。委任チェーンの終端
-- **提供機能**：アナリスト情報照会（`analyst:read`、account-service・audit-serviceのみ許可。[ADR 0042](adr/0042-audit-service-senior-gate.md)）
+- **提供機能**：アナリスト情報照会（`GET /analysts/{sub}`、`analyst:read`、account-service・audit-serviceのみ許可。[ADR 0042](adr/0042-audit-service-senior-gate.md)）。照会対象の`sub`が`x-auth-sub`（委任元のアナリスト本人）と一致しない場合は404で拒否する
 - **保有データ**：アナリスト（担当地域の配列、権限レベル`junior`/`senior`）。PostgreSQL（account-service/fraud-detection-engineと同一インスタンス内の別データベース。[ADR 0008](adr/0008-per-service-datastore-strategy.md)）
 - **連携相手**：account-service（表5のABAC判定）・audit-service（senior限定閲覧ゲート判定。[ADR 0042](adr/0042-audit-service-senior-gate.md)）から委任で呼ばれる。他のどこからも呼ばれない
 - **技術スタック**：Go（標準ライブラリの`net/http`。選定理由は[ADR 0007](adr/0007-per-service-language-selection.md)）

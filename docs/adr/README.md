@@ -1,8 +1,10 @@
 # アーキテクチャ決定記録（ADR）
 
-本ディレクトリは、設計判断1件ごとの根拠・選択経緯を記録する。[architecture.md](../architecture.md) は現在有効な設計断面のみを記載し、個々の判断の根拠はここに委譲する。
+本ディレクトリは、設計判断1件ごとの根拠・選択経緯を記録する（1決定＝1ファイル、追記専用）。[architecture.md](../architecture.md) は現在有効な設計断面のみを記載し、個々の判断の根拠はここに委譲する。
 
-決定が覆った場合は、旧ADRのStatusを`Superseded by NNNN`に更新し、新しいADRを追加する。45件のうち29件は今も覆っていないAccepted——後続ADRによる修正は「シナリオ選定（凍結解除の確定操作の精緻化）」「Token Exchangeの実行主体・宛先指定」「身元検証（mTLS/SPIFFE/SPIRE）」「frontendの本実装内での段階的置き換え」「fraud-agentの実装詳細（Anthropic呼び出し失敗時の挙動）」「analyst-attribute-serviceの呼び出し元拡張（監査結果の閲覧権限）」の6テーマに偏っており、乱発しているわけではない。以下はテーマ別の索引。同じテーマのADRを続けて読むと、1つの関心事がどう変遷したかを追いやすい。
+ADRの書き方・Statusの更新方法（`Amends`/`Partially superseded by`の付け方）は[CLAUDE.md](../../CLAUDE.md)「ADR運用ルール」を参照。本索引のStatus列は各ADRのStatus行の要約であり、ADR側を更新したら同じコミットで本索引も更新する。
+
+以下はテーマ別の索引。同じテーマのADRを続けて読むと、1つの関心事がどう変遷したかを追いやすい。
 
 ## シナリオ選定
 
@@ -34,7 +36,7 @@
 | [0013](0013-dpop-sender-constraining.md) | fraud-mcp-server→account-serviceの1ホップにDPoPでトークン送信者拘束を導入する | Superseded by 0015 |
 | [0015](0015-dpop-removal-and-fraud-detection-engine-mtls.md) | DPoPを撤去し、SPIRE mTLSをfraud-detection-engine→account-serviceへ横展開する | Accepted |
 | [0016](0016-ext-authz-and-keycloak-mtls.md) | SPIRE mTLSをext-authz-service(-cc)・Keycloakへ拡張する | Partially superseded by 0017/0019/0020/0021/0022 |
-| [0017](0017-edge-proxy-full-keycloak-mtls.md) | edge-proxyを導入し、Keycloakを完全mTLS化する | Accepted |
+| [0017](0017-edge-proxy-full-keycloak-mtls.md) | edge-proxyを導入し、Keycloakを完全mTLS化する | Partially superseded by 0022 |
 | [0019](0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md) | ext-authz-serviceの身元検証ギャップを解消し、fraud-mcp-server→account-serviceをSPIFFE JWT-SVIDクライアント認証へ移行する | Accepted |
 | [0020](0020-fraud-detection-engine-identity-gap-and-client-credentials-federated-jwt.md) | fraud-detection-engineの身元検証ギャップを解消し、client_credentialsグラントもSPIFFE JWT-SVIDクライアント認証へ移行する | Accepted |
 | [0021](0021-account-service-analyst-attribute-service-spiffe-jwt-svid.md) | account-service→analyst-attribute-service(表3)をSPIFFE JWT-SVIDクライアント認証で実装する | Partially superseded by 0042 |
@@ -47,12 +49,16 @@
 | [0018](0018-network-policy-default-deny.md) | gekko namespaceにNetworkPolicyでL3/4のdefault-denyを導入する | Partially superseded by 0022/0028/0030 |
 | [0022](0022-keycloak-mgmt-probe-exec.md) | Keycloakのkubelet向けhttp-mgmt(9000)をexecプローブ化してloopback限定にする | Accepted |
 
-## 監査
+## 監査（BR8の実現方式とaudit-service）
 
 | # | タイトル | Status |
 |---|---|---|
 | [0025](0025-audit-log-aggregation.md) | 監査ログ集約基盤（Alloy+otel-lgtm）を導入し、監査（BR8）の実現方式を再設計する | Accepted |
 | [0040](0040-audit-service-reconciliation.md) | account-serviceの自己申告とKeycloak/Envoyの第三者記録を突合する監査サービス(audit-service)を新設する方針を決定する | Accepted |
+| [0041](0041-audit-service-implementation.md) | audit-serviceを本実装し、account-serviceの自己申告とKeycloakの第三者記録の突合を実機で成立させる | Partially superseded by 0042・0044 |
+| [0042](0042-audit-service-senior-gate.md) | audit-serviceの突合結果閲覧をsenior analyst限定にし、frontendに監査画面を追加する | Accepted |
+| [0044](0044-audit-service-per-request-report.md) | audit-serviceの突合結果を凍結解除リクエスト単位のレポートとして再構成する | Accepted |
+| [0045](0045-audit-service-username-display.md) | 監査画面のsub表示に、解決できる場合はKeycloakのusernameを添える | Accepted |
 
 ## ローカル実行基盤
 
@@ -74,19 +80,15 @@
 | # | タイトル | Status |
 |---|---|---|
 | [0023](0023-fraud-agent-fraud-mcp-server-hop.md) | fraud-agentを新規実装し、fraud-mcp-serverのingressを活性化する | Accepted |
-| [0024](0024-frontend-edge-proxy-and-simplified-login.md) | frontendを新規実装し、edge-proxy配線・簡易ログインでaccount-service/fraud-agentへ横展開する | Partially superseded by 0031 |
+| [0024](0024-frontend-edge-proxy-and-simplified-login.md) | frontendを新規実装し、edge-proxy配線・簡易ログインでaccount-service/fraud-agentへ横展開する | Partially superseded by 0031・0036 |
 | [0026](0026-account-service-analyst-attribute-service-implementation.md) | account-service・analyst-attribute-serviceを本実装し、ビルド・配布パイプラインを新設する | Partially superseded by 0027 |
 | [0027](0027-fraud-detection-engine-implementation.md) | fraud-detection-engineを本実装し、デモ用凍結データの発生源をaccount-serviceのシードから切り替える | Accepted |
 | [0029](0029-fraud-mcp-server-implementation.md) | fraud-mcp-serverを本実装し、account-serviceの読み取り・提案系機能をMCPツールとして公開する | Accepted |
 | [0030](0030-fraud-agent-implementation.md) | fraud-agentを本実装し、Anthropic API向けに初めてのクラスタ外egressを設ける | Partially superseded by 0037・0038 |
-| [0031](0031-frontend-implementation.md) | frontendを本実装し、簡易ログイン(ROPC)を本物のAuthorization Code + PKCEへ置き換える | Partially superseded by 0032 |
+| [0031](0031-frontend-implementation.md) | frontendを本実装し、簡易ログイン(ROPC)を本物のAuthorization Code + PKCEへ置き換える | Partially superseded by 0032・0034・0036 |
 | [0032](0032-frontend-oidc-callback-form-post.md) | frontendのOIDCコールバックをresponse_mode=form_postへ変更し、認可コード・stateのURL露出を無くす | Partially superseded by 0033 |
 | [0033](0033-frontend-logout-post.md) | frontendのログアウト(end_session_endpoint)へのid_token_hint送信をPOSTに変更する | Accepted |
 | [0034](0034-frontend-display-username-instead-of-sub.md) | ログイン表示をKeycloakのsub(UUID)からpreferred_username(ログインに使った文字列)に変更する | Accepted |
 | [0037](0037-fraud-agent-anthropic-stream-retry.md) | fraud-agentがAnthropic応答ストリーミング中の切断を検知し、ターン単位で1回自動リトライする | Accepted |
 | [0038](0038-fraud-agent-anthropic-route-timeout.md) | fraud-agent→Anthropic egressルートにtimeout: 0s / idle_timeout: 300sを設定する | Accepted |
-| [0041](0041-audit-service-implementation.md) | audit-serviceを本実装し、account-serviceの自己申告とKeycloakの第三者記録の突合を実機で成立させる | Partially superseded by 0042 |
 | [0043](0043-chat-account-scoping.md) | 1回のチャットが1口座に閉じるという制約を、プロンプトではなくfraud-mcp-serverのツール実装で強制する | Accepted |
-| [0042](0042-audit-service-senior-gate.md) | audit-serviceの突合結果閲覧をsenior analyst限定にし、frontendに監査画面を追加する | Accepted |
-| [0044](0044-audit-service-per-request-report.md) | audit-serviceの突合結果を凍結解除リクエスト単位のレポートとして再構成する | Accepted |
-| [0045](0045-audit-service-username-display.md) | 監査画面のsub表示に、解決できる場合はKeycloakのusernameを添える | Accepted |

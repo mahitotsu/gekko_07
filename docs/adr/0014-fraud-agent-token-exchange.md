@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-09-16
-- **Amends**: [ADR 0010](0010-egress-listener-granularity.md)（egressパターン③・④）
+- **Amends**: [0010](0010-egress-listener-granularity.md)（egressパターン③・④）
 
 ## Context
 
