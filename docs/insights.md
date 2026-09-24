@@ -584,7 +584,12 @@ federation {
 
 RFC 8693自身はcnf/送信者拘束について一切規定しておらず（"the specific syntax, semantics, and security characteristics of the tokens themselves...are explicitly out of scope"）、RFC 9449もRFC 8693やdelegation/actor/token exchangeという語を一度も使っていない。つまりこの非互換性は、**どの仕様書にも明文化されていない、複数の仕様を組み合わせた際に初めて顕在化する仕様間ギャップ**である。実際、Keycloakの未解決issue [#51205](https://github.com/keycloak/keycloak/issues/51205)（2026-07-27、"DPoP拘束済みトークンとdelegation/actor機能を同時に使いたい"という機能要望）は、この組み合わせを求める実際のニーズ（AIエージェントの委任＋トークン漏洩対策）が存在しながら未解決のまま残っていることを示している。
 
-**Delegation方式（`actor_token`＋`act`クレーム）なら原理的に両立しうる**：Delegation方式では各ホップが「自分自身の鍵で自分自身のactor_tokenを提示する」ことが前提になっており、`act`クレームが「誰が代理したか」を明示的に記録する。つまり「鍵の保持者の同一性」を各ホップの中で完結させ、ホップ間の連鎖は`act`クレームのネストで表現するため、5.0-1の矛盾が生じない。ただしgekko_07は`sub`を委任チェーン全体で同一に保ち`jti`/`scope`の違いで追跡する監査設計（architecture.md §5・§9）のためにImpersonation方式を採用しており（[ADR 0019](adr/0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md)は、Delegationモデルをクライアント認証方式の検討の一つとして扱ったが「トークン意味論はimpersonation的な現状を変更しない」と明記し、この非互換性を評価対象にしないまま現状を維持している）、Delegation方式への転換は監査設計の作り直しを伴う別の規模の変更になる。
+**Delegation方式（`actor_token`＋`act`クレーム）なら原理的に両立しうるが、それとは別の2つの理由で、このプロジェクトにとっては単純な代替にならない**：Delegation方式では各ホップが「自分自身の鍵で自分自身のactor_tokenを提示する」ことが前提になっており、`act`クレームが「誰が代理したか」を明示的に記録する。つまり「鍵の保持者の同一性」を各ホップの中で完結させ、ホップ間の連鎖は`act`クレームのネストで表現するため、上記1〜3で説明した送信者拘束との矛盾（**トークン所有者の証明**という関心事）は生じない。しかしDelegation方式の採否は本来これとは独立したもう一つの関心事（**委任モデルそのものの選択**）であり、この軸には固有のコストが2つある。
+
+1. **トークンサイズ**：`act`クレームはホップ数に応じて入れ子になり（外側＝現在のアクター、内側＝過去のアクター）、ホップを重ねるたびにJWTペイロードが線形に太る（[RFC 8693 §4.1](https://www.rfc-editor.org/rfc/rfc8693.html#section-4.1)の`act`クレーム定義を参照）。gekko_07の4ホップの委任チェーン（frontend→fraud-agent→fraud-mcp-server→account-service）でも、ホップを追うごとにペイロードが積み上がることになる
+2. **Keycloakの機能成熟度**：`act`クレームの生成に必要な`token-exchange-delegation`機能は、Keycloakの成熟度区分で"Experimental"に位置する。これはgekko_07が実際に採用している`spiffe`/`client-auth-federated`機能の"Preview"（本ドキュメント§2、SPIFFE JWT-SVID認証の検証記録を参照）よりさらに一段階低い、最も未熟な区分である
+
+つまり、Delegation方式は「トークン所有者の証明」という軸の矛盾は解消できても、「委任モデルそのものの選択」という別の軸で、gekko_07が既に依存している機能よりもさらに未成熟な機能への依存とトークン肥大化という新たなコストを持ち込む。gekko_07は`sub`を委任チェーン全体で同一に保ち`jti`/`scope`の違いで追跡する監査設計（architecture.md §5・§9）のためにImpersonation方式を採用しており（[ADR 0019](adr/0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md)は、Delegationモデルをクライアント認証方式の検討の一つとして扱ったが「トークン意味論はimpersonation的な現状を変更しない」と明記し、この2つの軸を評価対象にしないまま現状を維持している）、Delegation方式への転換は監査設計の作り直しに加えて、この2つのコストも引き受けることになる。
 
 ### 5.1 DPoP送信者拘束（fraud-mcp-server→account-serviceの1ホップ、ADR 0013。ADR 0015で撤去済み）
 
