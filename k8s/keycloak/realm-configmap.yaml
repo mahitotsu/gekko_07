@@ -46,7 +46,7 @@ data:
       "clientScopes": [
         {
           "name": "account:read",
-          "description": "取引履歴・不審取引・口座情報の読み取り（対象audience: account-service。frontend→fraud-agent、fraud-agent→fraud-mcp-server間のToken Exchangeでも同名で使うため、audienceマッパーを3つ持つ。実際のaudienceはToken Exchangeリクエストのパラメータで1つに絞り込まれ、ADR 0005の単一audience原則は保たれる）",
+          "description": "取引履歴・不審取引・口座情報の読み取り（対象audience: account-serviceのみ。ADR 0046でaudienceマッパーをaccount-service単独に縮小し、frontend→fraud-agent・fraud-agent→fraud-mcp-serverは専用scopeへ分離した）",
           "protocol": "openid-connect",
           "attributes": {
             "include.in.token.scope": "true",
@@ -63,7 +63,18 @@ data:
                 "id.token.claim": "false",
                 "access.token.claim": "true"
               }
-            },
+            }
+          ]
+        },
+        {
+          "name": "fraud-agent:chat",
+          "description": "AIエージェントとのチャット開始（対象audience: fraud-agent。frontendのみに付与。ADR 0046でaccount:readから分離）",
+          "protocol": "openid-connect",
+          "attributes": {
+            "include.in.token.scope": "true",
+            "display.on.consent.screen": "false"
+          },
+          "protocolMappers": [
             {
               "name": "audience-fraud-agent",
               "protocol": "openid-connect",
@@ -74,7 +85,18 @@ data:
                 "id.token.claim": "false",
                 "access.token.claim": "true"
               }
-            },
+            }
+          ]
+        },
+        {
+          "name": "fraud-mcp-server:read",
+          "description": "MCPツール呼び出し（対象audience: fraud-mcp-server。fraud-agentのみに付与。ADR 0046でaccount:readから分離）",
+          "protocol": "openid-connect",
+          "attributes": {
+            "include.in.token.scope": "true",
+            "display.on.consent.screen": "false"
+          },
+          "protocolMappers": [
             {
               "name": "audience-fraud-mcp-server",
               "protocol": "openid-connect",
@@ -245,7 +267,7 @@ data:
             "jwt.credential.sub": "spiffe://gekko.internal/ns/gekko/sa/default/frontend"
           },
           "defaultClientScopes": [],
-          "optionalClientScopes": ["account:read", "account:unfreeze", "audit:read"],
+          "optionalClientScopes": ["account:read", "account:unfreeze", "audit:read", "fraud-agent:chat"],
           "protocolMappers": [
             {
               "name": "audience-self",
@@ -308,7 +330,7 @@ data:
             "jwt.credential.sub": "spiffe://gekko.internal/ns/gekko/sa/default/fraud-agent"
           },
           "defaultClientScopes": [],
-          "optionalClientScopes": ["account:read"]
+          "optionalClientScopes": ["fraud-mcp-server:read"]
         },
         {
           "clientId": "fraud-mcp-server",

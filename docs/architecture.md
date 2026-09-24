@@ -76,7 +76,7 @@ flowchart LR
 - **audienceはHostヘッダーから自動導出する**。Keycloakクライアントid＝Kubernetes Service名＝audience名を常に同一の文字列にする（MUST）ため、ext_authzサービスはCheckRequestに自動転送される`Host`ヘッダーをそのまま`audience`として使える
 - **scopeは「相手サービスの(パス, メソッド) → scope」という単一の対応表で決める**（§6表2。account-service自身のingress側rbacポリシーと共有する単一の情報源）。この対応表はext_authzサービス自身がコード（`SCOPE_RULES`）として持つ。HTTPモードのext_authzは`Host`・`Method`・`Path`・`Content-Length`・`Authorization`を常に自動転送するため（`ExtAuthzPerRoute`の`context_extensions`はgRPCモード限定で使えない。[insights.md](insights.md)参照）、Envoy側のroute設定は転送先クラスタの振り分けだけを担う。scopeが1つしかないホップは、この対応表がワイルドカード1行になっているだけで、特別扱いはない
 - ext_authzの応答から`Authorization`ヘッダーを上流へ引き継ぐため、`allowed_upstream_headers`に`Authorization`を含める
-- Keycloak側の前提：Token Exchangeの`audience`が解決されるには、要求元クライアントに割り当てたclient scope（`account:read`等）が対象audienceを指す`oidc-audience-mapper`を持っている必要がある。`account:read`のように同名scopeが複数audience（account-service・fraud-agent・fraud-mcp-server）へ使われる場合は、そのscopeに全てのマッパーを持たせる。実際に発行されるトークンは`audience`パラメータで指定した1つだけに絞り込まれ、単一audience原則（[ADR 0005](adr/0005-single-audience-tokens-only.md)）は保たれる（[insights.md](insights.md)参照）
+- Keycloak側の前提：Token Exchangeの`audience`が解決されるには、要求元クライアントに割り当てたclient scopeが対象audienceを指す`oidc-audience-mapper`を持っている必要があり、持っていないaudienceへの要求はKeycloak自身が`Requested audience not available`で拒否する（[insights.md](insights.md)参照）。各client scopeは対象audienceを1つだけ持つ（[ADR 0046](adr/0046-account-read-audience-scope-split.md)）。この対応は`optionalClientScopes`の割当のみで表現され、Keycloakの許可判定自体がトポロジー制御を兼ねる
 
 ### 3.3 ホップ一覧
 
@@ -85,9 +85,9 @@ Token Exchange/client_credentialsが動作するホップは次の9つ。全ホ�
 | # | 呼び出し元 → 宛先 | グラント | scope | ADR |
 |---|---|---|---|---|
 | 1 | frontend → account-service | Token Exchange | `account:read`（GET）／`account:unfreeze`（承認・却下・凍結解除のPOST） | [0024](adr/0024-frontend-edge-proxy-and-simplified-login.md)・[0036](adr/0036-unfreeze-proposal-approval-step.md) |
-| 2 | frontend → fraud-agent | Token Exchange | `account:read` | [0014](adr/0014-fraud-agent-token-exchange.md)・[0024](adr/0024-frontend-edge-proxy-and-simplified-login.md) |
+| 2 | frontend → fraud-agent | Token Exchange | `fraud-agent:chat` | [0014](adr/0014-fraud-agent-token-exchange.md)・[0024](adr/0024-frontend-edge-proxy-and-simplified-login.md)・[0046](adr/0046-account-read-audience-scope-split.md) |
 | 3 | frontend → audit-service | Token Exchange | `audit:read` | [0042](adr/0042-audit-service-senior-gate.md) |
-| 4 | fraud-agent → fraud-mcp-server | Token Exchange | `account:read` | [0014](adr/0014-fraud-agent-token-exchange.md)・[0023](adr/0023-fraud-agent-fraud-mcp-server-hop.md) |
+| 4 | fraud-agent → fraud-mcp-server | Token Exchange | `fraud-mcp-server:read` | [0014](adr/0014-fraud-agent-token-exchange.md)・[0023](adr/0023-fraud-agent-fraud-mcp-server-hop.md)・[0046](adr/0046-account-read-audience-scope-split.md) |
 | 5 | fraud-mcp-server → account-service | Token Exchange | `account:read`（GET）／`account:propose`（提案のPOST） | [0019](adr/0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md) |
 | 6 | account-service → analyst-attribute-service | Token Exchange | `analyst:read` | [0021](adr/0021-account-service-analyst-attribute-service-spiffe-jwt-svid.md) |
 | 7 | audit-service → analyst-attribute-service | Token Exchange | `analyst:read` | [0042](adr/0042-audit-service-senior-gate.md) |
@@ -157,7 +157,7 @@ Keycloakが検証するクライアントの身元（JWT-SVID）と、そのク�
 | クライアント | グラント | 備考 |
 |---|---|---|
 | `frontend` | Authorization Code + PKCE、Token Exchange | アナリスト向けBFF（[ADR 0031](adr/0031-frontend-implementation.md)） |
-| `fraud-agent` | Token Exchange | frontendから受け取ったトークンをfraud-mcp-server宛てに再exchangeする（[ADR 0014](adr/0014-fraud-agent-token-exchange.md)） |
+| `fraud-agent` | Token Exchange | frontendから受け取ったトークンをfraud-mcp-server宛てに再exchangeする（[ADR 0014](adr/0014-fraud-agent-token-exchange.md)・[ADR 0046](adr/0046-account-read-audience-scope-split.md)） |
 | `fraud-mcp-server` | Token Exchange | AIエージェントの代理としてaccount-serviceを呼ぶ |
 | `account-service` | Token Exchange | analyst-attribute-serviceへの委任元 |
 | `fraud-detection-engine` | client_credentials | 機械間認証。ユーザー委任なし |
@@ -171,8 +171,8 @@ Keycloakが検証するクライアントの身元（JWT-SVID）と、そのク�
 | スコープ | 対象audience | 付与するクライアント | 意味 |
 |---|---|---|---|
 | `account:read` | account-service | frontend, fraud-mcp-server | 取引・口座の読み取り |
-| `account:read` | fraud-agent | **frontend のみ** | AIエージェントとのチャット開始（委任チェーンの入口。[ADR 0014](adr/0014-fraud-agent-token-exchange.md)） |
-| `account:read` | fraud-mcp-server | **fraud-agent のみ** | MCPツール呼び出し（[ADR 0014](adr/0014-fraud-agent-token-exchange.md)） |
+| `fraud-agent:chat` | fraud-agent | **frontend のみ** | AIエージェントとのチャット開始（委任チェーンの入口。[ADR 0014](adr/0014-fraud-agent-token-exchange.md)・[ADR 0046](adr/0046-account-read-audience-scope-split.md)） |
+| `fraud-mcp-server:read` | fraud-mcp-server | **fraud-agent のみ** | MCPツール呼び出し（[ADR 0014](adr/0014-fraud-agent-token-exchange.md)・[ADR 0046](adr/0046-account-read-audience-scope-split.md)） |
 | `account:propose` | account-service | **fraud-mcp-server のみ** | 凍結解除案の記録（可逆・低リスク） |
 | `account:freeze` | account-service | **fraud-detection-engine のみ** | 口座凍結の自動実行（機械間認証。業務属性チェックなし） |
 | `account:unfreeze` | account-service | **frontend のみ** | 凍結解除提案の承認・却下、口座凍結の解除の実行（不可逆・高リスク） |
@@ -189,8 +189,8 @@ Keycloakが検証するクライアントの身元（JWT-SVID）と、そのク�
 **① 提案生成パス（AI起因、読み取り＋提案のみ）**
 ```
 analystトークン(aud=frontend)
-  → Token Exchange (frontend実行, audience=fraud-agent, scope=account:read)
-  → Token Exchange (fraud-agent実行, audience=fraud-mcp-server, scope=account:read)
+  → Token Exchange (frontend実行, audience=fraud-agent, scope=fraud-agent:chat)
+  → Token Exchange (fraud-agent実行, audience=fraud-mcp-server, scope=fraud-mcp-server:read)
   → Token Exchange (fraud-mcp-server実行, audience=account-service, scope=account:read または account:propose)
   → account-serviceがToken Exchange (audience=analyst-attribute-service, scope=analyst:read) でアクセス制御
 ```
@@ -263,13 +263,13 @@ analystトークン(aud=frontend)
 - ALLOWは6マス。frontendの行に3つALLOWがあるのは、frontendが1つのログイントークンから、目的の異なる単一audienceトークン（account-service向け・fraud-agent向け・audit-service向け）をそれぞれ個別のToken Exchangeで取得するため。1つのトークンが複数audienceを同時に持つわけではない
 - AIエージェント側の委任チェーンはfrontend→fraud-agent→fraud-mcp-server→account-serviceの4ホップ（[ADR 0014](adr/0014-fraud-agent-token-exchange.md)）。各ホップは常に自分宛て（`aud`が自分自身のクライアントidと一致する）トークンだけを`subject_token`として次のToken Exchangeに使う
 - AIエージェント側の経路からanalyst-attribute-serviceへ到達する手段は、account-serviceを経由するものだけである。ホップ飛ばし（例：fraud-agentが直接account-serviceやanalyst-attribute-serviceを呼ぶ）は構造上不可能（各クライアントへの`optionalClientScopes`の割当のみで実現）
-- frontend→fraud-agent、fraud-agent→fraud-mcp-serverいずれの交換で発行されるトークンも`account:read`のみを持ち、`account:unfreeze`は含まれない。これがAIエージェントに凍結解除の実行権限を渡さないための核心の仕組み（表2参照）
+- frontend→fraud-agentの交換で発行されるトークンは`fraud-agent:chat`のみ、fraud-agent→fraud-mcp-serverの交換で発行されるトークンは`fraud-mcp-server:read`のみを持ち、いずれも`account:unfreeze`は含まれない。これがAIエージェントに凍結解除の実行権限を渡さないための核心の仕組み（表2参照）
 
 **この表の読み方の前提（重要）**：
 
 - Keycloakの実際の許可判定は「トークンのaudienceそのもの」ではなく、「Token Exchangeを要求しているクライアント自身（JWT-SVIDで認証された`client_id`）が、要求先audienceについて許可されているか」、かつ「提示された`subject_token`の`aud`に、その要求元クライアント自身が含まれているか」の2点で行われる。本システムではaudience名とKeycloakのクライアントidを同一にし、かつ各サービスは自分宛てのトークンしか受け取らないため、「元audience」と「それを正当に提示できる唯一のクライアント」が1対1に対応する。だからこそ本表を「audience→audience」の単純な遷移表として記述できる。この前提（audience名＝client id、1トークン1保持者）が崩れる場合、この単純化は成立しない
 - この表は「どのaudience間でToken Exchangeが許可されているか」という認可トポロジーを示すものであり、「そのトークンを提示しているプロセスが本当に正当な保持者か」は別の関心事である。ベアラートークンである以上、盗まれたトークン文字列は誰でも提示できる。これを防ぐ送信者拘束（DPoP等）は採用しておらず、通信路の身元検証はmTLS（§3.5）が担う（§11参照）
-- `account:read`は複数audience向けのマッパーを1つのclient scopeで共有しているため、表1のDENYの一部はKeycloakの設定ではなく、各クライアントのサイドカーが正しいaudienceしか要求しないことに依存している（§11「`account:read`スコープのaudience監査ギャップ」）
+- 表1のDENYは、各client scopeが対象audienceのマッパーを1つだけ持つこと（前記「この表の読み方の前提」参照）によってKeycloak自身が強制する。要求元クライアントが割り当てられたscopeで持たないaudienceを要求しても、Keycloakが`Requested audience not available`で拒否する（[ADR 0046](adr/0046-account-read-audience-scope-split.md)、[insights.md](insights.md)参照）
 
 ### 表2: account-serviceのスコープ別操作可否（BR5・BR6・BR9に対応）
 
@@ -291,9 +291,9 @@ analystトークン(aud=frontend)
 | トークン | 発行経路 | 保有しうるスコープ |
 |---|---|---|
 | frontendが発行するトークン（account-service宛て） | frontendがログイントークンを`subject_token`にToken Exchange | `account:read`（ダッシュボード表示）または`account:unfreeze`（承認・却下・凍結解除） |
-| frontendが発行するトークン（fraud-agent宛て、提案生成パス用） | 同上、target audienceのみ異なる（[ADR 0014](adr/0014-fraud-agent-token-exchange.md)） | `account:read`のみ |
+| frontendが発行するトークン（fraud-agent宛て、提案生成パス用） | 同上、target audienceのみ異なる（[ADR 0014](adr/0014-fraud-agent-token-exchange.md)・[ADR 0046](adr/0046-account-read-audience-scope-split.md)） | `fraud-agent:chat`のみ |
 | frontendが発行するトークン（audit-service宛て、監査閲覧用） | 同上（[ADR 0042](adr/0042-audit-service-senior-gate.md)） | `audit:read`のみ |
-| fraud-agentが発行するトークン（fraud-mcp-server宛て） | fraud-agentが受け取った`aud=fraud-agent`のトークンを`subject_token`にToken Exchange | `account:read`のみ |
+| fraud-agentが発行するトークン（fraud-mcp-server宛て） | fraud-agentが受け取った`aud=fraud-agent`のトークンを`subject_token`にToken Exchange（[ADR 0046](adr/0046-account-read-audience-scope-split.md)） | `fraud-mcp-server:read`のみ |
 | fraud-mcp-serverが発行するトークン（account-service宛て） | fraud-mcp-serverがToken Exchange | `account:read`または`account:propose` |
 | fraud-detection-engineのclient_credentialsトークン | client_credentials（委任チェーン外） | `account:freeze`のみ |
 | audit-serviceのclient_credentialsトークン | client_credentials（委任チェーン外） | `account:audit`のみ |
@@ -455,8 +455,8 @@ sequenceDiagram
   participant AS as account-service
   participant AAS as analyst-attribute-service
   A->>FE: ログイン、「AIによる精査を依頼」
-  FE->>FA: POST /chat（aud=fraud-agent, account:read）
-  FA->>MCP: MCPツール呼び出し（aud=fraud-mcp-server, account:read）
+  FE->>FA: POST /chat（aud=fraud-agent, fraud-agent:chat）
+  FA->>MCP: MCPツール呼び出し（aud=fraud-mcp-server, fraud-mcp-server:read）
   MCP->>AS: GET /accounts/frozen（aud=account-service, account:read）
   AS->>AAS: 属性照会（analyst:read）
   AAS-->>AS: 東京, junior
@@ -475,8 +475,8 @@ sequenceDiagram
 ```
 1. yamada-analystがfrontendからログイン
 2. frontendでAIエージェント（fraud-agent）とのチャットを開始
-   → frontend: 自身のログイントークン（aud=frontend）を`subject_token`にToken Exchangeを実行（audience=fraud-agent, scope=account:read）し、そのトークンでfraud-agentのチャット開始APIを呼ぶ。会話の対象口座IDを`POST /chat?accountId=`で渡し、fraud-mcp-serverはその口座以外へのツール呼び出しを拒否する（[ADR 0043](adr/0043-chat-account-scoping.md)）
-3. fraud-agent → fraud-mcp-server: 受け取ったトークン（aud=fraud-agent）を`subject_token`に自身のToken Exchangeを実行（audience=fraud-mcp-server, scope=account:read）した上で、MCPツール get_frozen_accounts を呼ぶ
+   → frontend: 自身のログイントークン（aud=frontend）を`subject_token`にToken Exchangeを実行（audience=fraud-agent, scope=fraud-agent:chat）し、そのトークンでfraud-agentのチャット開始APIを呼ぶ。会話の対象口座IDを`POST /chat?accountId=`で渡し、fraud-mcp-serverはその口座以外へのツール呼び出しを拒否する（[ADR 0043](adr/0043-chat-account-scoping.md)）
+3. fraud-agent → fraud-mcp-server: 受け取ったトークン（aud=fraud-agent）を`subject_token`に自身のToken Exchangeを実行（audience=fraud-mcp-server, scope=fraud-mcp-server:read）した上で、MCPツール get_frozen_accounts を呼ぶ
 4. fraud-mcp-server: Token Exchange（audience=account-service, scope=account:read）
 5. account-service: Token Exchange（audience=analyst-attribute-service, scope=analyst:read）でyamada-analystの属性（東京, junior）を取得
 6. account-service: 東京の standard 口座のうち凍結中のものを、凍結根拠とともに返す（表5）
@@ -526,8 +526,10 @@ UC1と同じ流れだが、手順6で東京・大阪のhigh-value口座も結果
 
 ```
 1. 仮にfraud-agent（またはfraud-mcp-server）が凍結解除APIを直接呼ぼうとしても、
-   手持ちのトークンは委任チェーン（frontend→fraud-agent→fraud-mcp-server）上のどのトークンも
-   scope=account:read（fraud-mcp-serverはaccount:proposeも）であり、account:unfreezeを含まない
+   手持ちのトークンは委任チェーン（frontend→fraud-agent→fraud-mcp-server）上のどのホップも
+   `account:unfreeze`を含まない（fraud-agent宛ては`fraud-agent:chat`のみ、fraud-mcp-server宛ては
+   `fraud-mcp-server:read`のみ、account-service宛ては`account:read`または`account:propose`のみ。
+   [ADR 0046](adr/0046-account-read-audience-scope-split.md)）
 2. account-serviceのスコープチェック（表2）でDENY
 ```
 
@@ -556,7 +558,6 @@ UC1と同じ流れだが、手順6で東京・大阪のhigh-value口座も結果
 - **Unixドメインソケット化の再検討**：[ADR 0009](adr/0009-envoy-ingress-responsibility-and-bypass-prevention.md)はTCP loopback+合言葉方式を採用しUnixドメインソケット化は見送った。「同一Pod内でアプリが侵害された場合」まで守る要求が出てきたら再検討する
 - **Token Exchange結果のキャッシュ**：`(subject jti, audience)`単位でのキャッシュを検討しているが、各サイドカー内に閉じるか、どの範囲で共有するかは未決定。キャッシュTTLは性能とのトレードオフを意図的に選んだ短い値にする
 - **交換後トークンのアクセストークン有効期間**：[ADR 0006](adr/0006-claim-vs-external-attribute-criteria.md)は、トークン漏洩・誤用時の被害範囲を抑える多層防御として交換後トークンの有効期間を短く設定する方針を前提にしている。各クライアントが交換で得るトークンのAccess Token Lifespanを具体的に何秒にするかは未決定（現状はrealm既定値）
-- **`account:read`スコープのaudience監査ギャップ**：`account:read`は複数audience（account-service・fraud-agent・fraud-mcp-server）向けの`oidc-audience-mapper`を1つのclient scopeで共有しているため、Keycloak側は要求元クライアントが`account:read`を持ってさえいれば任意のそのaudienceを要求できる（表1のDENYの一部はKeycloakの設定ではなく、各クライアントのサイドカーが正しいaudienceしか要求しないことに依存している）。Client Policiesを使わない設計（§4）の下ではこの自制に頼るしかない。監査要件が強まった場合はClient Policies導入を再検討する（[ADR 0024](adr/0024-frontend-edge-proxy-and-simplified-login.md) Consequences、[insights.md](insights.md)参照）
 
 ### 送信者拘束（DPoP / RFC 8705）
 

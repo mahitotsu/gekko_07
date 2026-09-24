@@ -147,7 +147,7 @@ data:
                                 permissions:
                                   - any: true
                                 principals:
-                                  - header: { name: "x-auth-scope", string_match: { contains: "account:read" } }
+                                  - header: { name: "x-auth-scope", string_match: { contains: "fraud-mcp-server:read" } }
                       - name: envoy.filters.http.lua
                         typed_config:
                           "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua

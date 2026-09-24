@@ -1,10 +1,10 @@
 # fraud-agentのingress+egress側Envoy設定(ADR 0009/0023/0030)。account-service
 # (k8s/account-service/envoy-configmap.yaml、ingress/egress両方を持つ最初のサービス)を雛形に、
-# 呼び出し元をfrontend一つに、rbacポリシーを単一scope(account:read)のワイルドカードルートへ
-# 簡略化した(analyst-attribute-serviceのingressと同じ簡略化)。
+# 呼び出し元をfrontend一つに、rbacポリシーを単一scope(fraud-agent:chat)のワイルドカードルートへ
+# 簡略化した(analyst-attribute-serviceのingressと同じ簡略化。ADR 0046でaccount:readから分離)。
 #
 # ingress:jwt_authn(署名・iss・aud=fraud-agent検証、クレームをx-auth-*ヘッダーへ)→
-# rbac(account:read保有のみを要求)→lua(rbac通過後にのみ合言葉ヘッダーを付与。ADR 0009 §2③)→
+# rbac(fraud-agent:chat保有のみを要求)→lua(rbac通過後にのみ合言葉ヘッダーを付与。ADR 0009 §2③)→
 # router。
 #
 # egress(80番):hostAliasesで"fraud-mcp-server"・"keycloak"・"anthropic-gateway"を127.0.0.1へ
@@ -142,7 +142,7 @@ data:
                                 permissions:
                                   - any: true
                                 principals:
-                                  - header: { name: "x-auth-scope", string_match: { contains: "account:read" } }
+                                  - header: { name: "x-auth-scope", string_match: { contains: "fraud-agent:chat" } }
                       - name: envoy.filters.http.lua
                         typed_config:
                           "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua

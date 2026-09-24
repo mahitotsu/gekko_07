@@ -137,7 +137,7 @@ spec:
             - name: CLIENT_ID
               value: "fraud-agent"
             - name: FIXED_SCOPE
-              value: "account:read"
+              value: "fraud-mcp-server:read"
             - name: JWT_SVID_AUDIENCE
               value: "http://localhost:3000/realms/gekko"
             - name: LISTEN_HOST

@@ -1,6 +1,6 @@
 # ADR 0023: fraud-agentを新規実装し、fraud-mcp-serverのingressを活性化する
 
-- **Status**: Accepted
+- **Status**: Partially superseded by [0046](0046-account-read-audience-scope-split.md)（fraud-agent→fraud-mcp-serverのscope名を`account:read`から`fraud-mcp-server:read`へ変更。ingress/egress構成そのものは有効なまま）
 - **Date**: 2026-09-17
 
 ## Context
@@ -19,14 +19,14 @@ Keycloakの`fraud-agent`クライアント定義は、ADR 0019〜0021が既存�
 
 `k8s/fraud-agent/`に、account-service（ingress+egress両方を持つ唯一の既存サービス。表3導入前のADR 0021参照）と同型のPod構成（initContainer＋app＋Envoy＋token-exchange）を新設した。
 
-- ingress：`jwt_authn`（`audiences: ["fraud-agent"]`）→`rbac`（`account:read`保有のみを要求する単一ワイルドカードルート。analyst-attribute-serviceのingressと同じ簡略化）→`lua`（合言葉注入）→`router`。mTLS呼び出し元はfrontendのみに制限（frontend自体は未実装のため、実際にこの制限を満たす呼び出し元は現時点で存在しない）
-- egress：`token-exchange`サイドカーが`FIXED_SCOPE=account:read`でfraud-mcp-server向けToken Exchangeを実行する（fraud-mcp-serverはscopeがpathによらず1つだけのホップのため、fraud-mcp-server→account-serviceのようなpath/methodからscopeを解決する対応表は不要）
+- ingress：`jwt_authn`（`audiences: ["fraud-agent"]`）→`rbac`（`account:read`保有のみを要求する単一ワイルドカードルート。analyst-attribute-serviceのingressと同じ簡略化）→`lua`（合言葉注入）→`router`。mTLS呼び出し元はfrontendのみに制限（frontend自体は未実装のため、実際にこの制限を満たす呼び出し元は現時点で存在しない）〔[ADR 0046](0046-account-read-audience-scope-split.md)で訂正：rbacの要求scopeはその後`fraud-agent:chat`に変更〕
+- egress：`token-exchange`サイドカーが`FIXED_SCOPE=account:read`でfraud-mcp-server向けToken Exchangeを実行する（fraud-mcp-serverはscopeがpathによらず1つだけのホップのため、fraud-mcp-server→account-serviceのようなpath/methodからscopeを解決する対応表は不要）〔[ADR 0046](0046-account-read-audience-scope-split.md)で訂正：`FIXED_SCOPE`はその後`fraud-mcp-server:read`に変更〕
 
-Keycloak側は`fraud-agent`クライアントに`clientAuthenticatorType: federated-jwt`と`jwt.credential.issuer`/`jwt.credential.sub`属性を追加した。`standard.token.exchange.enabled`・`optionalClientScopes: ["account:read"]`は変更していない。
+Keycloak側は`fraud-agent`クライアントに`clientAuthenticatorType: federated-jwt`と`jwt.credential.issuer`/`jwt.credential.sub`属性を追加した。`standard.token.exchange.enabled`・`optionalClientScopes: ["account:read"]`は変更していない。〔[ADR 0046](0046-account-read-audience-scope-split.md)で訂正：`optionalClientScopes`はその後`["fraud-mcp-server:read"]`に変更〕
 
 ### fraud-mcp-serverのingressを活性化する
 
-`k8s/fraud-mcp-server/envoy-configmap.yaml`にingressリスナー（analyst-attribute-serviceのingressと同型：単一固定scope`account:read`、呼び出し元をfraud-agentのみに制限）を追加し、既存のegressリスナーと同じEnvoyプロセスに同居させた。Service（`k8s/fraud-mcp-server/service.yaml`、これまで存在しなかった）とNetworkPolicyのingress許可（`app: fraud-agent`から8080）も新規追加した。アプリ本体（app-configmap.yaml）は変更していない——先行して用意されていたスタブロジックがそのまま使われる形になった。
+`k8s/fraud-mcp-server/envoy-configmap.yaml`にingressリスナー（analyst-attribute-serviceのingressと同型：単一固定scope`account:read`、呼び出し元をfraud-agentのみに制限）を追加し、既存のegressリスナーと同じEnvoyプロセスに同居させた。〔[ADR 0046](0046-account-read-audience-scope-split.md)で訂正：固定scopeはその後`fraud-mcp-server:read`に変更〕 Service（`k8s/fraud-mcp-server/service.yaml`、これまで存在しなかった）とNetworkPolicyのingress許可（`app: fraud-agent`から8080）も新規追加した。アプリ本体（app-configmap.yaml）は変更していない——先行して用意されていたスタブロジックがそのまま使われる形になった。
 
 fraud-mcp-serverはaccount-serviceに続き、ingress/egress両方のリスナーを持つ2番目のサービスになった。
 
@@ -42,7 +42,7 @@ fraud-agentの`envoy`コンテナ（mTLS用のX.509-SVID）と`token-exchange`�
 
 frontend自体が未実装のため、fraud-agentのingress（mTLS+jwt_authn+rbac+合言葉）を実際に通過する呼び出し元は存在しない。これはADR 0014のConsequencesで既に「frontend/fraud-agent双方が未実装のため、frontend→fraud-agentホップの実機検証はどちらか（または両方）の実装着手時まで行えない」と明記されていた制約であり、新たに発生したギャップではない。
 
-`scripts/verify-hop.sh`には、frontend代役のToken Exchange（Keycloakへ直接、audience=fraud-agent、scope=account:read）取得後、fraud-agent-stub Pod内のappコンテナへ**ingressを経由せず**直接Authorizationヘッダー付きでリクエストし、fraud-agent自身のegress（Token Exchange）→fraud-mcp-serverのingress、という後半の実装を検証するステップを追加した。この方法は、mTLS/jwt_authn/rbacを通過したかのようにアプリ層のみを単体で駆動するものであり、fraud-agent自身のingress側の実機検証（mTLSでのSPIFFE ID制限・JWT署名検証・scope RBAC）はfrontend実装まで持ち越しとなる。
+`scripts/verify-hop.sh`には、frontend代役のToken Exchange（Keycloakへ直接、audience=fraud-agent、scope=account:read）取得後〔[ADR 0046](0046-account-read-audience-scope-split.md)で訂正：scope名はその後`fraud-agent:chat`に変更〕、fraud-agent-stub Pod内のappコンテナへ**ingressを経由せず**直接Authorizationヘッダー付きでリクエストし、fraud-agent自身のegress（Token Exchange）→fraud-mcp-serverのingress、という後半の実装を検証するステップを追加した。この方法は、mTLS/jwt_authn/rbacを通過したかのようにアプリ層のみを単体で駆動するものであり、fraud-agent自身のingress側の実機検証（mTLSでのSPIFFE ID制限・JWT署名検証・scope RBAC）はfrontend実装まで持ち越しとなる。
 
 ## Consequences
 

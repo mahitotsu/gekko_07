@@ -1,6 +1,6 @@
 # ADR 0010: egressは実サービス名への透過的な呼び出しとし、audienceはHostヘッダーから自動導出する
 
-- **Status**: Partially superseded by [0014](0014-fraud-agent-token-exchange.md)（egressパターン③「素通し」・④「トークンを値として取得」を廃止。①Token Exchange・②client_credentials発行の2パターンへ整理された。本文には〔ADR 0014で削除/訂正〕として反映済み）
+- **Status**: Partially superseded by [0014](0014-fraud-agent-token-exchange.md)・[0046](0046-account-read-audience-scope-split.md)（0014：egressパターン③「素通し」・④「トークンを値として取得」を廃止。①Token Exchange・②client_credentials発行の2パターンへ整理された。本文には〔ADR 0014で削除/訂正〕として反映済み。0046：frontend→fraud-agent・fraud-agent→fraud-mcp-serverのscope名を`account:read`から専用scopeへ変更。本文には〔ADR 0046で訂正〕として反映済み。表の他の行は有効なまま）
 - **Date**: 2026-09-14
 
 ## Context
@@ -11,8 +11,8 @@ architecture.md §3は「次ホップごとに専用のegressリスナーを1つ
 |---|---|---|---|
 | frontend | account-service | `account:read` | 取引ダッシュボード |
 | frontend | account-service | `account:unfreeze` | 凍結解除確定ボタン |
-| frontend | fraud-agent | `account:read` | チャットUI開始時（〔[ADR 0014](0014-fraud-agent-token-exchange.md)で訂正〕当初は`fraud-mcp-server`宛てだったが、以降を参照） |
-| fraud-agent | fraud-mcp-server | `account:read` | MCPツール呼び出し（〔[ADR 0014](0014-fraud-agent-token-exchange.md)で追加〕） |
+| frontend | fraud-agent | `account:read` | チャットUI開始時（〔[ADR 0014](0014-fraud-agent-token-exchange.md)で訂正〕当初は`fraud-mcp-server`宛てだったが、以降を参照。〔[ADR 0046](0046-account-read-audience-scope-split.md)で訂正〕scope名はその後`fraud-agent:chat`に変更） |
+| fraud-agent | fraud-mcp-server | `account:read` | MCPツール呼び出し（〔[ADR 0014](0014-fraud-agent-token-exchange.md)で追加〕。〔[ADR 0046](0046-account-read-audience-scope-split.md)で訂正〕scope名はその後`fraud-mcp-server:read`に変更） |
 | fraud-mcp-server | account-service | `account:read` | 取引照会系MCPツール |
 | fraud-mcp-server | account-service | `account:propose` | 凍結解除案記録MCPツール |
 | fraud-detection-engine | account-service | `account:freeze` | 自動凍結（client_credentials、subject_tokenの交換ではない） |
@@ -50,8 +50,8 @@ scopeは最終的に相手サービスの**実際のAPIパス・メソッド**�
 |---|---|---|
 | fraud-detection-engine → account-service | `account:freeze`のみ | パスに依存しないワイルドカードルート1本（`prefix: "/"`）でscopeを固定 |
 | account-service → analyst-attribute-service | `analyst:read`のみ | 同上 |
-| frontend → fraud-agent | `account:read`のみ | 同上（〔[ADR 0014](0014-fraud-agent-token-exchange.md)で訂正〕当初は`frontend → fraud-mcp-server`だった） |
-| fraud-agent → fraud-mcp-server | `account:read`のみ | 同上（〔[ADR 0014](0014-fraud-agent-token-exchange.md)で追加〕） |
+| frontend → fraud-agent | `account:read`のみ | 同上（〔[ADR 0014](0014-fraud-agent-token-exchange.md)で訂正〕当初は`frontend → fraud-mcp-server`だった。〔[ADR 0046](0046-account-read-audience-scope-split.md)で訂正〕scope名はその後`fraud-agent:chat`に変更） |
+| fraud-agent → fraud-mcp-server | `account:read`のみ | 同上（〔[ADR 0014](0014-fraud-agent-token-exchange.md)で追加〕。〔[ADR 0046](0046-account-read-audience-scope-split.md)で訂正〕scope名はその後`fraud-mcp-server:read`に変更） |
 | frontend → account-service | `account:read` または `account:unfreeze` | `GET /accounts/{id}/**` → `account:read`、`POST /accounts/{id}/unfreeze` → `account:unfreeze` |
 | fraud-mcp-server → account-service | `account:read` または `account:propose` | `GET /accounts/{id}/**` → `account:read`、`POST /accounts/{id}/unfreeze-proposals` → `account:propose` |
 

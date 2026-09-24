@@ -314,6 +314,8 @@ Keycloak 26.7.0。realm定義は[k8s/keycloak/realm-configmap.yaml](../k8s/keycl
 
 **対応**：今回は範囲外として是正しなかった（Client Policies導入は既存の設計判断を覆すため、行うなら独立したADRが必要）。ただし今回、verify-hop.sh自身がこの抜け道（frontendを名乗って直接fraud-mcp-server宛てexchangeする）を使っていたことに気づき、frontend→fraud-agent→fraud-mcp-serverの実チェーン（各サービス自身のtoken-exchangeサイドカーを経由）に置き換えて解消した。全クライアントの実装（サイドカーのSCOPE_RULES）は正しいaudienceしか要求しないため、現状はリスクが顕在化していない。
 
+**追記（[ADR 0046](adr/0046-account-read-audience-scope-split.md)、2026-09-24）**：Client Policiesではなく、`account:read`のfraud-agent/fraud-mcp-server向けマッパーをaudience別の専用scope（`fraud-agent:chat`・`fraud-mcp-server:read`）へ分離する形でこの監査ギャップを解消した。frontendが`client_id=frontend, audience=fraud-mcp-server, scope=account:read`で直接Token Exchangeを要求しても、`{"error":"invalid_request","error_description":"Requested audience not available: fraud-mcp-server"}`でKeycloak自身が拒否することを実機で確認した（`scripts/verify-hop.sh`ステップ1cとして回帰テスト化済み）。
+
 ### 2.4 SPIFFE JWT-SVIDによるクライアント認証（ext-authz-serviceの身元検証ギャップとKeycloakクライアント認証方式の調査）
 
 **この調査結果は、後日[ADR 0019](adr/0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md)/[0020](adr/0020-fraud-detection-engine-identity-gap-and-client-credentials-federated-jwt.md)/[0021](adr/0021-account-service-analyst-attribute-service-spiffe-jwt-svid.md)でgekko_07本体に反映済み。**以下は反映前に使い捨て環境で行ったスパイクの記録で、調査の経緯・判明した事実（バイトコードレベルの原因特定を含む）を残す。

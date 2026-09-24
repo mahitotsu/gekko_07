@@ -23,8 +23,9 @@ ADRの書き方・Statusの更新方法（`Amends`/`Partially superseded by`の�
 | [0005](0005-single-audience-tokens-only.md) | トークンは常に単一audienceのみを持つ | Accepted |
 | [0006](0006-claim-vs-external-attribute-criteria.md) | トークンのクレームにするか業務データとして外部化するかの判断基準 | Accepted |
 | [0009](0009-envoy-ingress-responsibility-and-bypass-prevention.md) | Envoy ingress側の責務範囲とバイパス防止 | Accepted |
-| [0010](0010-egress-listener-granularity.md) | egressは実サービス名への透過的な呼び出しとし、audienceはHostヘッダーから自動導出する | Partially superseded by 0014 |
-| [0014](0014-fraud-agent-token-exchange.md) | fraud-agent→fraud-mcp-serverをToken Exchangeに変更し、frontendの事前トークン取得（パターン④）を廃止する | Accepted |
+| [0010](0010-egress-listener-granularity.md) | egressは実サービス名への透過的な呼び出しとし、audienceはHostヘッダーから自動導出する | Partially superseded by 0014・0046 |
+| [0014](0014-fraud-agent-token-exchange.md) | fraud-agent→fraud-mcp-serverをToken Exchangeに変更し、frontendの事前トークン取得（パターン④）を廃止する | Partially superseded by 0046 |
+| [0046](0046-account-read-audience-scope-split.md) | `account:read`のaudienceマッパー共有を解消し、fraud-agent・fraud-mcp-server向けを専用scopeへ分離する | Accepted |
 
 ## 身元検証・mTLS・SPIFFE/SPIRE・DPoPの変遷
 
@@ -79,8 +80,8 @@ ADRの書き方・Statusの更新方法（`Amends`/`Partially superseded by`の�
 
 | # | タイトル | Status |
 |---|---|---|
-| [0023](0023-fraud-agent-fraud-mcp-server-hop.md) | fraud-agentを新規実装し、fraud-mcp-serverのingressを活性化する | Accepted |
-| [0024](0024-frontend-edge-proxy-and-simplified-login.md) | frontendを新規実装し、edge-proxy配線・簡易ログインでaccount-service/fraud-agentへ横展開する | Partially superseded by 0031・0036 |
+| [0023](0023-fraud-agent-fraud-mcp-server-hop.md) | fraud-agentを新規実装し、fraud-mcp-serverのingressを活性化する | Partially superseded by 0046 |
+| [0024](0024-frontend-edge-proxy-and-simplified-login.md) | frontendを新規実装し、edge-proxy配線・簡易ログインでaccount-service/fraud-agentへ横展開する | Partially superseded by 0031・0036・0046 |
 | [0026](0026-account-service-analyst-attribute-service-implementation.md) | account-service・analyst-attribute-serviceを本実装し、ビルド・配布パイプラインを新設する | Partially superseded by 0027 |
 | [0027](0027-fraud-detection-engine-implementation.md) | fraud-detection-engineを本実装し、デモ用凍結データの発生源をaccount-serviceのシードから切り替える | Accepted |
 | [0029](0029-fraud-mcp-server-implementation.md) | fraud-mcp-serverを本実装し、account-serviceの読み取り・提案系機能をMCPツールとして公開する | Accepted |

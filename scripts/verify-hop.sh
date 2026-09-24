@@ -258,19 +258,45 @@ except urllib.error.HTTPError:
 '
 }
 
-echo "==> 1a. frontendがfraud-agent宛てにToken Exchange(scope=account:read)する経路を直接検証"
+echo "==> 1a. frontendがfraud-agent宛てにToken Exchange(scope=fraud-agent:chat)する経路を直接検証"
 FRAUD_AGENT_TOKEN=$(sidecar_exchange "$FRONTEND_POD" fraud-agent POST /chat "$YAMADA_RAW_TOKEN")
 if [ -z "$FRAUD_AGENT_TOKEN" ]; then
   echo "fraud-agent宛てトークンの取得に失敗しました" >&2
   exit 1
 fi
 
-echo "==> 1b. fraud-agentがfraud-mcp-server宛てにToken Exchange(scope=account:read)する経路を直接検証"
+echo "==> 1b. fraud-agentがfraud-mcp-server宛てにToken Exchange(scope=fraud-mcp-server:read)する経路を直接検証"
 DELEGATED_TOKEN=$(sidecar_exchange "$FRAUD_AGENT_POD" fraud-mcp-server GET / "$FRAUD_AGENT_TOKEN")
 if [ -z "$DELEGATED_TOKEN" ]; then
   echo "fraud-mcp-server宛てトークンの取得に失敗しました" >&2
   exit 1
 fi
+
+echo "==> 1c.(異常系)frontendがaccount:readを名乗ってfraud-mcp-server宛てに直接Token Exchangeを要求しても、Keycloak自身が拒否することを確認(ADR 0046)"
+# resolve_scope()のSCOPE_RULES(frontendにfraud-mcp-server宛てのルールは無い)を経由せず、
+# frontend自身のtoken-exchangeサイドカーのexchange_token()を直接叩き、Keycloakへの生の
+# Token Exchangeリクエストで実際にaudience=fraud-mcp-server, scope=account:readを要求する
+# (ADR 0024が実際に踏んだ抜け道と同じ形)。account:readがfraud-mcp-server向けの
+# oidc-audience-mapperをもう持たないため、Keycloak自身が"Requested audience not available"
+# で拒否するはず。
+BYPASS_RESULT=$(kubectl -n "$NAMESPACE" exec "$FRONTEND_POD" -c token-exchange -- env \
+  TOKEN="$YAMADA_RAW_TOKEN" python3 -c '
+import os, sys
+sys.path.insert(0, "/scripts")
+import app
+try:
+    app.exchange_token(os.environ["TOKEN"], "fraud-mcp-server", "account:read")
+    print("UNEXPECTED_SUCCESS")
+except Exception as e:
+    body = e.read().decode() if hasattr(e, "read") else ""
+    print(f"{e!r} {body}")
+')
+echo "$BYPASS_RESULT"
+if [ "$BYPASS_RESULT" = "UNEXPECTED_SUCCESS" ] || ! echo "$BYPASS_RESULT" | grep -q "Requested audience not available"; then
+  echo "抜け道が塞がっていません(account:readでfraud-mcp-server宛てのToken Exchangeが成功、または想定外のエラーでした)" >&2
+  exit 1
+fi
+echo "抜け道は塞がれている(期待通り。Keycloakが'Requested audience not available'で拒否)"
 
 FRAUD_MCP_POD=$(newest_pod fraud-mcp-server)
 

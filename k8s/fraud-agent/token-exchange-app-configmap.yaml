@@ -32,7 +32,7 @@ data:
         "http://keycloak/realms/gekko/protocol/openid-connect/token",
     )
     CLIENT_ID = os.environ.get("CLIENT_ID", "fraud-agent")
-    FIXED_SCOPE = os.environ.get("FIXED_SCOPE", "account:read")
+    FIXED_SCOPE = os.environ.get("FIXED_SCOPE", "fraud-mcp-server:read")
     # JWT-SVIDのaudクレームに求める値。KeycloakのSPIFFE federated-jwt認証はaud/iss検証ではなく
     # sub(SPIFFE ID)とKeycloakクライアント属性jwt.credential.subの一致だけを見る(実機確認済み。
     # k8s/fraud-mcp-server/token-exchange-app-configmap.yaml参照)。
