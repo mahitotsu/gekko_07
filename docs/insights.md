@@ -644,6 +644,20 @@ k8s内部通信のmTLS横展開が全ホップで完了した([architecture.md](
 
 **対応**：発行側は「Lua変換 or カスタムSPI」という二択ではなく、**証明書の意味を一切解釈しない単純な文字列整形コンポーネント**で足りることが実機で確定した。既存の`token-exchange`/`client-credentials`/`egress-auth`と同じ「独立プロセス・ユニットテスト可能」なサイドカーとして実装するのが妥当（実際の判断・検証はKeycloak本体のSPI側で完結しており、この変換コンポーネントが誤動作しても壊れたDERとしてKeycloak側で拒否される＝fail-closed）。判断すべき問いの更新はarchitecture.md §11を参照。
 
+#### RFC 8705のcnf拘束は、DPoPと全く同じ「委任チェーンの終端ホップでしか安全に有効化できない」という構造的制約を持つ（2026-09-25、使い捨てKeycloak 26.7.0での3クライアント委任チェーン再現）
+
+**症状/確認内容**：§5.1でDPoPについて確認した「subject_tokenに既存の拘束がある場合、別クライアント・別鍵での再exchangeは拒否される」という制約が、RFC 8705（mTLS証明書拘束）にも同様に当てはまるかを実機で確認した。3クライアント（client-a→client-b→client-cの委任チェーン、いずれも`tls.client.certificate.bound.access.tokens=true`、`standard.token.exchange.enabled=true`）を使い捨てKeycloakに構築し、次の手順を実行した。
+
+1. client-aが自分の証明書（clientA-cert）でclient_credentialsトークンを取得（`cnf.x5t#S256`はclientA-certに拘束）
+2. client-aが**自分自身の証明書（clientA-cert、同一の接続）**でこのトークンをToken Exchangeし、`aud=client-b`のトークンを取得 → 成功。`cnf`はclientA-certのまま維持される（同一クライアント・同一鍵での再exchangeは無問題、DPoPと同じ挙動）
+3. client-bが**自分自身の別の証明書（clientB-cert、client-aとは異なる鍵）**で、手順2のトークンを`subject_token`にToken Exchangeし`aud=client-c`を要求 → **`400 invalid_request: "Sender-constrained token exchange rejected as the token was not issued for the requesting client"`で拒否された**
+
+このエラーメッセージは、§5.1でDPoPについて観測したものと一字一句同一であり、同じKeycloak issue #51205に起因する。
+
+**原因**：Keycloakの「sender-constrained token exchange」の拒否ロジックは、拘束の方式（DPoPのJWK拘束かRFC 8705の証明書拘束か）を問わず、「既に拘束されているsubject_tokenを、その拘束と異なる鍵/証明書を持つ別クライアントが再exchangeしようとしていないか」を一律にチェックする、方式に依存しない汎用ロジックである。
+
+**対応**：これにより、RFC 8705はDPoPと**全く同じ制約**を持つと確定した。gekko_07の実際の委任チェーン（frontend→fraud-agent→fraud-mcp-server→account-service）にそのまま当てはめると、あるホップで発行されたトークン（例：frontend→fraud-agentのexchangeで得た`aud=fraud-agent`トークン、`azp=frontend`）を次のホップ（fraud-agent、client-aとは異なるクライアント）が再exchangeする時点で、同じ拒否が発生する。つまりRFC 8705も、DPoPが撤去された時と同じく**「委任チェーンの最後（もう再exchangeされない終端クライアント）でしか安全に有効化できない」**。DPoPが撤去された理由（[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)、「SPIRE mTLSとの実利の重複」）と同じ判断軸がRFC 8705にもそのまま当てはまり、「委任チェーン全体でトークン窃取を塞ぐ」という広い効果は得られない。判断への反映はarchitecture.md §11を参照。
+
 ## 6. 監査ログ集約（Alloy / otel-lgtm）
 
 [ADR 0025](adr/0025-audit-log-aggregation.md)。AlloyのAPIサーバー宛てegressが塞がれる問題は§1.1、Keycloakイベントログの出力設定は§2.5を参照。
