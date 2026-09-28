@@ -138,7 +138,7 @@ Postgres本体の平文ポート5432への直接到達経路（NetworkPolicyの�
 
 Keycloakが検証するクライアントの身元（JWT-SVID）と、そのクライアントが主張する`client_id`は全クライアントで一致する（[ADR 0019](adr/0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md)・[ADR 0020](adr/0020-fraud-detection-engine-identity-gap-and-client-credentials-federated-jwt.md)・[ADR 0021](adr/0021-account-service-analyst-attribute-service-spiffe-jwt-svid.md)）。
 
-送信者拘束（DPoP、RFC 9449）・証明書拘束アクセストークン（RFC 8705）は採用していない。いずれも委任チェーンの終端ホップにしか安全に適用できず、その範囲の大部分は既にmTLSが守っているという判断の根拠は[ADR 0048](adr/0048-sender-constraining-terminal-hop-only.md)（DPoP試験導入・撤去の経緯は[ADR 0013](adr/0013-dpop-sender-constraining.md)・[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)）。再検討時の実機の判断材料は[insights.md](insights.md) §5、未決の問いは§11を参照。
+送信者拘束（DPoP、RFC 9449）・証明書拘束アクセストークン（RFC 8705）は採用していない。理由は、Impersonation方式の多段Token Exchangeでは、クライアントをまたいで拘束済みトークンを安全に再拘束するための一般的な意味づけ（semantics）がどの仕様にも定義されていないためである——RFC 8693はトークンのPoP特性を明示的にscope外とし（`actor_token`/`may_act`によるactor独立認可＝Delegationの余地は残す）、RFC 9449はDPoPをトークンリクエスト一般に適用できるとしつつclient/actorをまたぐ既存拘束の継承・再拘束は規定していない。**いずれの仕様も拒否を義務づけているわけではない**が、Impersonation下では安全な再拘束の根拠が無いため、認可サーバーは安全側に倒し、送信者拘束は再exchangeされない終端ホップにしか適用できない。その範囲の大部分は既にmTLSが守っている。詳細な論証・実機検証の根拠は[ADR 0048](adr/0048-sender-constraining-terminal-hop-only.md)（DPoP試験導入・撤去の経緯は[ADR 0013](adr/0013-dpop-sender-constraining.md)・[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)）。再検討時の実機の判断材料は[insights.md](insights.md) §5、未決の問いは§11を参照。
 
 ### 3.6 NetworkPolicy（L3/4のdefault-deny）
 
