@@ -65,7 +65,7 @@ SPIRE_BUNDLE_ENDPOINT_CERT_DUMMY := $(shell mkdir -p $(SECRETS_DIR) && \
 	    -addext "subjectAltName=DNS:spire-server.spire.svc.cluster.local,DNS:spire-server" \
 	    >/dev/null 2>&1 ) )
 
-.PHONY: up down stop start status network-status clean deploy undeploy sync keycloak-forward keycloak-reimport-realm deploy-verify-hop undeploy-verify-hop verify-hop deploy-spire undeploy-spire deploy-network-policy undeploy-network-policy deploy-observability undeploy-observability grafana-forward verify-observability build-account-service build-analyst-attribute-service build-fraud-detection-engine build-fraud-mcp-server build-fraud-agent build-frontend build-keycloak
+.PHONY: up down stop start status network-status clean deploy undeploy sync keycloak-forward keycloak-reimport-realm deploy-verify-hop undeploy-verify-hop verify-hop deploy-spire undeploy-spire deploy-network-policy undeploy-network-policy deploy-observability undeploy-observability grafana-forward verify-observability verify-audit-service verify-jailbreak build-account-service build-analyst-attribute-service build-fraud-detection-engine build-fraud-mcp-server build-fraud-agent build-frontend build-keycloak
 
 # -------------------------
 # クラスタ操作
@@ -391,6 +391,12 @@ verify-observability:
 # verify-hop実行済み前提。ADR 0040/0041）
 verify-audit-service:
 	./scripts/verify-audit-service.sh
+
+# scripts/verify-jailbreak.shを実行する（脱獄・敵対的入力に対する構造的封じ込めの実証＝UC5。
+# deploy・deploy-verify-hop実行済み、かつfraud-agentがAnthropic APIを呼べる前提。実APIを
+# 消費する。architecture.md §10・explainer 4章）
+verify-jailbreak:
+	./scripts/verify-jailbreak.sh
 
 # -------------------------
 # NetworkPolicy（ADR 0018。gekko namespace全体のL3/4 default-deny）
