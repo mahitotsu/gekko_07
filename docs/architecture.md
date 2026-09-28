@@ -138,7 +138,7 @@ Postgres本体の平文ポート5432への直接到達経路（NetworkPolicyの�
 
 Keycloakが検証するクライアントの身元（JWT-SVID）と、そのクライアントが主張する`client_id`は全クライアントで一致する（[ADR 0019](adr/0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md)・[ADR 0020](adr/0020-fraud-detection-engine-identity-gap-and-client-credentials-federated-jwt.md)・[ADR 0021](adr/0021-account-service-analyst-attribute-service-spiffe-jwt-svid.md)）。
 
-送信者拘束（DPoP、RFC 9449）・証明書拘束アクセストークン（RFC 8705）は採用していない。検討経緯は[ADR 0013](adr/0013-dpop-sender-constraining.md)・[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)、再検討時の判断材料は[insights.md](insights.md)、再検討の要否は§11を参照。
+送信者拘束（DPoP、RFC 9449）・証明書拘束アクセストークン（RFC 8705）は採用していない。いずれも委任チェーンの終端ホップにしか安全に適用できず、その範囲は既にmTLSが守っているという判断の根拠は[ADR 0048](adr/0048-sender-constraining-terminal-hop-only.md)（DPoP試験導入・撤去の経緯は[ADR 0013](adr/0013-dpop-sender-constraining.md)・[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)）。再検討時の実機の判断材料は[insights.md](insights.md) §5、未決の問いは§11を参照。
 
 ### 3.6 NetworkPolicy（L3/4のdefault-deny）
 
@@ -561,10 +561,10 @@ UC1と同じ流れだが、手順6で東京・大阪のhigh-value口座も結果
 
 ### 送信者拘束（DPoP / RFC 8705）
 
-いずれも委任チェーンの終端（もう再exchangeされないホップ）でしか安全に有効化できないという共通の構造的制約を持つ。これはKeycloak固有の実装都合ではなく、送信者拘束の定義（RFC 9449・RFC 9700：正当な提示者＝発行時に鍵の所有を証明した同一の主体）と、RFC 8693のImpersonation方式（提示者の同一性を記録しない設計）を組み合わせると論理的に導出できる、複数仕様間のギャップに起因する。根拠の詳細は[insights.md](insights.md)「5.0 なぜDPoP・RFC 8705はいずれも委任チェーンと構造的に相性が悪いのか」を参照。
+DPoP・RFC 8705はいずれも委任チェーンの終端（もう再exchangeされないホップ）にしか安全に適用できず、その範囲は既にmTLSが守っているため導入していない（判断の根拠は[ADR 0048](adr/0048-sender-constraining-terminal-hop-only.md)、撤去の経緯は[ADR 0013](adr/0013-dpop-sender-constraining.md)・[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)、実機の検証記録は[insights.md](insights.md) §5）。以下は、この判断を将来くつがえしうる未決の問い。
 
-- **DPoP**：[ADR 0013](adr/0013-dpop-sender-constraining.md)でfraud-mcp-server→account-serviceの1ホップに実装・実機検証したが、[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)でSPIRE mTLSとの実利の重複を理由に撤去した。再検討時の判断材料（「拘束のスロットは委任チェーンに1箇所、終端ホップのみ」という制約、Keycloak issue #51205等）は[insights.md](insights.md)「DPoP送信者拘束」節。frontend（確定パスの直接exchange）への適用は理論上可能だが未検証。ログイントークン自体を拘束するかも未決定
-- **RFC 8705（証明書拘束アクセストークン）**：機能自体（`tls.client.certificate.bound.access.tokens`）は`client-x509`のSubject DN制約と無関係に動作し、Token Exchangeの発行時接続と提示時接続が別証明書になる問題もPod内サイドカー構成で解消されていることを実機で確認した。発行側（Keycloakへの`cnf`埋め込み）・検証側（account-service等の利用時に、提示された接続の証明書と`cnf.x5t#S256`が一致するかの照合）のいずれも、このプロジェクトが実際に使っているバージョン（Envoy v1.31.5・Keycloak 26.7.0）の組み合わせでend-to-endに実機確認済みで、発行側は証明書の意味を解釈しない文字列整形のみの小さな変換コンポーネント、検証側はEnvoy標準機能だけで、新規の判断ロジックを持つコンポーネントを増やさずに実装できる見込みが立っている。一方、**DPoPと全く同じ構造的制約**（3クライアントの委任チェーンで実機確認：既に拘束済みのsubject_tokenを別クライアント・別証明書で再exchangeすると、DPoPの時と一字一句同じ`"Sender-constrained token exchange rejected as the token was not issued for the requesting client"`でKeycloakに拒否される。Keycloakのこの拒否ロジックは拘束方式に依存しない汎用ロジックのため）を持つことも確定しており、安全に有効化できるのはDPoPの時と同じく「委任チェーンの終端（もう再exchangeされないホップ）」だけである。判断材料は[insights.md](insights.md)「RFC 8705 証明書拘束アクセストークンの再検討」節。**判断すべき問い**：終端1ホップだけに適用する構成（発行側の小さな変換サイドカー1つ＋検証側のEnvoy設定＋アプリ側の数行の比較コード）を実装する投資が、同じ範囲を既に担っているmTLSの`match_typed_subject_alt_names`による防御、およびDPoPを同じ理由で撤去した[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)の判断に対して、なお追加する価値を持つか
+- **DPoPの終端ホップ・ログイントークンへの適用**：frontend→account-serviceの直接exchange（確定パス、それ自体が終端）やログイントークン自体の拘束は理論上可能だが未検証。委任チェーン全体ではなく特定ホップ単体のトークン窃取まで防ぐ要求が出てきたら再検討する
+- **RFC 8705の終端1ホップへの適用**：安価に実装できる見込みは実機確認済み（[insights.md](insights.md) §5.2）。この投資が、同じ範囲を既に担っているmTLSの`match_typed_subject_alt_names`による防御に対してなお価値を持つか（判断軸は[ADR 0048](adr/0048-sender-constraining-terminal-hop-only.md)・[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)）
 
 ### mTLS / SPIFFE / SPIRE / NetworkPolicy
 

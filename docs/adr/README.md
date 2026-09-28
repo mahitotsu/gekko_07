@@ -30,7 +30,7 @@ ADRの書き方・Statusの更新方法（`Amends`/`Partially superseded by`の�
 
 ## 身元検証・mTLS・SPIFFE/SPIRE・DPoPの変遷
 
-この一連の流れは「共有ext-authz-serviceが呼び出し元のclient_secretを代理保持する」設計（0002/0016）の身元検証ギャップに0019〜0021で気づき、各呼び出し元自身のPod内サイドカー＋SPIRE JWT-SVIDへ移行した経緯。0013→0015はDPoPを試験導入した後、mTLSとの重複を理由に撤去した経緯（知見は[insights.md](../insights.md)「DPoP送信者拘束」節）。
+この一連の流れは「共有ext-authz-serviceが呼び出し元のclient_secretを代理保持する」設計（0002/0016）の身元検証ギャップに0019〜0021で気づき、各呼び出し元自身のPod内サイドカー＋SPIRE JWT-SVIDへ移行した経緯。0013→0015はDPoPを試験導入した後、mTLSとの重複を理由に撤去した経緯。0048はmTLS横展開完了後にRFC 8705（証明書拘束アクセストークン）を再検討し、DPoP・RFC 8705とも委任チェーンの終端ホップにしか適用できないという判断の根拠を集約する（実機の検証記録は[insights.md](../insights.md) §5）。
 
 | # | タイトル | Status |
 |---|---|---|
@@ -43,6 +43,7 @@ ADRの書き方・Statusの更新方法（`Amends`/`Partially superseded by`の�
 | [0020](0020-fraud-detection-engine-identity-gap-and-client-credentials-federated-jwt.md) | fraud-detection-engineの身元検証ギャップを解消し、client_credentialsグラントもSPIFFE JWT-SVIDクライアント認証へ移行する | Accepted |
 | [0021](0021-account-service-analyst-attribute-service-spiffe-jwt-svid.md) | account-service→analyst-attribute-service(表3)をSPIFFE JWT-SVIDクライアント認証で実装する | Partially superseded by 0042 |
 | [0028](0028-postgres-mtls-tcp-proxy.md) | 共有PostgresインスタンスへのアクセスをEnvoyのtcp_proxyでmTLS化する | Accepted |
+| [0048](0048-sender-constraining-terminal-hop-only.md) | 送信者拘束（DPoP / RFC 8705）は委任チェーンの終端ホップにしか適用できず、現時点では導入しない | Accepted |
 
 ## NetworkPolicy・到達制御
 

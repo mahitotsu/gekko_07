@@ -80,31 +80,15 @@
 
 **確認内容**：`podSelector: {}`で全Pod共通の1本のNetworkPolicy（`k8s/network-policy/allow-dns.yaml`）だけを追加し、個々のサービスのNetworkPolicyには一切DNS関連のegressルールを書いていない。この状態で`postgres`・`keycloak.gekko.svc.cluster.local`等、全てのService名前解決を伴う既存フローが問題なく成功した。namespaceラベル`kubernetes.io/metadata.name: kube-system`はKubernetes標準の自動付与ラベルで、k3d(v1.35系)でも別途手動付与する必要はなかった。
 
-#### 新設したPostgres接続用Job（db-init/seed）は、宛先側の許可だけでは繋がらない。接続元Job自身のegress許可も要る（3回踏んだ。別名：接続元Job自身のegress許可漏れ）
+#### Postgres/Keycloakへ接続するJob・常駐Podは、宛先のingress許可だけでなく「接続元自身のegress許可」と「その適用タイミング」まで揃えないと`connection refused`になる（3回踏んだ）
 
-**症状**：`kubectl logs`で新設のJob（`*-db-init`・`*-seed`等）を見ると、宛先（postgres/edge-proxy）は既にingressを許可しているにもかかわらず`connection refused`で失敗する。宛先側のNetworkPolicyだけを見ると許可漏れが無いように見えるため原因箇所を誤認しやすい。
+**共通の原因**：ADR 0018のdefault-denyはPod単位でingress/egress双方に適用される。宛先PodのingressでJobからの接続を許しても、接続元Pod自身にegress許可のNetworkPolicyが無ければ発信すらできない。さらに`make deploy`は`deploy-network-policy`（全NetworkPolicyの`kubectl apply`）を**ターゲット末尾でしか**呼ばないため、マニフェストが正しくても「まだapplyされていない」タイミングで拒否されうる。以下の3つの現れ方がある。
 
-**原因**：ADR 0018のdefault-denyは名前空間単位ではなくPod単位でingress/egress双方に適用される。宛先PodのingressルールでJobからの接続を許しても、接続元であるJob自身のPodにegress許可のNetworkPolicyが無ければそのPod自体が発信すら出来ない。新しいJobを追加するたびに「宛先側のingress」と「接続元側のegress」の両方を用意し忘れると再発する典型パターン。
+1. **接続元Job自身のegress許可漏れ**：新設Job（`*-db-init`/`*-seed`）が、宛先（postgres/edge-proxy）のingressを許可済みでも`connection refused`になる（宛先側だけ見ると許可漏れが無く見え誤認しやすい）。初出は`k8s/keycloak/networkpolicy.yaml`（`keycloak-db-init`、ADR 0018時点のコメント）。[ADR 0026](adr/0026-account-service-analyst-attribute-service-implementation.md)で`account-service-db-init`・`analyst-attribute-service-db-init`・`analyst-attribute-service-seed`の3 Job分を再度踏み、各`k8s/*/networkpolicy.yaml`に接続元egress許可を追加して解消。**新設Jobには宛先ingressと接続元egressの両方を必ず用意する。**
 
-**対応**：初出は`k8s/keycloak/networkpolicy.yaml`（`keycloak-db-init` Job、ADR 0018時点でコメントとして記録）。[ADR 0026](adr/0026-account-service-analyst-attribute-service-implementation.md)でaccount-service/analyst-attribute-serviceのdb-init/seed Jobを新設した際に同じ症状を2度（`account-service-db-init`・`analyst-attribute-service-db-init`・`analyst-attribute-service-seed`の3 Job分)踏み、`k8s/account-service/networkpolicy.yaml`・`k8s/analyst-attribute-service/networkpolicy.yaml`にそれぞれ専用のegress許可ルールを追加して解消した。各k8s/*/networkpolicy.yamlに個別コメントとして残っていたためこのファイルに一元化して記録する。**今後、他サービス（fraud-mcp-server等）の本実装でPostgresやKeycloak等に接続するJob（db-init/seed/migration等）を新設する際は、宛先側のingress許可の有無だけでなく、Job自身（接続元）のegress許可を必ず併せて用意すること。**
+2. **適用順序漏れ（既存クラスタへの再デプロイ）**：[ADR 0027](adr/0027-fraud-detection-engine-implementation.md)で`k8s/fraud-detection-engine/networkpolicy.yaml`に接続元egressを最初から書いたのに`connection refused`でJobがbackoffLimitを使い切った。**既にdefault-denyが有効なクラスタ**に新Jobを初めて追加すると、そのegress許可は末尾の`deploy-network-policy`まで適用されず、default-denyだけが先に効く（まっさらなクラスタでの初回`make deploy`では無害）。**対応**：`deploy`ターゲットで`k8s/postgres/networkpolicy.yaml`（宛先ingress）と`k8s/fraud-detection-engine/networkpolicy.yaml`（接続元egress）の両方をdb-init Job適用の直前へ前倒しした（片方だけでは`connection refused`が再現し、postgres側ingress許可漏れも別途判明）。末尾の一括適用は冪等なので残置。
 
-#### 同じパターンの新しい現れ方：マニフェストに接続元Job自身のegress許可を最初から書いても、`make deploy`の実行順序次第では初回だけ間に合わない（別名：default-denyが既に有効な既存クラスタへの再デプロイでconnection refusedが起きる）
-
-**症状**：[ADR 0027](adr/0027-fraud-detection-engine-implementation.md)でfraud-detection-engine-db-init Jobを新設した際、`k8s/fraud-detection-engine/networkpolicy.yaml`に接続元Job自身のegress許可ルールを（上記insightを踏まえて）最初から書いていたにもかかわらず、`make deploy`実行時に`connection refused`でJobがbackoffLimitを使い切って失敗した。
-
-**原因**：`make deploy`は`deploy-network-policy`（全サービスのNetworkPolicyを`kubectl apply`する）をターゲット末尾でしか呼ばない。default-deny自体が存在しないまっさらなクラスタでの初回`make deploy`ではこの順序は無害（Jobは事実上無制限のネットワークで動く）だが、**過去の`make deploy`で既にdefault-denyが有効になっているクラスタ**（`make down`していない開発中のクラスタ等）に新しいサービスのdb-init Jobを初めて追加すると、そのJob自身のegress許可はまだ`deploy-network-policy`が実行されておらず存在しないため、default-denyだけが先に効いてJobが即座に拒否される。宛先側・接続元側どちらのNetworkPolicyも正しく書けていても、単純に「まだ`kubectl apply`されていない」ために起きる、既存insightとは別種のタイミング問題。
-
-**対応**：`Makefile`の`deploy`ターゲットで、`k8s/postgres/networkpolicy.yaml`（宛先postgres側のingress許可。fraud-detection-engine・fraud-detection-engine-db-initからの着信を追加）と`k8s/fraud-detection-engine/networkpolicy.yaml`（接続元fraud-detection-engine本体・db-init Job自身のegress許可）の両方を、db-init Jobを`kubectl apply`する直前に前倒しで適用するようにした。片方だけ前倒ししても解決しない（実際に接続元側だけ先に直しても`connection refused`が再現し、postgres側のingress許可漏れが別途見つかった）。`deploy-network-policy`側の一括適用は冪等なので二重適用しても害はなく、末尾での適用はそのまま残してある。**今後、Postgres等に接続するJobを新設するサービスでは、接続元・宛先(postgres)双方のNetworkPolicyをdb-init Job適用より前に前倒しで適用することを検討すること**（account-service/analyst-attribute-serviceは、このクラスタでは初回追加時に同じ問題を踏んでいない可能性があるが、これは当時のクラスタがまだdefault-deny適用前だったなど環境依存の偶然であり、一般的には同じ問題を持つ）。
-
-#### さらに同じパターン：共有の`allow-dns`を末尾でしか適用しないと、新規クラスタの`make up`で常駐DeploymentのEnvoy(STRICT_DNS)がDNS解決できず`wait-for-postgres`がタイムアウトする（別名：allow-dnsの適用順序漏れ）
-
-**症状**：まっさらなクラスタでの`make up`（＝`make down`後や初回）で、account-service・analyst-attribute-serviceが`wait-for-postgres` initContainerのタイムアウトで起動せず（`Init:Error`/`Init:CrashLoopBackOff`を繰り返す）、`make deploy`が該当Deploymentのrollout待ち（`deploy`ターゲット中盤）で失敗して停止する。停止位置が末尾の`deploy-network-policy`より手前のため、`allow-dns`が永遠に適用されず、Podを作り直しても回復しない詰み状態になる。keycloak・fraud-detection-engineは同じ構造でも起動できてしまうことがあり（後述）、原因の切り分けを誤りやすい。
-
-**原因**：上記2件の対策で、5サービス（postgres/keycloak/account-service/analyst-attribute-service/fraud-detection-engine）のegressを持つNetworkPolicyを`deploy`ターゲット中盤へ前倒し適用するようにした。しかしegressルールを持つポリシーはそのPodにPod単位のdefault-deny egressを発動させる（ADR 0018）。一方で全Pod共通のDNS egress許可である`allow-dns`（`podSelector: {}`、上記「DNS解決は…egress許可のみで全Podに行き渡った」）は`deploy-network-policy`（`deploy`末尾）でしか適用していなかった。その結果、前倒し適用〜末尾の間、これら5サービスのPodは**egress制限は効くのにDNS(CoreDNS)へのegressだけ許可されていない**状態になる。常駐DeploymentのEnvoyサイドカーはSTRICT_DNSクラスタ（`postgres.gekko.svc.cluster.local:6432`等）を起動時に解決しようとするが、c-aresのDNSクエリがdefault-denyでドロップされ続け（`cluster.postgres_upstream.update_success:0` / `membership_total:0` / `dns.cares.timeouts`多発。Envoy admin `/stats`で確認）、エンドポイントが0のままなので`pg_isready`（hostAlias`postgres`→127.0.0.1→Envoy egress→mTLS）が通らない。account-service/analyst-attribute-serviceはEnvoyが解決すべきSTRICT_DNSクラスタが最も多い（7個）ため確実に詰み、クラスタ数が少ないkeycloak（3個）等は最初の1回の解決にたまたま成功して以降その1エンドポイントで惰性稼働できることがある（`update_success:1`だが`update_failure`も多発、という中途半端な生存）。**どのPolicyにも選択されない使い捨てPodはDNSを即座に解決できてしまう**（無制限のため）ので、これを対照に使うと「CoreDNSは正常なのにこのPodだけ解決できない」ことの意味を見誤る。`allow-dns`を1本適用しただけで`update_success`が1に変わりPodがReadyになることで確定した。
-
-**なぜ開発環境では隠れていたか**：NetworkPolicyは`make undeploy`/`make down`するまでクラスタに残るため、開発環境では過去の`make deploy`で適用済みの`allow-dns`が既に存在した状態で再デプロイしており、この順序依存が露見しなかった。真に新規のクラスタ（別マシンでの初回`make up`等）で初めて顕在化する。
-
-**対応**：`Makefile`の`deploy`ターゲットで、5サービスのNetworkPolicyを前倒し適用する`kubectl apply`に`k8s/network-policy/allow-dns.yaml`を加え、egress制限が効き始めるのと同時にDNS egress許可も存在するようにした。`deploy-network-policy`側での再適用は冪等なので二重適用しても害はなく、末尾での一括適用はそのまま残してある。**今後、起動時にService名の名前解決を伴う（Envoy STRICT_DNS等）常駐Deployment/Jobを、egressルールを持つNetworkPolicyと共に前倒し適用する場合は、`allow-dns`も必ず同時かそれ以前に適用すること。**
+3. **`allow-dns`の適用順序漏れ（新規クラスタの`make up`）**：まっさらなクラスタで、account-service・analyst-attribute-serviceが`wait-for-postgres`のタイムアウト（`Init:Error`/`CrashLoopBackOff`）で起動せず、`deploy`が中盤のrollout待ちで停止→末尾の`deploy-network-policy`に到達せず`allow-dns`が永遠に適用されない詰みになる。**原因**：manifestation 2で5サービス（postgres/keycloak/account-service/analyst-attribute-service/fraud-detection-engine）のegressポリシーは前倒ししたが、全Pod共通のDNS egress許可`allow-dns`（`podSelector: {}`）は末尾のままだった。前倒し〜末尾の間、これらのPodは**egress制限は効くのにCoreDNSへのegressだけ許可されない**。EnvoyサイドカーはSTRICT_DNSクラスタ（`postgres.gekko.svc.cluster.local:6432`等）を起動時に解決できず（`cluster.postgres_upstream.update_success:0`/`membership_total:0`/`dns.cares.timeouts`多発、Envoy admin `/stats`で確認）、`pg_isready`が通らない。解決すべきクラスタが最多（7個）のaccount-service/analyst-attribute-serviceは確実に詰み、少数（keycloakは3個）は最初の1回にたまたま成功し惰性稼働することがある（`update_success:1`かつ`update_failure`多発の中途半端な生存）。どのPolicyにも選ばれない使い捨てPodは無制限ゆえ即解決できてしまうため、これを対照にすると誤診しやすい。**対応**：前倒し`kubectl apply`に`k8s/network-policy/allow-dns.yaml`を加え、egress制限開始と同時にDNS egress許可も存在するようにした。**開発環境で隠れていた理由**：NetworkPolicyは`make down`まで残るため再デプロイ時は過去の`allow-dns`が既に存在し順序依存が露見しない。真に新規のクラスタ（別マシンの初回`make up`等）で初めて顕在化する。
 
 #### k3d(kube-router)のNetworkPolicyは、KubernetesのAPIサーバー(`kubernetes` Service)宛てのegressをClusterIPではなくDNAT後の実IPで評価する
 
@@ -132,19 +116,12 @@
 
 ネイティブsidecar・initContainer・readinessProbeなど、Pod内コンテナの起動タイミングに関するもの。
 
-#### Kubernetesネイティブsidecarコンテナ（`initContainers`の`restartPolicy: Always`）はJobと問題なく組み合わせられた
+#### Envoyサイドカーの起動レース（SDS証明書配信前にapp/Jobがegressへ接続して失敗）——Jobでは無害、常駐Deploymentでは要対策
 
-**症状（想定していたリスク）**：Jobの`psql`スクリプトは1回きりの実行であり、Envoyサイドカーが起動直後でSDS証明書配信・TCPリスニングが完了していないタイミングで接続を試みる競合を懸念していた。
+同じPod内のEnvoyサイドカーがSPIRE Workload APIからSDS経由で証明書を受け終える前に、appやJobが127.0.0.1（Envoyのegressリスナー、Postgres等）へ接続しようとすると失敗する、という共通の起動レース。
 
-**確認結果**：既存の接続待機リトライループ（`for i in $(seq 1 10); do $PSQL ...; sleep 1; done`。NetworkPolicy反映待ちのために元々存在していた）がこの競合にもそのまま対応し、新しいstartupProbe等の追加は不要だった。またメインコンテナ（`db-init`/`seed`）が終了すると、kubeletが`restartPolicy: Always`のEnvoyサイドカーへ自動的にSIGTERMを送り、Job自体も正常にCompletedへ遷移することを実機で複数パターン（単一initContainer構成・`resolve-subs`と共存する2 initContainers構成）確認した。
-
-#### 常駐Deployment（Job以外）では同じ競合が実際にCrashLoopBackOffとして顕在化した
-
-**症状**：`make up`実行直後、account-service・analyst-attribute-serviceのappコンテナが数回（3〜4回）再起動してからようやく安定した。ログはいずれもPostgresへの接続失敗（account-service：FlywayのJDBC接続がEOFException、analyst-attribute-service：`context deadline exceeded`）。`make stop`→`make start`でノードが再起動した際にも同様の再起動が発生しうる。
-
-**原因**：account-service（Java/Spring Boot）・analyst-attribute-service（Go）のappコンテナは、同じPod内のEnvoyサイドカー（通常の`containers`。Job用のネイティブsidecarパターンは当時Deploymentには未適用）と並行して起動する。EnvoyがSPIRE Agent Workload APIからSDS経由で証明書配信を受け終える前にappが127.0.0.1:5432（Envoyのegressリスナー）へ接続を試みると失敗する。analyst-attribute-serviceはアプリ自身に30秒のリトライループ（`main.go`の`openDB`）を持っていたが、それでも複数回クラッシュした——1回の接続試行自体がハングすると、リトライループがあってもリトライ予算を1回で使い切ってしまうことがあるため、アプリ側のリトライだけでは不十分だと分かった。
-
-**対応**：db-init Jobで確認済みだったネイティブsidecarパターン（`initContainers`の`restartPolicy: Always`）を、keycloak・account-service・analyst-attribute-service・fraud-detection-engineの4常駐DeploymentのEnvoyにも適用し（[ADR 0028](adr/0028-postgres-mtls-tcp-proxy.md) Consequences追記）、その後ろに`wait-for-postgres`（`pg_isready`リトライループ）initContainerを追加してappコンテナの起動をPostgres疎通確認後まで遅らせた。適用後、`make up`直後・rollout直後とも再起動なしで安定することを実機で複数回確認した。Postgres接続を持たないfraud-mcp-server・fraud-agent・frontend、およびpostgres本体のEnvoyもネイティブsidecar化して構成を統一したが、これらはwait-for-X initContainerを追加する実害が無いため、起動順序ガードは追加していない（edge-proxyはEnvoy単体Podのため`containers`を空にできず対象外）。
+- **Job（db-init/seed）では無害**：既存の接続待機リトライループ（`for i in $(seq 1 10); do $PSQL ...; sleep 1; done`。NetworkPolicy反映待ちで元々存在）がそのまま対応し、startupProbe追加は不要だった。メインコンテナ終了時にkubeletが`restartPolicy: Always`のEnvoyへSIGTERMを送りJobも正常にCompletedへ遷移することを複数パターン（単一/2 initContainers構成）で確認。
+- **常駐Deploymentでは実際にCrashLoopBackOff**：`make up`直後、account-service・analyst-attribute-serviceのappが3〜4回再起動してから安定（account-service：FlywayのJDBC接続EOFException、analyst-attribute-service：`context deadline exceeded`。`make stop`→`start`でも発生しうる）。analyst-attribute-serviceはアプリ自身に30秒リトライループ（`main.go`の`openDB`）を持つが、1回の接続試行がハングするとリトライ予算を1回で使い切るためアプリ側リトライだけでは不十分だった。**対応**：ネイティブsidecarパターン（`initContainers`の`restartPolicy: Always`）をkeycloak・account-service・analyst-attribute-service・fraud-detection-engineの4常駐DeploymentのEnvoyにも適用し（[ADR 0028](adr/0028-postgres-mtls-tcp-proxy.md) Consequences追記）、後段に`wait-for-postgres`（`pg_isready`リトライ）initContainerを追加してapp起動をPostgres疎通後まで遅らせた。再起動なしで安定することを確認。Postgres接続を持たないfraud-mcp-server・fraud-agent・frontend・postgres本体のEnvoyもネイティブsidecar化して統一（wait-for-X initは実害無いため不追加。edge-proxyはEnvoy単体Podのため対象外）。
 
 #### `ecdsa`パッケージの起動時pip installがreadinessProbe無しだとEnvoyのext_authzに403を出させる
 
@@ -382,23 +359,12 @@ SPIRE側で判明した事項（bundle endpointの設定・JWT-SVIDの取得方�
 
 ### 3.1 設定の反映（静的bootstrap）
 
-#### Envoyの静的bootstrap設定もConfigMap変更をホットリロードしない:古いRBACパスパターンで動き続けていた
+#### Envoyの静的bootstrap設定はConfigMap変更をホットリロードしない——Podを再起動しないと古い設定で動き続ける
 
-**症状**：`account-service`のRBAC設定にaccount:freeze用ポリシーを追加し、account:proposeの回帰テスト（`POST /accounts/{id}/unfreeze-proposals`）を実行したところ、Token Exchange自体は`scope=account:propose`で成功しているにもかかわらず、account-serviceのingress Envoyで「RBAC: access denied」となった。
+**原因（共通）**：Envoyの`envoy.yaml`（`node`/`static_resources`含む）は起動時に一度だけ読むstatic bootstrap設定で、kubeletがConfigMapボリュームを同期してもプロセスは再読み込みしない（Keycloakのrealm importと同種）。**envoy-configmap.yamlだけを変更した場合は対象Podを手動で再起動する必要がある**（Deploymentは`kubectl rollout restart`、StatefulSetはPod削除。`make sync`はイメージの変化しか検知しない）。かつては`make deploy-verify-hop`が状態を持たないスタブ群を`kubectl apply`直後に常に`kubectl rollout restart`して回避していたが、スタブは撤去済みで現在この再起動は行わない。2つの現れ方を踏んだ。
 
-**原因**：`kubectl exec`でaccount-service-stub Podの管理ポート(`:9901/config_dump`)を確認したところ、稼働中のEnvoyが読み込んでいるRBACポリシーのURLパターンが`^/accounts/[^/]+/freeze-proposals$`という、`unfreeze-proposals`への改名前の古い文字列のままだった。EnvoyはConfigMapマウントの`envoy.yaml`を起動時に1度だけ読み込むstatic bootstrap設定として扱い、ファイルが（kubeletのConfigMap同期により）後から更新されてもプロセスは再読み込みしない。`kubectl apply`でConfigMapを更新しても、それを参照するDeploymentのPod自体が再起動されない限り、実際に動いている設定は古いまま変わらない（Keycloakのrealm importと同種の落とし穴）。これは今回に限らず、account-service/fraud-mcp-serverのenvoy-configmap.yamlを変更するたびに起こりうる一般的なリスクだった。
-
-**対応**：`make deploy-verify-hop`が`kubectl apply`の直後に、対象Deployment（`ext-authz-service`・`ext-authz-service-cc`・`account-service-stub`・`fraud-mcp-server-stub`・`fraud-detection-engine-stub`。いずれも状態を持たないスタブ）を常に`kubectl rollout restart`するよう修正した。ConfigMapに実質的な差分がない回でも毎回再起動するが、スタブなので無害。これらのスタブは全て撤去済みで、現在の`make deploy-verify-hop`はこの再起動を行わない。**現在も有効な教訓**：envoy-configmap.yamlだけを変更した場合は、対象Podを手動で`kubectl rollout restart`（StatefulSetならPod削除）する必要がある（`make sync`はイメージの変化しか検知しない）。StatefulSet（postgres）での同じ罠の現れ方は直下の項目を参照。
-
-#### 長時間稼働Podの静的Envoy bootstrap設定は、ConfigMapを更新しただけでは再読み込みされない
-
-（直上の項目と同じ原因の、StatefulSetでの現れ方。[ADR 0028](adr/0028-postgres-mtls-tcp-proxy.md)の作業中に発生）
-
-**症状**：`k8s/postgres/envoy-configmap.yaml`のmTLS許可SAN一覧にdb-init/seed Job用の5エントリを追加し`kubectl apply`したが、その後db-init Jobから接続すると`psql: error: connection to server at "postgres" (127.0.0.1), port 5432 failed: server closed the connection unexpectedly`で失敗した（Job側は接続待機リトライを使い切って終了）。
-
-**原因**：Envoyの`envoy.yaml`（`node`/`static_resources`を含むbootstrap設定）はxDS経由の動的設定と異なり、プロセスが起動時に一度だけ読み込むファイルであり、マウント元ConfigMapの内容が更新されても実行中のEnvoyプロセスには反映されない（kubeletはConfigMapボリュームの中身自体は同期するが、それを読みに行くかどうかはアプリ側の実装次第）。postgres StatefulSetは今回`k8s/postgres/statefulset.yaml`（Podテンプレート）自体を変更していなかったため、`kubectl apply`では既存のpostgres-0 Podが再作成されず、古いSAN一覧を積んだままのEnvoyプロセスが動き続けていた。account-service等の常駐アプリでは、Envoy設定変更が大抵`hostAliases`等のPodテンプレート変更と同時に起きるため、この罠はこれまで顕在化していなかった。
-
-**対応**：`kubectl -n gekko delete pod postgres-0`でPodを再作成し（StatefulSetなので自動的に作り直される。PVCは保持される）、Envoy admin API（`/config_dump?resource=static_listeners`）で新しいSAN一覧が実際に読み込まれたことを確認した。今後postgres-envoy ConfigMapの内容だけを変更する場合（Podテンプレート自体の変更を伴わない場合）は、同様に手動でpostgres-0を再作成する必要がある。
+- **Deployment（account-service）**：RBACにaccount:freezeポリシーを追加後、account:proposeの回帰テスト（`POST /accounts/{id}/unfreeze-proposals`）が`scope=account:propose`成功にもかかわらずingress Envoyで「RBAC: access denied」。`:9901/config_dump`を見ると稼働中EnvoyのRBACパターンが改名前の古い文字列`^/accounts/[^/]+/freeze-proposals$`のままだった。
+- **StatefulSet（postgres、[ADR 0028](adr/0028-postgres-mtls-tcp-proxy.md)）**：`k8s/postgres/envoy-configmap.yaml`のmTLS許可SAN一覧にdb-init/seed用5エントリを追加し`kubectl apply`したが、db-init Jobが`psql: ... server closed the connection unexpectedly`で失敗。`statefulset.yaml`（Podテンプレート）自体は未変更のため既存postgres-0が再作成されず、古いSAN一覧のEnvoyが動き続けていた（常駐アプリではEnvoy設定変更が大抵`hostAliases`等のPodテンプレート変更を伴うため顕在化しなかった）。**対応**：`kubectl -n gekko delete pod postgres-0`で再作成（PVCは保持）し、`/config_dump?resource=static_listeners`で新SAN一覧の読み込みを確認。
 
 ### 3.2 ext_authz・scope解決
 
@@ -482,21 +448,12 @@ SPIRE AgentのSDSから証明書を受け取ってmTLSを構成する際のも�
 
 edge-proxyは`/realms/`・`/admin/`・`/resources/`をKeycloakへ、それ以外をfrontendへ振り分ける。Keycloak宛てのプレフィックスが漏れると、catch-allの`/`でfrontendへ誤配送される。
 
-#### edge-proxyの`/admin/`パスがKeycloakではなくfrontendへ誤配送される（ADR 0024の実装漏れ）
+#### Keycloak宛てプレフィックスの漏れで`/admin/`・`/resources/`がfrontendへ誤配送される（ADR 0024の実装漏れ、2件）
 
-**症状**：Keycloakのrealmを再import後、`k8s/keycloak/test-fixtures-job.yaml`のkcadm.shが`SERVER=http://edge-proxy...`経由で`/admin/realms/gekko/users`等を呼ぶと、一貫して`401 Unauthorized`になった。edge-proxy自身のアクセスログ（ADR 0025で追加）を見ると、この呼び出しの実際の宛先（`upstream_host`）はKeycloakではなく**frontendのService IP**だった。
+ADR 0024でroute_configを`/realms/`(Keycloak)と`/`(frontend catch-all)に分割した際、`/admin/`・`/resources/`をKeycloak宛てに含め忘れ、両方がcatch-allでfrontendへ流れていた。いずれも`k8s/edge-proxy/envoy-configmap.yaml`のroute_configに該当prefix→`keycloak_upstream`ルートを追加して是正（ADR 0024自体のバグのため新規ADRは起こさず、発覚時のコミットで修正）。誤配送先はedge-proxyのアクセスログ（ADR 0025）の`upstream_host`で特定できる。
 
-**原因**：ADR 0024でedge-proxyのroute_configを`/realms/`(Keycloak)と`/`(frontend、catch-all)に分割した際、コメントには「kcadm.sh等はKeycloak Pod内へkubectl execで直接到達するため対象外」と書かれていたが、実際にはtest-fixtures-configmap.yamlのkcadm.shがedge-proxy経由で`/admin/`配下を叩いており、この想定は誤りだった。`/admin/`はcatch-allの`/`ルートにマッチしてfrontendへ配送され、frontendのjwt_authnまたはアプリ自体が401を返していた。
-
-**対応**：`k8s/edge-proxy/envoy-configmap.yaml`のroute_configに`{match: {prefix: "/admin/"}, route: {cluster: keycloak_upstream}}`を`/realms/`ルートの次に追加した。ADR 0025の監査ログ集約作業（realm再import）で偶然発覚したが、ADR 0024自体のバグであり新規ADRは起こさず、このADRのコミットで一緒に是正した。
-
-#### edge-proxyの`/resources/`パスがKeycloakではなくfrontendへ誤配送される（`/admin/`と同種、ADR 0024の実装漏れ）
-
-**症状**：ブラウザでKeycloakのログイン画面を開くと、PatternFlyのスタイルが一切当たらない状態で表示され、パスワード表示切替ボタン（`aria-label="Show password"`のアイコンボタン）がラベルもアイコンも無い小さな空のボタンに見える。ログイン自体（フォーム送信）は成功する。
-
-**原因**：`/admin/`誤配送（上記）と同じ根本原因の再発。Keycloakのログインテーマは静的アセット（CSS/JS/画像）を`/realms/`配下ではなくトップレベルの`/resources/`配下から配信するが、ADR 0024のedge-proxy route_configは`/realms/`・`/admin/`の2プレフィックスしかKeycloak宛てにしておらず、`/resources/`はcatch-allの`/`ルートにマッチしてfrontendへ配送されていた。frontendの`server/middleware/1.auth.ts`はセッション未確立の全GETを`/login`へ302するため、CSS/JSへのリクエストが`Content-Type: text/html`の`/login`ページ本文に置き換わり、ブラウザはスタイルシートとして解釈できずログイン画面がスタイル無しで表示されていた。
-
-**対応**：`k8s/edge-proxy/envoy-configmap.yaml`のroute_configに`{match: {prefix: "/resources/"}, route: {cluster: keycloak_upstream}}`を`/admin/`ルートの次に追加した。修正後、`/resources/`配下の全アセットが`keycloak_upstream`から`200`・正しい`Content-Type`で返ることを実機確認した。`/admin/`のときと同様、ADR 0024自体の実装漏れであり新規ADRは起こさずこの場で是正した。
+- **`/admin/`**：realm再import後、`test-fixtures-job.yaml`のkcadm.shが`SERVER=http://edge-proxy`経由で`/admin/realms/gekko/users`等を呼ぶと一貫して`401`（frontendのjwt_authn/アプリが返す）。ADR 0024のコメントは「kcadm.shはKeycloak Pod内へkubectl execで直接到達するため対象外」としていたが、実際はedge-proxy経由で`/admin/`を叩いており誤りだった。
+- **`/resources/`**：ブラウザのKeycloakログイン画面でPatternFlyスタイルが一切当たらない（`aria-label="Show password"`ボタンが空のボタンに見える。フォーム送信自体は成功）。Keycloakログインテーマは静的アセットを`/resources/`から配信するが、これがfrontendへ流れ、frontendの`server/middleware/1.auth.ts`がセッション未確立の全GETを`/login`へ302するため、CSS/JSが`Content-Type: text/html`の`/login`本文に化けてスタイルが解釈されなかった。
 
 ### 3.6 タイムアウト
 
@@ -583,24 +540,7 @@ federation {
 
 ## 5. 送信者拘束（DPoP / RFC 8705）
 
-いずれも現在は採用していない。再検討する際の判断材料として残す（判断すべき問いは[architecture.md](architecture.md) §11「送信者拘束」）。
-
-### 5.0 なぜDPoP・RFC 8705はいずれも委任チェーンと構造的に相性が悪いのか（仕様レベルの根拠）
-
-5.1・5.2で実機確認した「既に拘束済みのsubject_tokenを別クライアントが再exchangeすると拒否される」という制約は、Keycloak固有の実装都合ではなく、関連する複数の仕様の定義を重ね合わせると論理的に導出できる、構造的な帰結だと判断できる。根拠は以下の3点。
-
-1. **送信者拘束の定義そのものが「鍵の保持者の同一性」を要求する**：[RFC 9449](https://www.rfc-editor.org/rfc/rfc9449.html)（DPoP）はIntroductionで"the legitimate presenter of the token is constrained to be the sender that holds and proves possession of the private part of the key pair"と定義する。[RFC 9700](https://www.rfc-editor.org/doc/rfc9700/)（OAuth 2.0 Security BCP）も同様に「sender-constrained access tokenは、その適用範囲を特定の送信者に限定し、その送信者はある秘密の認知を証明する義務を負う」という定義を採用している。つまり「正当な提示者」は、発行時に鍵の所有を証明した**同一の主体**であることが定義上の前提になる
-2. **RFC 8693のImpersonation方式は、提示者の同一性をあえて消す設計になっている**：[RFC 8693](https://www.rfc-editor.org/rfc/rfc8693.html)は`actor_token`を伴わない交換（Impersonation）について、発行されるトークンが「元のsubject_tokenの主体そのもの」として振る舞うと定義し、`act`クレーム（誰が実際に代理したか）は付与しない。つまりImpersonation方式は、トークンを見る限り「実際に今それを提示しているのが誰か」を意図的に記録・追跡しない設計である
-3. **この2つを重ねると論理的に破綻する**：DPoP/RFC 8705は「今この鍵を持っている者だけが正当な提示者」と定義する一方、Impersonation方式のToken Exchangeは「元の主体とは別の実体が、その区別を記録せずに正当な提示者として振る舞ってよい」ことを許す。両者を同時に満たす唯一の整合的な解釈は「拘束済みsubject_tokenを別の鍵の保持者が再exchangeすることを拒否する」以外にない。もしKeycloakがここで黙って新しい鍵へ拘束し直す（re-bind）挙動を許せば、盗まれた拘束済みトークンを攻撃者がImpersonation方式のToken Exchangeで「自分の鍵に付け替えて」正当化できてしまい、送信者拘束の目的（盗難トークンの再利用防止）そのものが破られる。つまりKeycloakの拒否は、恣意的な制限ではなく、Impersonation方式を採用した時点で安全側に倒すなら他に選択肢がない、必然的な帰結である
-
-RFC 8693自身はcnf/送信者拘束について一切規定しておらず（"the specific syntax, semantics, and security characteristics of the tokens themselves...are explicitly out of scope"）、RFC 9449もRFC 8693やdelegation/actor/token exchangeという語を一度も使っていない。つまりこの非互換性は、**どの仕様書にも明文化されていない、複数の仕様を組み合わせた際に初めて顕在化する仕様間ギャップ**である。実際、Keycloakの未解決issue [#51205](https://github.com/keycloak/keycloak/issues/51205)（2026-07-27、"DPoP拘束済みトークンとdelegation/actor機能を同時に使いたい"という機能要望）は、この組み合わせを求める実際のニーズ（AIエージェントの委任＋トークン漏洩対策）が存在しながら未解決のまま残っていることを示している。
-
-**Delegation方式（`actor_token`＋`act`クレーム）なら原理的に両立しうるが、それとは別の2つの理由で、このプロジェクトにとっては単純な代替にならない**：Delegation方式では各ホップが「自分自身の鍵で自分自身のactor_tokenを提示する」ことが前提になっており、`act`クレームが「誰が代理したか」を明示的に記録する。つまり「鍵の保持者の同一性」を各ホップの中で完結させ、ホップ間の連鎖は`act`クレームのネストで表現するため、上記1〜3で説明した送信者拘束との矛盾（**トークン所有者の証明**という関心事）は生じない。しかしDelegation方式の採否は本来これとは独立したもう一つの関心事（**委任モデルそのものの選択**）であり、この軸には固有のコストが2つある。
-
-1. **トークンサイズ**：`act`クレームはホップ数に応じて入れ子になり（外側＝現在のアクター、内側＝過去のアクター）、ホップを重ねるたびにJWTペイロードが線形に太る（[RFC 8693 §4.1](https://www.rfc-editor.org/rfc/rfc8693.html#section-4.1)の`act`クレーム定義を参照）。gekko_07の4ホップの委任チェーン（frontend→fraud-agent→fraud-mcp-server→account-service）でも、ホップを追うごとにペイロードが積み上がることになる
-2. **Keycloakの機能成熟度**：`act`クレームの生成に必要な`token-exchange-delegation`機能は、Keycloakの成熟度区分で"Experimental"に位置する。これはgekko_07が実際に採用している`spiffe`/`client-auth-federated`機能の"Preview"（本ドキュメント§2、SPIFFE JWT-SVID認証の検証記録を参照）よりさらに一段階低い、最も未熟な区分である
-
-つまり、Delegation方式は「トークン所有者の証明」という軸の矛盾は解消できても、「委任モデルそのものの選択」という別の軸で、gekko_07が既に依存している機能よりもさらに未成熟な機能への依存とトークン肥大化という新たなコストを持ち込む。gekko_07は`sub`を委任チェーン全体で同一に保ち`jti`/`scope`の違いで追跡する監査設計（architecture.md §5・§9）のためにImpersonation方式を採用しており（[ADR 0019](adr/0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md)は、Delegationモデルをクライアント認証方式の検討の一つとして扱ったが「トークン意味論はimpersonation的な現状を変更しない」と明記し、この2つの軸を評価対象にしないまま現状を維持している）、Delegation方式への転換は監査設計の作り直しに加えて、この2つのコストも引き受けることになる。
+いずれも現在は採用していない。**なぜ委任チェーンの終端ホップにしか安全に適用できないか（仕様レベルの根拠）・Delegation方式が代替にならない理由・RFC 8705再検証の結論といった判断と根拠は[ADR 0048](adr/0048-sender-constraining-terminal-hop-only.md)に集約した。** 本節は、その再検討時に再利用できる実機の罠・検証手順に限って記録する（未決の問いは[architecture.md](architecture.md) §11「送信者拘束」）。
 
 ### 5.1 DPoP送信者拘束（fraud-mcp-server→account-serviceの1ホップ、ADR 0013。ADR 0015で撤去済み）
 
@@ -616,13 +556,11 @@ RFC 8693自身はcnf/送信者拘束について一切規定しておらず（"t
 
 **原因/実機確認**：実際には2パターンに分かれる。subject_tokenに**既存の拘束が無い**場合（今回採用した構成。frontendはDPoPを有効化していない）、fraud-mcp-serverが自分のクライアント（`dpop.bound.access.tokens=true`）で自分の鍵のproofを添えて再exchangeすると、`cnf.jkt`がfraud-mcp-server自身の鍵に新しく拘束されたトークンが**成功裏に**発行される（200）。一方、subject_tokenに**既存の拘束がある**場合（frontend自身もDPoPを有効化し、frontend自身の鍵で拘束済みのトークンをfraud-mcp-serverが別鍵で再exchangeしようとするケースを実機で再現）、Keycloakは`400 invalid_request: "Sender-constrained token exchange rejected as the token was not issued for the requesting client"`でexchange自体を拒否する（Keycloak issue #51205が指摘する状況）。
 
-**対応**：このプロジェクトの委任チェーン設計では、後続で再exchangeされることの無い「チェーンの最後のクライアント」だけがDPoP拘束を安全に有効化できる、という結論に至った。fraud-mcp-server→account-serviceはまさにこの位置に当たるため採用し、frontend→fraud-mcp-server向けのexchangeへのDPoP適用は（frontend実装時であっても）見送ることをADR 0013に明記した。
+**対応**：この経路はDPoPを安全に有効化できる終端ホップに当たるため[ADR 0013](adr/0013-dpop-sender-constraining.md)で採用し、後に[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)で撤去した。ここから一般化される「終端ホップにしか適用できない」という結論とその仕様レベルの根拠は[ADR 0048](adr/0048-sender-constraining-terminal-hop-only.md)。
 
-### 5.2 RFC 8705 証明書拘束アクセストークンの再検討（2026-09-24、使い捨てKeycloak 26.7.0での実機検証）
+### 5.2 RFC 8705 証明書拘束アクセストークンの再検討（2026-09-24〜25、使い捨てKeycloak 26.7.0 / Envoy v1.31.5での実機検証）
 
-k8s内部通信のmTLS横展開が全ホップで完了した([architecture.md](architecture.md) §3.5)ことを受け、RFC 8705（証明書拘束アクセストークン）の再検討を実機で行った。使い捨てDockerコンテナ（`docker run quay.io/keycloak/keycloak:26.7.0`、gekko_07クラスタ本体には一切触れず）で検証し、Keycloak/コンテナは検証後に削除済み。
-
-**前提の整理**：ADR 0012/0013/0019が「RFC 8705は不成立」と結論したのは、いずれもmTLSを**クライアント認証方式そのもの**として使う場合（`clientAuthenticatorType: client-x509`、Subject DNしか見ない製品上の制約）についての話である。RFC 8705はこれとは独立した第2の機能（証明書拘束アクセストークン、`tls.client.certificate.bound.access.tokens`。クライアント認証方式は`client-secret`・`federated-jwt`等どれでもよく、TLS接続で提示された証明書のサムプリントをトークンの`cnf.x5t#S256`へ埋め込むだけ）を持つ。以下はこの第2の機能についての検証で、`client-x509`の制約とは別軸。
+k8s内部通信のmTLS横展開が全ホップで完了した([architecture.md](architecture.md) §3.5)ことを受け、RFC 8705（証明書拘束アクセストークン、`tls.client.certificate.bound.access.tokens`）を再検討した。使い捨てDockerコンテナ（gekko_07クラスタ本体には一切触れず、検証後に削除）で確認した実機の罠・手順を以下に記録する。再検討の前提（RFC 8705にはクライアント認証方式＝`client-x509`とは独立した第2の機能があること）・結論・判断は[ADR 0048](adr/0048-sender-constraining-terminal-hop-only.md)に集約した。
 
 #### `tls.client.certificate.bound.access.tokens`は`client-x509`のSubject DN制約と無関係に動作する
 
@@ -640,23 +578,13 @@ k8s内部通信のmTLS横展開が全ホップで完了した([architecture.md](
 
 **対応**：`openssl x509 -req`の`-extfile`で`subjectAltName = critical, URI:spiffe://...`と明示すればJavaのTLS層を正常に通過し、上記のcnf付与も正しく確認できた。将来SPIRE発行の本物のSVIDで再検証する際はこの点で躓かないはずだが、念のためSPIRE Server/Agentが実際にcritical指定でSAN拡張を発行しているかは未確認のまま。
 
-#### EnvoyがmTLSを終端してKeycloak本体へ転送する構成（gekko_07の実際のKeycloak構成）では、証明書拘束アクセストークンに必要な生の証明書がKeycloakに渡らない（未解決）
+#### Keycloakの`x509cert-lookup`（`haproxy`/`apache`）が期待するヘッダー形式はPEMではなくBase64(DER)である
 
-**症状**：上記の検証はいずれも「Keycloak自身が直接mTLSを終端する」構成（`KC_HTTPS_CLIENT_AUTH`等）で行った。しかしgekko_07の実際の構成（[k8s/keycloak/envoy-configmap.yaml](../k8s/keycloak/envoy-configmap.yaml)、[ADR 0016](adr/0016-ext-authz-and-keycloak-mtls.md)/[0017](adr/0017-edge-proxy-full-keycloak-mtls.md)）では、mTLSはKeycloakのEnvoyサイドカーが終端し、Keycloak本体（JVM）へは平文で転送される（`forward_client_cert_details`は未設定）。この構成をKeycloakを直接TLS終端させず再現し（`KC_PROXY_HEADERS=xforwarded`＋`KC_SPI_X509CERT_LOOKUP_PROVIDER=haproxy`でリバースプロキシ越しの証明書取得を模した）、PEM形式の証明書を`SSL_CLIENT_CERT`ヘッダーで手動送信したところ、URLエンコード・改行→スペース変換のいずれの表現でも`org.keycloak.services.x509.HaProxySslClientCertificateLookup`が証明書を正しく認識できず（「malformed PEM data」または「does not contain a valid x.509 certificate」）、最終的に`"Client Certification missing for MTLS HoK Token Binding"`（400）になった。
+**症状**：EnvoyがmTLSを終端しKeycloak本体（JVM）へ平文転送するgekko_07の実際の構成（[k8s/keycloak/envoy-configmap.yaml](../k8s/keycloak/envoy-configmap.yaml)、[ADR 0016](adr/0016-ext-authz-and-keycloak-mtls.md)/[0017](adr/0017-edge-proxy-full-keycloak-mtls.md)、`forward_client_cert_details`は未設定）では、証明書拘束に必要な生の証明書がKeycloakに届かない。これをリバースプロキシ越しの証明書取得（`KC_PROXY_HEADERS=xforwarded`＋`KC_SPI_X509CERT_LOOKUP_PROVIDER=haproxy`）で補うことを検討し、当初はPEM形式の証明書（URLエンコード／改行→スペース変換の2パターン）を`SSL_CLIENT_CERT`ヘッダーに載せたが、いずれも`org.keycloak.services.x509.HaProxySslClientCertificateLookup`が「malformed PEM data」で拒否し、`"Client Certification missing for MTLS HoK Token Binding"`（400）になった。
 
-**原因**：Keycloakの`x509cert-lookup` SPIは`haproxy`・`apache`という2つの決まったリバースプロキシ形式のヘッダーしか組み込みでサポートせず、いずれもEnvoyの`forward_client_cert_details`が生成するXFCC形式（`Cert="<url-encoded PEM>"`等のkey=value列）とは異なる。今回`haproxy`プロバイダが実際に期待する正確なヘッダー表現（PEMの改行をどう表現するか等）を特定できなかった。
+**原因**：Keycloak本体（`services/src/main/java/org/keycloak/services/x509/HaProxySslClientCertificateLookup.java`）のソースを確認したところ、このクラスは`Base64.getMimeDecoder().decode(headerValue)`でヘッダー値を**直接DERバイト列としてBase64デコード**しており、PEMのBEGIN/END装飾行やURLエンコードには一切対応していない。もう一方の組み込みプロバイダ`apache`（`ApacheProxySslClientCertificateLookup`）も同様にURLデコードを行わない。つまり期待される値は「PEM」ではなく「証明書DERの生バイト列を単純にBase64エンコードした1行の文字列」であり、当初の2パターンはこの前提から外れていた（BEGIN/END行がBase64として不正なトークンになりDERが壊れる）。副次的に、HTTPヘッダーの値には生の改行を含められないため、PEMをそのままヘッダー値にすることはプロトコル上できない。
 
-**対応（2026-09-24時点）**：未解決のまま。この壁を埋めるには、①Envoy側でXFCCを`haproxy`互換形式へ変換するLuaフィルタ（[ADR 0002](adr/0002-token-exchange-in-envoy-sidecar.md)の「セキュリティクリティカルなロジックをLuaに置かない」原則に反する）、②Keycloak向けの独自`x509cert-lookup` SPIプラグイン（「Dockerfileを書かない」方針を初めて破る）のいずれかが必要になりそうだが、どちらも新規の可動部を増やすため、DPoP撤去（[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)）と同じ「投資に見合うか」の検討が必要だと考えていた。**この結論は下記2026-09-25の再検証で覆っている。**
-
-#### `haproxy`プロバイダが認識できなかったのは構造的な壁ではなく、期待するヘッダー形式（PEMではなくBase64(DER)）を取り違えていただけだった（2026-09-25、使い捨てKeycloak 26.7.0での再検証）
-
-**症状**：上記の検証では、PEM形式の証明書（`-----BEGIN CERTIFICATE-----`付き）をURLエンコードする・改行をスペースに置換する、の2パターンで`SSL_CLIENT_CERT`ヘッダーに載せたが、いずれも`org.keycloak.services.x509.HaProxySslClientCertificateLookup`が「malformed PEM data」で拒否し、最終的に`Client Certification missing for MTLS HoK Token Binding`（400）になっていた。
-
-**原因**：Keycloak本体（`services/src/main/java/org/keycloak/services/x509/HaProxySslClientCertificateLookup.java`）のソースを確認したところ、このクラスは`Base64.getMimeDecoder().decode(headerValue)`でヘッダー値を**直接DERバイト列としてBase64デコード**しており、PEMのBEGIN/END装飾行やURLエンコードには一切対応していない。つまり期待されている値は「PEM」ではなく「証明書DERの生バイト列を単純にBase64エンコードしただけの1行の文字列」であり、以前の2パターンはどちらもこの前提から外れていた（PEMのBEGIN/END行がBase64として不正なトークンになり、デコード結果のDERが壊れる）。副次的に、HTTPヘッダーの値には生の改行を含められない（標準的なHTTPクライアントが送信前に拒否する）ため、そもそもPEMをそのままヘッダー値にすることはプロトコル上できない、という制約もある。
-
-**対応**：使い捨てKeycloak 26.7.0コンテナ（`x509cert-lookup-provider=haproxy`、gekko_07クラスタ本体には触れず）で、テスト証明書を`openssl x509 -outform DER | base64 -w0`で変換し`SSL_CLIENT_CERT`ヘッダーに乗せたところ、client_credentialsが200で成功し、発行されたアクセストークンの`cnf.x5t#S256`が証明書DERのSHA-256サムプリント（base64url、パディング無し）と完全一致することを確認した。比較対照として、以前と同じURLエンコードPEM形式を同一環境に投げたところ、`Client Certification missing for MTLS HoK Token Binding`という同一のエラーメッセージを再現でき、原因の特定が正しいことも裏付けられた。
-
-この結果、EnvoyのXFCC（`x-forwarded-client-cert`の`Cert=`要素、URL-encoded PEM）から必要な変換は「URLデコード→BEGIN/END行除去→改行除去」という純粋な文字列整形のみであり、証明書のパースや再署名等の暗号処理は不要と分かった。上記「対応（2026-09-24時点）」が前提にしていた「LuaかカスタムSPIのどちらかが必須」という判断材料は成立しなくなっている。判断すべき問いの更新はarchitecture.md §11を参照。
+**対応**：テスト証明書を`openssl x509 -outform DER | base64 -w0`で変換し`SSL_CLIENT_CERT`ヘッダーに乗せたところ、client_credentialsが200で成功し、`cnf.x5t#S256`が証明書DERのSHA-256サムプリント（base64url、パディング無し）と完全一致することを確認した。比較対照として以前のURLエンコードPEM形式を同一環境に投げると同じ400を再現でき、原因特定が正しいことも裏付けた。したがってEnvoyのXFCC（`x-forwarded-client-cert`の`Cert=`要素、URL-encoded PEM）から必要な変換は「URLデコード→BEGIN/END行除去→改行除去」という純粋な文字列整形のみで、証明書のパース・再署名等の暗号処理は不要（当初は`x509cert-lookup`が構造的にXFCCを受け付けられずLuaかカスタムSPIが必須だと考えたが、それはヘッダー形式の取り違えによる誤認だった）。
 
 #### 検証側（cnfとの照合）は`%DOWNSTREAM_PEER_FINGERPRINT_256%`だけで、新規コンポーネント無しに完結する（2026-09-25、使い捨てEnvoy v1.31.5での実機確認）
 
@@ -666,11 +594,11 @@ k8s内部通信のmTLS横展開が全ホップで完了した([architecture.md](
 
 #### 発行側の変換（Envoy XFCC → Keycloakが期待するBase64(DER)）はEnvoy設定のみでは完結せず、小さな変換コンポーネントが必要——ただし暗号処理は不要と実機で確定した（2026-09-25、Envoy v1.31.5→Keycloak 26.7.0のend-to-end検証）
 
-**確認内容**：まずKeycloak側のもう一つの組み込みプロバイダ`apache`（`ApacheProxySslClientCertificateLookup`）のソースも確認したが、こちらも`haproxy`同様にURLデコードを一切行わず、PEMのBEGIN/END行が存在する場合は実際の改行文字（`\n`・`\r\n`）をそのまま前提に除去する実装だった。HTTPヘッダーの値には生の改行を含められない制約（§5.2既出）と合わせると、Envoyがネイティブに生成するXFCC（URLエンコード済みPEM）は、どちらの組み込みプロバイダを選んでもそのままでは受け付けられないことが確定した。つまりEnvoy設定の`request_headers_to_add`が提供する`%...%`置換だけでは（URLデコードや部分文字列抽出の機能を持たないため）この変換を完結できず、**何らかの変換コンポーネントは避けられない**。
+**確認内容**：上記の通り`haproxy`/`apache`いずれの組み込みプロバイダもEnvoyがネイティブに生成するXFCC（URLエンコード済みPEM）をそのままでは受け付けない。一方Envoy設定の`request_headers_to_add`が提供する`%...%`置換はURLデコードや部分文字列抽出の機能を持たないため、この変換をEnvoy単体では完結できず、**何らかの変換コンポーネントは避けられない**。
 
 そこで、実際にこのプロジェクトが使っているバージョンの組み合わせ（`envoyproxy/envoy:v1.31.5`→変換コンポーネント→`quay.io/keycloak/keycloak:26.7.0`、`x509cert-lookup-provider=haproxy`）でend-to-endの使い捨て環境を構築し、mTLSクライアント証明書付きのclient_credentialsリクエストを実際に流した。変換コンポーネントは約30行のPythonスクリプトで、処理内容は「XFCCの`Cert=`部分を取り出す→URLデコード→BEGIN/END行を除去→改行を除去→`SSL_CLIENT_CERT`ヘッダーとして転送する」という文字列整形のみ（証明書のパース・検証・再署名は一切行わない）。結果、200成功でアクセストークンが発行され、`cnf.x5t#S256`が実際に接続したクライアント証明書のSHA-256サムプリントと完全一致することを確認した。
 
-**対応**：発行側は「Lua変換 or カスタムSPI」という二択ではなく、**証明書の意味を一切解釈しない単純な文字列整形コンポーネント**で足りることが実機で確定した。既存の`token-exchange`/`client-credentials`/`egress-auth`と同じ「独立プロセス・ユニットテスト可能」なサイドカーとして実装するのが妥当（実際の判断・検証はKeycloak本体のSPI側で完結しており、この変換コンポーネントが誤動作しても壊れたDERとしてKeycloak側で拒否される＝fail-closed）。判断すべき問いの更新はarchitecture.md §11を参照。
+**対応**：発行側は「Lua変換 or カスタムSPI」という二択ではなく、**証明書の意味を一切解釈しない単純な文字列整形コンポーネント**で足りることが実機で確定した。既存の`token-exchange`/`client-credentials`/`egress-auth`と同じ「独立プロセス・ユニットテスト可能」なサイドカーとして実装するのが妥当（実際の判断・検証はKeycloak本体のSPI側で完結しており、この変換コンポーネントが誤動作しても壊れたDERとしてKeycloak側で拒否される＝fail-closed）。この実装可能性を踏まえた採否の判断は[ADR 0048](adr/0048-sender-constraining-terminal-hop-only.md)、未決の問いは[architecture.md](architecture.md) §11。
 
 #### RFC 8705のcnf拘束は、DPoPと全く同じ「委任チェーンの終端ホップでしか安全に有効化できない」という構造的制約を持つ（2026-09-25、使い捨てKeycloak 26.7.0での3クライアント委任チェーン再現）
 
@@ -684,7 +612,7 @@ k8s内部通信のmTLS横展開が全ホップで完了した([architecture.md](
 
 **原因**：Keycloakの「sender-constrained token exchange」の拒否ロジックは、拘束の方式（DPoPのJWK拘束かRFC 8705の証明書拘束か）を問わず、「既に拘束されているsubject_tokenを、その拘束と異なる鍵/証明書を持つ別クライアントが再exchangeしようとしていないか」を一律にチェックする、方式に依存しない汎用ロジックである。
 
-**対応**：これにより、RFC 8705はDPoPと**全く同じ制約**を持つと確定した。gekko_07の実際の委任チェーン（frontend→fraud-agent→fraud-mcp-server→account-service）にそのまま当てはめると、あるホップで発行されたトークン（例：frontend→fraud-agentのexchangeで得た`aud=fraud-agent`トークン、`azp=frontend`）を次のホップ（fraud-agent、client-aとは異なるクライアント）が再exchangeする時点で、同じ拒否が発生する。つまりRFC 8705も、DPoPが撤去された時と同じく**「委任チェーンの最後（もう再exchangeされない終端クライアント）でしか安全に有効化できない」**。DPoPが撤去された理由（[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)、「SPIRE mTLSとの実利の重複」）と同じ判断軸がRFC 8705にもそのまま当てはまり、「委任チェーン全体でトークン窃取を塞ぐ」という広い効果は得られない。判断への反映はarchitecture.md §11を参照。
+**対応**：これにより、RFC 8705はDPoPと**全く同じ終端ホップ制約**を持つと確定した。gekko_07の実際の委任チェーン（frontend→fraud-agent→fraud-mcp-server→account-service）では、あるホップで発行されたトークンを次の別クライアントが再exchangeする時点で同じ拒否が発生するため、適用できるのは終端ホップだけである。この帰結を踏まえた採否の判断（DPoP撤去[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)と同じ判断軸であること、委任チェーン全体でのトークン窃取防止という広い効果は得られないこと）は[ADR 0048](adr/0048-sender-constraining-terminal-hop-only.md)。
 
 ## 6. 監査ログ集約（Alloy / otel-lgtm）
 
