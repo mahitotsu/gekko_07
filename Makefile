@@ -159,8 +159,15 @@ deploy:
 	kubectl -n $(NAMESPACE) rollout status statefulset/postgres --timeout=180s
 	@# postgres接続用の新ポート(6432)を使う5サービスのNetworkPolicyは各Deploymentより前倒しで
 	@# 適用する。既存クラスタへの再デプロイ時にdefault-denyへ反映漏れるとconnection refusedに
-	@# なるため(ADR 0028、insights.md参照)。
-	kubectl apply -f k8s/postgres/networkpolicy.yaml -f k8s/keycloak/networkpolicy.yaml \
+	@# なるため(ADR 0028、insights.md参照)。allow-dns(ADR 0018)も同時に前倒しで適用する:
+	@# これら5サービスのegressポリシーはpodにdefault-deny egressを発動させるため、CoreDNSへの
+	@# egressを許可するallow-dnsが未適用のままだと、EnvoyのSTRICT_DNS(postgres.gekko.svc.cluster.local
+	@# 等)の名前解決が起動時にブロックされ、wait-for-postgresがタイムアウトしてrolloutが進まない
+	@# (新規クラスタでのmake up時に再現。旧allow-dnsはdeploy-network-policyで末尾に適用していたため、
+	@# 途中のrollout待ちより後になり間に合わなかった。insights.md参照)。deploy-network-policyでの
+	@# 再適用は冪等なので無害。
+	kubectl apply -f k8s/network-policy/allow-dns.yaml \
+		-f k8s/postgres/networkpolicy.yaml -f k8s/keycloak/networkpolicy.yaml \
 		-f k8s/account-service/networkpolicy.yaml -f k8s/analyst-attribute-service/networkpolicy.yaml \
 		-f k8s/fraud-detection-engine/networkpolicy.yaml
 	@# JobのPod specは不変なので、再実行するにはいったん削除してから作り直す（冪等なスクリプトなので安全）

@@ -35,6 +35,7 @@
 |---|---|
 | `kubectl get nodes`がつながらない・k3dが起動直後に応答しない | §1.4 |
 | Podが`connection refused`で失敗する（NetworkPolicy適用済みのクラスタ） | §1.1（Jobのegress許可、`make deploy`の適用順序、サブネットのドリフト） |
+| 新規クラスタの`make up`でaccount-service/analyst-attribute-serviceの`wait-for-postgres`が必ずタイムアウトしrolloutが進まない | §1.1（`allow-dns`の適用順序漏れ。EnvoyのSTRICT_DNS解決がdefault-denyでブロック） |
 | Podが起動直後に数回CrashLoopBackOffしてから安定する | §1.2 |
 | ext_authz経由の呼び出しが本文なしの`403`になり、宛先側にログが無い | §3.2（呼び出し元の`SCOPE_RULES`）、§1.2（ext_authzサービスのreadiness） |
 | frontendのAPIが401のはずが`403 forbidden`になる | §7.3 |
@@ -94,6 +95,16 @@
 **原因**：`make deploy`は`deploy-network-policy`（全サービスのNetworkPolicyを`kubectl apply`する）をターゲット末尾でしか呼ばない。default-deny自体が存在しないまっさらなクラスタでの初回`make deploy`ではこの順序は無害（Jobは事実上無制限のネットワークで動く）だが、**過去の`make deploy`で既にdefault-denyが有効になっているクラスタ**（`make down`していない開発中のクラスタ等）に新しいサービスのdb-init Jobを初めて追加すると、そのJob自身のegress許可はまだ`deploy-network-policy`が実行されておらず存在しないため、default-denyだけが先に効いてJobが即座に拒否される。宛先側・接続元側どちらのNetworkPolicyも正しく書けていても、単純に「まだ`kubectl apply`されていない」ために起きる、既存insightとは別種のタイミング問題。
 
 **対応**：`Makefile`の`deploy`ターゲットで、`k8s/postgres/networkpolicy.yaml`（宛先postgres側のingress許可。fraud-detection-engine・fraud-detection-engine-db-initからの着信を追加）と`k8s/fraud-detection-engine/networkpolicy.yaml`（接続元fraud-detection-engine本体・db-init Job自身のegress許可）の両方を、db-init Jobを`kubectl apply`する直前に前倒しで適用するようにした。片方だけ前倒ししても解決しない（実際に接続元側だけ先に直しても`connection refused`が再現し、postgres側のingress許可漏れが別途見つかった）。`deploy-network-policy`側の一括適用は冪等なので二重適用しても害はなく、末尾での適用はそのまま残してある。**今後、Postgres等に接続するJobを新設するサービスでは、接続元・宛先(postgres)双方のNetworkPolicyをdb-init Job適用より前に前倒しで適用することを検討すること**（account-service/analyst-attribute-serviceは、このクラスタでは初回追加時に同じ問題を踏んでいない可能性があるが、これは当時のクラスタがまだdefault-deny適用前だったなど環境依存の偶然であり、一般的には同じ問題を持つ）。
+
+#### さらに同じパターン：共有の`allow-dns`を末尾でしか適用しないと、新規クラスタの`make up`で常駐DeploymentのEnvoy(STRICT_DNS)がDNS解決できず`wait-for-postgres`がタイムアウトする（別名：allow-dnsの適用順序漏れ）
+
+**症状**：まっさらなクラスタでの`make up`（＝`make down`後や初回）で、account-service・analyst-attribute-serviceが`wait-for-postgres` initContainerのタイムアウトで起動せず（`Init:Error`/`Init:CrashLoopBackOff`を繰り返す）、`make deploy`が該当Deploymentのrollout待ち（`deploy`ターゲット中盤）で失敗して停止する。停止位置が末尾の`deploy-network-policy`より手前のため、`allow-dns`が永遠に適用されず、Podを作り直しても回復しない詰み状態になる。keycloak・fraud-detection-engineは同じ構造でも起動できてしまうことがあり（後述）、原因の切り分けを誤りやすい。
+
+**原因**：上記2件の対策で、5サービス（postgres/keycloak/account-service/analyst-attribute-service/fraud-detection-engine）のegressを持つNetworkPolicyを`deploy`ターゲット中盤へ前倒し適用するようにした。しかしegressルールを持つポリシーはそのPodにPod単位のdefault-deny egressを発動させる（ADR 0018）。一方で全Pod共通のDNS egress許可である`allow-dns`（`podSelector: {}`、上記「DNS解決は…egress許可のみで全Podに行き渡った」）は`deploy-network-policy`（`deploy`末尾）でしか適用していなかった。その結果、前倒し適用〜末尾の間、これら5サービスのPodは**egress制限は効くのにDNS(CoreDNS)へのegressだけ許可されていない**状態になる。常駐DeploymentのEnvoyサイドカーはSTRICT_DNSクラスタ（`postgres.gekko.svc.cluster.local:6432`等）を起動時に解決しようとするが、c-aresのDNSクエリがdefault-denyでドロップされ続け（`cluster.postgres_upstream.update_success:0` / `membership_total:0` / `dns.cares.timeouts`多発。Envoy admin `/stats`で確認）、エンドポイントが0のままなので`pg_isready`（hostAlias`postgres`→127.0.0.1→Envoy egress→mTLS）が通らない。account-service/analyst-attribute-serviceはEnvoyが解決すべきSTRICT_DNSクラスタが最も多い（7個）ため確実に詰み、クラスタ数が少ないkeycloak（3個）等は最初の1回の解決にたまたま成功して以降その1エンドポイントで惰性稼働できることがある（`update_success:1`だが`update_failure`も多発、という中途半端な生存）。**どのPolicyにも選択されない使い捨てPodはDNSを即座に解決できてしまう**（無制限のため）ので、これを対照に使うと「CoreDNSは正常なのにこのPodだけ解決できない」ことの意味を見誤る。`allow-dns`を1本適用しただけで`update_success`が1に変わりPodがReadyになることで確定した。
+
+**なぜ開発環境では隠れていたか**：NetworkPolicyは`make undeploy`/`make down`するまでクラスタに残るため、開発環境では過去の`make deploy`で適用済みの`allow-dns`が既に存在した状態で再デプロイしており、この順序依存が露見しなかった。真に新規のクラスタ（別マシンでの初回`make up`等）で初めて顕在化する。
+
+**対応**：`Makefile`の`deploy`ターゲットで、5サービスのNetworkPolicyを前倒し適用する`kubectl apply`に`k8s/network-policy/allow-dns.yaml`を加え、egress制限が効き始めるのと同時にDNS egress許可も存在するようにした。`deploy-network-policy`側での再適用は冪等なので二重適用しても害はなく、末尾での一括適用はそのまま残してある。**今後、起動時にService名の名前解決を伴う（Envoy STRICT_DNS等）常駐Deployment/Jobを、egressルールを持つNetworkPolicyと共に前倒し適用する場合は、`allow-dns`も必ず同時かそれ以前に適用すること。**
 
 #### k3d(kube-router)のNetworkPolicyは、KubernetesのAPIサーバー(`kubernetes` Service)宛てのegressをClusterIPではなくDNAT後の実IPで評価する
 
