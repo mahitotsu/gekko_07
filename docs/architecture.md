@@ -138,7 +138,7 @@ Postgres本体の平文ポート5432への直接到達経路（NetworkPolicyの�
 
 Keycloakが検証するクライアントの身元（JWT-SVID）と、そのクライアントが主張する`client_id`は全クライアントで一致する（[ADR 0019](adr/0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md)・[ADR 0020](adr/0020-fraud-detection-engine-identity-gap-and-client-credentials-federated-jwt.md)・[ADR 0021](adr/0021-account-service-analyst-attribute-service-spiffe-jwt-svid.md)）。
 
-送信者拘束（DPoP、RFC 9449）・証明書拘束アクセストークン（RFC 8705）は採用していない。いずれも委任チェーンの終端ホップにしか安全に適用できず、その範囲は既にmTLSが守っているという判断の根拠は[ADR 0048](adr/0048-sender-constraining-terminal-hop-only.md)（DPoP試験導入・撤去の経緯は[ADR 0013](adr/0013-dpop-sender-constraining.md)・[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)）。再検討時の実機の判断材料は[insights.md](insights.md) §5、未決の問いは§11を参照。
+送信者拘束（DPoP、RFC 9449）・証明書拘束アクセストークン（RFC 8705）は採用していない。いずれも委任チェーンの終端ホップにしか安全に適用できず、その範囲の大部分は既にmTLSが守っているという判断の根拠は[ADR 0048](adr/0048-sender-constraining-terminal-hop-only.md)（DPoP試験導入・撤去の経緯は[ADR 0013](adr/0013-dpop-sender-constraining.md)・[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)）。再検討時の実機の判断材料は[insights.md](insights.md) §5、未決の問いは§11を参照。
 
 ### 3.6 NetworkPolicy（L3/4のdefault-deny）
 
@@ -561,10 +561,10 @@ UC1と同じ流れだが、手順6で東京・大阪のhigh-value口座も結果
 
 ### 送信者拘束（DPoP / RFC 8705）
 
-DPoP・RFC 8705はいずれも委任チェーンの終端（もう再exchangeされないホップ）にしか安全に適用できず、その範囲は既にmTLSが守っているため導入していない（判断の根拠は[ADR 0048](adr/0048-sender-constraining-terminal-hop-only.md)、撤去の経緯は[ADR 0013](adr/0013-dpop-sender-constraining.md)・[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)、実機の検証記録は[insights.md](insights.md) §5）。以下は、この判断を将来くつがえしうる未決の問い。
+DPoP・RFC 8705はいずれも委任チェーンの終端（もう再exchangeされないホップ）にしか安全に適用できず、その範囲の大部分は既にmTLSが守っているため導入していない（判断の根拠は[ADR 0048](adr/0048-sender-constraining-terminal-hop-only.md)、撤去の経緯は[ADR 0013](adr/0013-dpop-sender-constraining.md)・[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)、実機の検証記録は[insights.md](insights.md) §5）。以下は、この判断を将来くつがえしうる未決の問い。
 
 - **DPoPの終端ホップ・ログイントークンへの適用**：frontend→account-serviceの直接exchange（確定パス、それ自体が終端）やログイントークン自体の拘束は理論上可能だが未検証。委任チェーン全体ではなく特定ホップ単体のトークン窃取まで防ぐ要求が出てきたら再検討する
-- **RFC 8705の終端1ホップへの適用**：安価に実装できる見込みは実機確認済み（[insights.md](insights.md) §5.2）。この投資が、同じ範囲を既に担っているmTLSの`match_typed_subject_alt_names`による防御に対してなお価値を持つか（判断軸は[ADR 0048](adr/0048-sender-constraining-terminal-hop-only.md)・[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)）
+- **RFC 8705の終端ホップへの適用**：安価に実装できる見込みは実機確認済み（[insights.md](insights.md) §5.2）。mTLS（`match_typed_subject_alt_names`）が守るのは通信路の呼び出し元身元であり、**正規のmTLS認可済み呼び出し元どうしの横方向トークン再利用**（例：漏洩したfraud-mcp-serverのトークンを、有効なSPIRE証明書を持つ別の正規呼び出し元が侵害された場合に同じaccount-serviceへ提示する）は止められない——証明書拘束の`cnf`不一致はこれを止める。この残差脅威（相互に到達可能な正規呼び出し元どうしの横方向再利用）が問題になる要求が出てきたら、各終端ホップ単体への適用を再評価する（判断軸は[ADR 0048](adr/0048-sender-constraining-terminal-hop-only.md)・[ADR 0015](adr/0015-dpop-removal-and-fraud-detection-engine-mtls.md)）
 
 ### mTLS / SPIFFE / SPIRE / NetworkPolicy
 
