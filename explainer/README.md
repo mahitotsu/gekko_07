@@ -31,6 +31,7 @@ gekko_07 は、「OAuth 2.0 Token Exchange をマイクロサービスに横断�
 | 4 | [AI エージェントのアイデンティティと認可](04-ai-agent-identity.md) | エージェントはどうやって「誰の代理か」を持つのか。人間の確定操作と事後の監査 |
 | 5 | [ワークロード ID とクライアント認証](05-workload-identity.md) | 「誰が何をしてよいか」（OAuth）と「誰と話しているか」（mTLS）はなぜ別レイヤーなのか。SPIFFE/SPIRE と JWT-SVID |
 | 6 | [送信者拘束の難しさ（DPoP / RFC 8705）](06-sender-constraining.md) | 盗まれたトークンの再利用をどう防ぐか。そして Impersonation 型の多段 Token Exchange で、クライアントをまたぐ再交換が難しくなるという仕様間のギャップ |
+| 7 | [安全な基盤で、実際に脱獄を試してみる](07-jailbreak-experiment.md) | AI に実際に脱獄を試させた記録。どんな攻撃を・どう防いだか・最終的に脱獄できたのか。安全性が AI の従順さではなく認可構造に支えられていることの実証 |
 
 各文書は単独でも読めるように書いていますが、後半（特に 3・6）は前半の用語を使います。
 
@@ -40,12 +41,13 @@ gekko_07 は、「OAuth 2.0 Token Exchange をマイクロサービスに横断�
 
 | 関心 | おすすめの順路 |
 |---|---|
-| **まず何が面白いのか知りたい** | [0](00-overview.md) → [3](03-scope-and-audience-topology.md) → [4](04-ai-agent-identity.md) |
+| **まず何が面白いのか知りたい** | [0](00-overview.md) → [3](03-scope-and-audience-topology.md) → [4](04-ai-agent-identity.md) → [7](07-jailbreak-experiment.md) |
+| **AI の脱獄・敵対的入力への強さを知りたい** | [3](03-scope-and-audience-topology.md) → [4](04-ai-agent-identity.md) → [7](07-jailbreak-experiment.md) |
 | **OAuth / Token Exchange から理解したい** | [1](01-oauth-basics.md) → [2](02-token-exchange.md) → [3](03-scope-and-audience-topology.md) → [4](04-ai-agent-identity.md) |
 | **SPIFFE / mTLS まで知りたい** | [5](05-workload-identity.md) |
 | **一番深い検証結果（仕様間のギャップ）を知りたい** | [2](02-token-exchange.md) → [6](06-sender-constraining.md) |
 
-「AI を信頼するのではなく、AI を信頼しなくても危険な操作ができない認可構造をつくる」という一続きの話だけを追うなら、[0](00-overview.md) → [3](03-scope-and-audience-topology.md) → [4](04-ai-agent-identity.md) の 3 本で読めます。
+「AI を信頼するのではなく、AI を信頼しなくても危険な操作ができない認可構造をつくる」という一続きの話だけを追うなら、[0](00-overview.md) → [3](03-scope-and-audience-topology.md) → [4](04-ai-agent-identity.md) の 3 本で読めます。その構造が実際の攻撃に耐えるところまで見たいなら、[7](07-jailbreak-experiment.md) を加えてください。
 
 ## gekko_07 本体との関係
 

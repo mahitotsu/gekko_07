@@ -138,4 +138,4 @@ Delegation 方式では、各ホップが**自分自身を表す `actor_token`**
 
 ---
 
-前へ：[5. ワークロード ID とクライアント認証](05-workload-identity.md) ｜ 入口へ戻る：[README](README.md)
+前へ：[5. ワークロード ID とクライアント認証](05-workload-identity.md) ｜ 次へ：[7. 安全な基盤で、実際に脱獄を試してみる](07-jailbreak-experiment.md)
