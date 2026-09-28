@@ -69,13 +69,18 @@ scope = account:read              ← 交換後に欲しい権限
 
 素朴に作ると、5 つの言語それぞれで「トークンエンドポイントへ `grant_type=...token-exchange` を POST し、レスポンスを解釈し、エラーを処理する」という**同じ RFC 8693 クライアントロジックを重複して実装する**ことになります。これは手間がかかり、後回しにされがちで、バグの温床にもなりやすいところです。
 
-このサンプルでは、**Token Exchange をアプリ本体から切り離し、Envoy サイドカーにまとめる**という方法をとっています（[ADR 0002](../docs/adr/0002-token-exchange-in-envoy-sidecar.md)）。サイドカーとは、アプリと同じ Pod に同居して、ネットワーク通信を横取りするプロキシのことです。
+このサンプルでは、**Token Exchange をアプリ本体から切り離し、Pod 内のサイドカーに担わせる**という方法をとっています（[ADR 0002](../docs/adr/0002-token-exchange-in-envoy-sidecar.md)）。サイドカーとは、アプリと同じ Pod に同居する補助コンテナのことです。ここは 2 つの部品に分かれていて、役割が違う点に少し注意してください。
+
+- **Envoy**（プロキシのサイドカー）：アプリの通信を横取りします。ただし Envoy 自身が RFC 8693 を実装しているわけではありません
+- **token-exchange コンテナ**（ext_authz として呼ばれる、もう一つのサイドカー）：Envoy から `ext_authz` の仕組みで呼ばれ、実際に Keycloak のトークンエンドポイントを叩いて Token Exchange を行うのはこちらです
+
+流れにすると、次のようになります。
 
 - アプリは、相手サービスの**実名・実 API パスをそのまま呼ぶだけ**でよくなります。例：`GET http://account-service/accounts/123/transactions`
-- そのリクエストを Envoy サイドカーが横取りし、`ext_authz` という仕組みを通じて Token Exchange を実行し、得たトークンを `Authorization` ヘッダーに載せてから、本当の account-service へ転送します
+- そのリクエストを Envoy が横取りし、同じ Pod 内の token-exchange コンテナ（ext_authz）に問い合わせます。token-exchange コンテナが Token Exchange を実行し、得たトークンを Envoy が `Authorization` ヘッダーに載せてから、本当の account-service へ転送します
 - アプリのコードには Token Exchange が一切現れません
 
-こうすると、言語が何であっても「次のサービスを普通に呼ぶだけ」で RFC 8693 準拠の委任チェーンに参加できます。Token Exchange のロジックは 1 箇所（サイドカー）だけにまとまります。言語がバラバラな構成では、この切り出しの効果が分かりやすく出ます。逆に、言語が揃っている構成なら共通ライブラリでも代替できるため、この構成でどこまで効くのかを確かめたい、というのがこのサンプルの動機の一つでした（[docs/requirements.md](../docs/requirements.md)「背景」）。
+こうすると、言語が何であっても「次のサービスを普通に呼ぶだけ」で RFC 8693 準拠の委任チェーンに参加できます。Token Exchange のロジックは、共通のサイドカー実装（token-exchange コンテナ）に集約されます（実行時には各 Pod に同じ実装のコンテナが 1 つずつ同居する形です）。言語がバラバラな構成では、この切り出しの効果が分かりやすく出ます。逆に、言語が揃っている構成なら共通ライブラリでも代替できるため、この構成でどこまで効くのかを確かめたい、というのがこのサンプルの動機の一つでした（[docs/requirements.md](../docs/requirements.md)「背景」）。
 
 > ここでは「Token Exchange はアプリではなくサイドカーが行っている」とだけ押さえていただければ十分です。サイドカーがどうやって自分の身元を Keycloak に証明して交換を要求するのか（クライアント認証）は、[第 5 章](05-workload-identity.md)で扱います。
 
@@ -112,7 +117,7 @@ Delegation にも利点はありますが、このサンプルの文脈ではコ
 - 単一 audience 原則のもとでは、あるサービス宛てのトークンを別のサービスにそのまま使えません。だからこそ、**宛先・権限を絞ったトークンに交換する**のが Token Exchange（RFC 8693）です
 - `subject_token`（今持っているトークン）を認可サーバーに渡し、`audience`・`scope` を指定して新しいトークンをもらいます。**交換の可否を決めるのは認可サーバー**です
 - 委任チェーンは Token Exchange の連鎖です。ホップごとに新しい単一 audience トークンが生まれます
-- このサンプルは Token Exchange を **Envoy サイドカーにまとめ**、多言語のアプリが「普通に次を呼ぶだけ」で委任チェーンに参加できるようにしています（[ADR 0002](../docs/adr/0002-token-exchange-in-envoy-sidecar.md)）
+- このサンプルは Token Exchange を **Pod 内のサイドカー（Envoy が横取りし、ext_authz として呼ばれる token-exchange コンテナが実行）にまとめ**、多言語のアプリが「普通に次を呼ぶだけ」で委任チェーンに参加できるようにしています（[ADR 0002](../docs/adr/0002-token-exchange-in-envoy-sidecar.md)）
 - **Impersonation 方式**（`sub` が本人のまま維持され、代理者を記録しない）を採っています。これが本人ベースの権限判定（BR4）と、`jti`/`scope` による監査を支えています
 
 次章では、この Token Exchange の「**交換の可否**」を認可サーバーの設定だけで制御し、AI エージェントに実行権限を「そもそも取得させない」ようにする方法に踏み込みます。

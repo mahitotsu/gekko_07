@@ -61,7 +61,7 @@
 - サイドカーは Keycloak を呼ぶとき、`client_secret` の代わりに**自分の JWT-SVID**（SPIRE が「これは確かに fraud-mcp-server だ」と署名した身分証）を提示します（Keycloak の `federated-jwt` 機能）
 - これにより、Keycloak が検証する身元（JWT-SVID が証明する SPIFFE ID）と、要求元が名乗る client_id が**一致する**ようになりました。「合言葉を知っているか」ではなく「本当にそのワークロードか」を Keycloak が直接確かめられる、という形です
 
-言い換えると、[第 2 章](02-token-exchange.md)の mTLS と、本章のクライアント認証が、**同じ SPIFFE 身元**の上で揃った、ということになります。通信路の身元（X.509-SVID）と、認可サーバーへのクライアント認証（JWT-SVID）が、どちらも「このワークロードは誰か」という同じ根っこにつながります。
+言い換えると、本章前半（[5.2](#52-mtls-とワークロード-idspiffespire)）の mTLS と、ここで見たクライアント認証が、**同じ SPIFFE 身元**の上で揃った、ということになります。通信路の身元（X.509-SVID）と、認可サーバーへのクライアント認証（JWT-SVID）が、どちらも「このワークロードは誰か」という同じ根っこにつながります。
 
 > この解決には、いくつか実際に手を動かして分かった工夫が伴っています（distroless な spire-agent のバイナリを Kubernetes の ImageVolume でマウントする、SPIRE の bundle endpoint を有効化して Keycloak に検証鍵を渡す、など）。詳細は [ADR 0019](../docs/adr/0019-ext-authz-identity-gap-and-spiffe-jwt-svid-auth.md) と [docs/insights.md](../docs/insights.md) にまとめてあります。設計図だけでは見えず、動かして初めて分かる部分でもあります。
 

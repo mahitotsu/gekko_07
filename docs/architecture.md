@@ -391,7 +391,7 @@ AIエージェント経由の経路がanalyst-attribute-serviceへ直接到達�
 
 | キー | 意味 |
 |---|---|
-| `sessionId` | Keycloakのログインセッションid。委任チェーン1インスタンスの相関キー。同一のfrontendログインセッションに由来する全ホップのToken Exchangeイベントは同じ`sessionId`を持つ（[insights.md](insights.md)参照）。`sub`単体では同一アナリストの並行操作（別タブでの別操作等）を区別できないため、これを主キーとする。client_credentialsグラントには`sessionId`が存在しない |
+| `sessionId` | Keycloakのログインセッションid。同一のfrontendログインセッションに由来する全ホップのToken Exchangeイベントは同じ`sessionId`を持つ（[insights.md](insights.md)参照）。`sub`（誰か）より細かく「どのログインセッションか」まで束ねるが、同一ログインセッション内で並行する複数操作（別タブ等）は同じ`sessionId`になるため、これ単体では操作単位の区別はできない。操作単位の区別自体は監査要件ではない（BR8が求める「実行がどの提案に基づくか」は`proposal_id`、「誰が実行したか」は`sub`/`jti`で決定的にたどれる）。client_credentialsグラントには`sessionId`が存在しない |
 | `sub`/`userId`/`username` | 誰が。委任チェーン全体で元のアナリストのまま維持される（Impersonation方式）。client_credentialsグラントでは`sub`はそのサービス自身のサービスアカウントになる（BR7と整合） |
 | `token_id`（jti）/`scope`/`audience` | 各ホップで何をしたか。ホップごとに新しいトークンが発行されるため、`jti`はホップごとに変わる |
 

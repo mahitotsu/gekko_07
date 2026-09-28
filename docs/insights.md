@@ -349,9 +349,9 @@ SPIRE側で判明した事項（bundle endpointの設定・JWT-SVIDの取得方�
 
 **対応**：`k8s/keycloak/deployment.yaml`に`KC_LOG_LEVEL: "INFO,org.keycloak.events:DEBUG"`を追加し、`org.keycloak.events`カテゴリだけDEBUGへ引き上げた。この変更はKeycloakのQuarkusビルド設定に影響するため、Pod再起動直後は`Quarkus augmentation`の再実行で通常より起動が遅くなる（実機で70秒以上かかった。`rollout status`のtimeoutを短く設定していると誤って失敗扱いにするので注意）。
 
-#### Token ExchangeイベントログのsessionIdが、委任チェーン1インスタンスの相関キーになる
+#### Token ExchangeイベントログのsessionIdは、ログインセッション単位で全ホップを束ねる（同一セッション内の並行操作は区別しない）
 
-`type="TOKEN_EXCHANGE"`イベントには`sessionId`（Keycloakのログインセッションid）が含まれ、**同一ログインセッション内で発生した全ホップのToken Exchangeイベントで同じ値になる**ことを実機確認した（frontend→fraud-agent、frontend→fraud-mcp-server、account-service→analyst-attribute-service等、1回のfrontend操作に由来する全イベントが同一`sessionId`を持つ）。`sub`/`userId`だけでは「誰か」しか分からず、同一アナリストの複数の並行操作（別タブでの別操作等）を区別できないため、委任チェーン1インスタンスの再構成には`sessionId`を主キーとし、`sub`/`userId`/`username`（誰が）・`token_id`/`scope`/`audience`（各ホップで何をしたか）を組み合わせる設計とした（architecture.md §9参照）。client_credentialsグラント（fraud-detection-engineの自動凍結処理）には`sessionId`自体が存在せず、これはBR7（アナリストの代理ではない）の設計とも整合する。
+`type="TOKEN_EXCHANGE"`イベントには`sessionId`（Keycloakのログインセッションid）が含まれ、**同一ログインセッション内で発生した全ホップのToken Exchangeイベントで同じ値になる**ことを実機確認した（frontend→fraud-agent、frontend→fraud-mcp-server、account-service→analyst-attribute-service等、1回のfrontend操作に由来する全イベントが同一`sessionId`を持つ）。ここから導ける正確な粒度は「どのログインセッションに属するか」までである。`sessionId`は`sub`/`userId`（誰か）より細かくログインセッションを束ねるが、**同一ログインセッション内で並行する複数操作（別タブでの別操作等）は同じ`sessionId`になるため、これ単体では操作単位の区別はできない**（当初「委任チェーン1インスタンスの相関キー」としていたが、これは1セッションに1操作しか無い場合にのみ成り立つ。並行操作の区別はそもそも監査要件ではない——[requirements.md](requirements.md) BR8が求めるのは「実行がどの提案に基づくか」と「誰が実行したか」であり、前者は`proposal_id`、後者は`sub`/`jti`で決定的にたどれる）。監査突合は`token_id`(jti)/`scope`/`audience`（各ホップで何をしたか）と`proposal_id`を組み合わせて行う（architecture.md §9参照）。client_credentialsグラント（fraud-detection-engineの自動凍結処理）には`sessionId`自体が存在せず、これはBR7（アナリストの代理ではない）の設計とも整合する。
 
 ## 3. Envoy
 
