@@ -56,7 +56,7 @@ account-service
 
 ※この AI 経路（frontend→fraud-agent→MCP→account-service）には、`account:unfreeze`（実行権限）が一度も現れません。人間の確定操作は、これとは別の経路（frontend→account-service）を通ります（[第 3 章](03-scope-and-audience-topology.md)）。
 
-各サービスのアプリコードには Token Exchange の実装がありません。Envoy サイドカーが通信を横取りし、同じ Pod 内の専用サイドカー（ext_authz として呼ばれる token-exchange コンテナ）に実際の交換を委ねます。Java・Go・Rust・Python・TypeScript と言語がバラバラでも、アプリは「次を普通に呼ぶだけ」で委任チェーンに参加できます。
+各サービスのアプリコードには Token Exchange の実装がありません。Pod 内のサイドカーが代わりに担うので、Java・Go・Rust・Python・TypeScript と言語がバラバラでも、アプリは「次を普通に呼ぶだけ」で委任チェーンに参加できます（サイドカーの内訳——Envoy と token-exchange コンテナの役割分担——は[第 2 章](02-token-exchange.md)）。
 
 詳しくは：[第 2 章](02-token-exchange.md)
 

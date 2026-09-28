@@ -49,6 +49,8 @@ Keycloak では、クライアント（frontend や fraud-agent など）に「�
 | `account:propose` | account-service | **fraud-mcp-server のみ** | 凍結解除の提案（取り消せる・低リスク） |
 | `account:unfreeze` | account-service | **frontend のみ** | 凍結解除の実行・承認・却下（取り消せない・高リスク） |
 
+> `account:read` が frontend と fraud-mcp-server の 2 つに付いているのは、どちらも account-service を直接呼んで読み取りを行うためです（frontend はダッシュボード表示、fraud-mcp-server は AI の代理での照会）。この `account:read` が指す audience は account-service ただ 1 つです。以前は 1 つの `account:read` が複数 audience を指していて「これさえ持てば別の宛先にも交換できる」抜け道がありましたが、audience を 1 つに絞り、AI 経路の入口は `fraud-agent:read`・`fraud-mcp-server:read` という専用スコープに分離済みです（[ADR 0046](../docs/adr/0046-account-read-audience-scope-split.md)・[ADR 0047](../docs/adr/0047-fraud-agent-scope-rename.md)）。
+
 この表を「誰が何へ交換できるか」として読むと、委任の地図になります。
 
 - frontend は `fraud-agent:read` を持つ → fraud-agent へ交換できる（AI にチャットを頼める）
@@ -84,7 +86,7 @@ fraud-agent が持つスコープは `fraud-mcp-server:read` **だけ**です。
 1. **発行時：不要な権限のトークンを作らせない**：fraud-agent / fraud-mcp-server には、`account:unfreeze` へ交換できるスコープが割り当てられていません。Keycloak が交換要求を拒否するので、この権限のトークンがそもそも発行されません
 2. **利用時：届いたトークンに必要な権限があることを強制する**：API までリクエストが届いても、そのトークンが `account:unfreeze` を持たなければ、account-service の Envoy が弾きます
 
-この 2 つは「同じ侵害を独立した 2 枚の壁で止める」という意味の二重防御ではなく、**認可のタイミングが違う二段の関門**です（トークンを作る側と、受け取って使わせる側）。AI 経路については、1 段目の時点でそもそも `account:unfreeze` のトークンが生まれないので、2 段目に到達すること自体がありません。
+この 2 つは「同じ侵害を独立した 2 枚の壁で止める」という意味の二重防御ではなく、**認可のタイミングが違う二段の関門**です（トークンを作る側と、受け取って使わせる側）。AI 経路については、1 段目の時点でそもそも `account:unfreeze` のトークンが生まれないので、2 段目に到達すること自体がありません。とはいえ 2 段目が不要というわけではなく、こちらは別の脅威——正しく発行されたトークンが意図しない API に使われること（たとえば `account:read` のトークンで凍結解除 API を叩く、など）——を止める役割を担っています。
 
 そして、そもそも凍結解除 API を呼べるトークン（`account:unfreeze`）を発行できるのは frontend だけです。frontend がそれを使うのは、アナリストが画面で「承認」「凍結解除を確定」といった**明示的なボタン操作**をしたときに限られます（[第 4 章](04-ai-agent-identity.md)、[docs/requirements.md](../docs/requirements.md) BR6）。
 
