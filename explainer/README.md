@@ -14,20 +14,38 @@ gekko_07 は、「OAuth 2.0 Token Exchange をマイクロサービスに横断�
 
 特別な前提知識は要りません。必要な概念は、その都度説明していきます。
 
+## まず 5 分で全体像を
+
+各章を順に読む前に、まず [0. 5分で分かる：このサンプルが確かめたこと](00-overview.md) を読んでいただくのがおすすめです。3 枚の図で、このサンプルが何を確かめたのかの全体像を掴めます。「なぜそうなるのか」が気になったところから、下記の各章へ進んでください。
+
 ## 読む順序
 
-上から順に読むと、基礎から難しいところへ、少しずつ積み上がるように並べてあります。
+各章は、基礎から難しいところへ少しずつ積み上がるように並べてあります。ただし、必ずしも上から通しで読む必要はありません（下の「関心別の読み方」も参照）。
 
 | # | 文書 | 何が分かるか |
 |---|---|---|
+| 0 | [5分で分かる：このサンプルが確かめたこと](00-overview.md) | 3 枚の図で核心を先に掴む入口。ここだけでも全体像が分かる |
 | 1 | [OAuth 2.0 の基礎](01-oauth-basics.md) | なぜトークンが要るのか。認可コードフロー・アクセストークン・スコープ・audience・ベアラートークンとは何か |
 | 2 | [Token Exchange（RFC 8693）入門](02-token-exchange.md) | サービスをまたいで権限を委任するとき何が起きるか。単一 audience・Impersonation・Delegation の違い |
 | 3 | [スコープと audience で「構造的に」権限を封じる](03-scope-and-audience-topology.md) | `if` 文ではなく認可サーバーの設定で、AI エージェントに実行権限を「そもそも取得させない」やり方 |
 | 4 | [AI エージェントのアイデンティティと認可](04-ai-agent-identity.md) | エージェントはどうやって「誰の代理か」を持つのか。人間の確定操作と事後の監査 |
 | 5 | [ワークロード ID とクライアント認証](05-workload-identity.md) | 「誰が何をしてよいか」（OAuth）と「誰と話しているか」（mTLS）はなぜ別レイヤーなのか。SPIFFE/SPIRE と JWT-SVID |
-| 6 | [送信者拘束の難しさ（DPoP / RFC 8705）](06-sender-constraining.md) | 盗まれたトークンの再利用をどう防ぐか。そして「送信者拘束と Token Exchange が両立しない」という仕様間のギャップ |
+| 6 | [送信者拘束の難しさ（DPoP / RFC 8705）](06-sender-constraining.md) | 盗まれたトークンの再利用をどう防ぐか。そして Impersonation 型の多段 Token Exchange で、クライアントをまたぐ再交換が難しくなるという仕様間のギャップ |
 
 各文書は単独でも読めるように書いていますが、後半（特に 3・6）は前半の用語を使います。
+
+## 関心別の読み方
+
+全部を通しで読む必要はありません。関心に応じて、次のように拾い読みできます。
+
+| 関心 | おすすめの順路 |
+|---|---|
+| **まず何が面白いのか知りたい** | [0](00-overview.md) → [3](03-scope-and-audience-topology.md) → [4](04-ai-agent-identity.md) |
+| **OAuth / Token Exchange から理解したい** | [1](01-oauth-basics.md) → [2](02-token-exchange.md) → [3](03-scope-and-audience-topology.md) → [4](04-ai-agent-identity.md) |
+| **SPIFFE / mTLS まで知りたい** | [5](05-workload-identity.md) |
+| **一番深い検証結果（仕様間のギャップ）を知りたい** | [2](02-token-exchange.md) → [6](06-sender-constraining.md) |
+
+「AI を信頼するのではなく、AI を信頼しなくても危険な操作ができない認可構造をつくる」という一続きの話だけを追うなら、[0](00-overview.md) → [3](03-scope-and-audience-topology.md) → [4](04-ai-agent-identity.md) の 3 本で読めます。
 
 ## gekko_07 本体との関係
 
