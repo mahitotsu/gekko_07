@@ -42,6 +42,7 @@ Keycloakの管理コンソールも同じ`http://localhost:3000/admin/`で開け
 | | `make verify-observability` | 監査ログ集約基盤を検証する（`deploy-verify-hop`実行済み前提） |
 | | `make verify-audit-service` | audit-serviceの突合とsenior限定ゲートを検証する（`verify-hop`実行済み前提） |
 | | `make verify-jailbreak` | 脱獄・敵対的入力に対する構造的封じ込めを検証する（`deploy-verify-hop`実行済み・fraud-agentがAnthropic APIを呼べる前提。実APIを消費） |
+| | `make verify-identity-binding` | 呼び出し元が身元を自己申告できない（別アナリストへのなりすましが成立しない）ことを検証する（`deploy-verify-hop`実行済み・fraud-agentがAnthropic APIを呼べる前提。実APIを消費） |
 
 ## ドキュメントの読み方
 

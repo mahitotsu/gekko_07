@@ -157,4 +157,4 @@ MCP tool error: account_id must be poison1 in this conversation
 
 ---
 
-前へ：[6. 送信者拘束の難しさ（DPoP / RFC 8705）](06-sender-constraining.md) ｜ 入口へ戻る：[README](README.md)
+前へ：[6. 送信者拘束の難しさ（DPoP / RFC 8705）](06-sender-constraining.md) ｜ 次へ：[8. 身元は、呼び出し元が自己申告できない](08-identity-binding.md)

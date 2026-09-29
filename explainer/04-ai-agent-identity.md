@@ -100,7 +100,7 @@ AI エージェントを業務に組み込むときの 3 つの難しさに、�
 - 人間の確定操作・承認ステップ：[ADR 0036](../docs/adr/0036-unfreeze-proposal-approval-step.md)・[ADR 0039](../docs/adr/0039-unfreeze-recommendation-axis.md)
 - 監査（自己申告と第三者記録の突き合わせ）：[docs/architecture.md](../docs/architecture.md) §9、[ADR 0040](../docs/adr/0040-audit-service-reconciliation.md)・[ADR 0041](../docs/adr/0041-audit-service-implementation.md)・[ADR 0042](../docs/adr/0042-audit-service-senior-gate.md)
 - 脱獄・敵対的入力の実証：本章の「AI は助言し、人間が決める。境界は認可基盤の構造が支える」という主張は、AI が行儀よく振る舞うことに依存していません。これを確かめるため、実際に敵対的入力を流します——直接の実行強要・担当外口座の越境閲覧・会話の口座スコープ破り・指示上書き（DAN 風）に加え、口座データ（凍結理由・取引摘要）に不正命令を仕込む間接プロンプトインジェクションです。いずれの場合も、AI 経路が運ぶトークンに `account:unfreeze` が一度も現れず（第三者記録＝Keycloak 発行ログ・account-service の Envoy アクセスログで確認）、凍結解除の実行は 0 件・口座は凍結されたまま・AI が起こせた最大の副作用は取り消せる「提案」に留まる、という**構造的な天井**が、モデルの応答内容によらず保たれることを実測します（[docs/architecture.md](../docs/architecture.md) §10 UC5）
-- 手元で動かす：`make verify-hop`（委任チェーン）・`make verify-audit-service`（突き合わせと senior 限定ゲート）・`make verify-jailbreak`（脱獄・敵対的入力に対する構造的封じ込め）。UI では `http://localhost:3000` から、チャット→承認→監査画面という一連の流れを確認できます
+- 手元で動かす：`make verify-hop`（委任チェーン）・`make verify-audit-service`（突き合わせと senior 限定ゲート）・`make verify-jailbreak`（脱獄・敵対的入力に対する構造的封じ込め）・`make verify-identity-binding`（呼び出し元は身元を自己申告できない＝なりすまし不成立。[第 8 章](08-identity-binding.md)）。UI では `http://localhost:3000` から、チャット→承認→監査画面という一連の流れを確認できます
 
 ---
 

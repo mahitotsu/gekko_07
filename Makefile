@@ -65,7 +65,7 @@ SPIRE_BUNDLE_ENDPOINT_CERT_DUMMY := $(shell mkdir -p $(SECRETS_DIR) && \
 	    -addext "subjectAltName=DNS:spire-server.spire.svc.cluster.local,DNS:spire-server" \
 	    >/dev/null 2>&1 ) )
 
-.PHONY: up down stop start status network-status clean deploy undeploy sync keycloak-forward keycloak-reimport-realm deploy-verify-hop undeploy-verify-hop verify-hop deploy-spire undeploy-spire deploy-network-policy undeploy-network-policy deploy-observability undeploy-observability grafana-forward verify-observability verify-audit-service verify-jailbreak build-account-service build-analyst-attribute-service build-fraud-detection-engine build-fraud-mcp-server build-fraud-agent build-frontend build-keycloak
+.PHONY: up down stop start status network-status clean deploy undeploy sync keycloak-forward keycloak-reimport-realm deploy-verify-hop undeploy-verify-hop verify-hop deploy-spire undeploy-spire deploy-network-policy undeploy-network-policy deploy-observability undeploy-observability grafana-forward verify-observability verify-audit-service verify-jailbreak verify-identity-binding build-account-service build-analyst-attribute-service build-fraud-detection-engine build-fraud-mcp-server build-fraud-agent build-frontend build-keycloak
 
 # -------------------------
 # クラスタ操作
@@ -397,6 +397,14 @@ verify-audit-service:
 # 消費する。architecture.md §10・explainer 4章）
 verify-jailbreak:
 	./scripts/verify-jailbreak.sh
+
+# scripts/verify-identity-binding.shを実行する（「呼び出し元は身元を自己申告できない」の実証。
+# 攻撃者yamadaが別アナリストtanaka(999を閲覧可)へのなりすましを、自然言語・偽装X-Auth-Subヘッダー
+# 等あらゆる経路で試すが、account-serviceが認可に使うsubは常にyamadaのままで999は閲覧できない
+# ことを第三者記録で確認する。deploy・deploy-verify-hop実行済み、かつfraud-agentがAnthropic APIを
+# 呼べる前提。実APIを消費する。architecture.md §10・explainer 4章）
+verify-identity-binding:
+	./scripts/verify-identity-binding.sh
 
 # -------------------------
 # NetworkPolicy（ADR 0018。gekko namespace全体のL3/4 default-deny）
