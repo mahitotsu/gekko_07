@@ -44,6 +44,11 @@ const APP_PORT = Number(process.env.APP_PORT ?? "9000");
 const HANDSHAKE_HEADER = (process.env.HANDSHAKE_HEADER_NAME ?? "x-gekko-handshake").toLowerCase();
 const HANDSHAKE_FILE = process.env.HANDSHAKE_TOKEN_FILE ?? "/handshake/token";
 const FRAUD_MCP_SERVER_URL = process.env.FRAUD_MCP_SERVER_URL ?? "http://fraud-mcp-server/mcp";
+// 使用するClaudeモデル。未指定ならClaude Agent SDKの既定にまかせる。脱獄・敵対的入力の
+// 耐性がモデル間でどう変わるかを実機で比較する(verify-jailbreak・explainer 7章)ため、
+// deploymentの環境変数で差し替えられるようにしてある。認可境界(スコープ/ABAC/audience)は
+// モデルに一切依存しないため、この値を変えても被害の上限は変わらない、というのが本サンプルの主張。
+const AGENT_MODEL = process.env.AGENT_MODEL;
 
 const MCP_SERVER_NAME = "fraud_mcp_server";
 const PROPOSE_UNFREEZE_TOOL = `mcp__${MCP_SERVER_NAME}__propose_unfreeze`;
@@ -215,6 +220,7 @@ const server = http.createServer(async (req, res) => {
       return new ClaudeAgentAdapter({
         agentId: "fraud-agent",
         systemPrompt: SYSTEM_PROMPT,
+        ...(AGENT_MODEL ? { model: AGENT_MODEL } : {}),
         mcpServers,
         tools: [], // 組み込みツール(Bash/Read/Write等)を全て無効化する
         allowedTools: ALLOWED_TOOLS, // fraud-mcp-serverの3ツールのみ確認無しで許可する
